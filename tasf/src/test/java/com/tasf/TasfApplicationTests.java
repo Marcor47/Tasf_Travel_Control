@@ -1,10 +1,10 @@
-package gruopo._c.TasfTravelControl;
+package com.tasf;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 
 @SpringBootTest
-class TasfTravelControlApplicationTests {
+class TasfApplicationTests {
 
 	@Test
 	void contextLoads() {

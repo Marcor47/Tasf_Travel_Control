@@ -1,13 +1,13 @@
-package gruopo._c.TasfTravelControl;
+package com.tasf;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 @SpringBootApplication
-public class TasfTravelControlApplication {
+public class TasfApplication {
 
 	public static void main(String[] args) {
-		SpringApplication.run(TasfTravelControlApplication.class, args);
+		SpringApplication.run(TasfApplication.class, args);
 	}
 
 }
