@@ -45,6 +45,11 @@ public class FlightRepository {
                     int departure = depHour * 60 + depMin;
                     int arrival = arrHour * 60 + arrMin;
 
+                    // ✅ FIX: si el vuelo cruza medianoche, sumar 1440 a la llegada
+                    if (arrival < departure) {
+                        arrival += 1440;
+                    }
+
                     int capacity = Integer.parseInt(parts[4]);
 
                     flights.add(new FlightInstance(

@@ -83,14 +83,15 @@ public class RouteEvaluator {
             waiting += segments.get(i).getDepartureHour()
                     - segments.get(i - 1).getArrivalHour();
         }
-        int totalTravel = segments.get(segments.size() - 1).getArrivalHour()
-                - lot.getRegistrationHour();
+        int totalTravel = Math.max(0, segments.get(segments.size() - 1).getArrivalHour()
+                - lot.getRegistrationHour());
         int tardiness = Math.max(0, segments.get(segments.size() - 1).getArrivalHour()
                 - lot.getDueHour());
         double score = totalTravel
                 + context.getConfig().getWaitingPenalty() * waiting
                 + context.getConfig().getTransferPenalty() * Math.max(0, segments.size() - 1)
                 + context.getConfig().getTardinessPenalty() * tardiness;
+        score = Math.max(0, score);
         return new RoutePlan(
                 lot.getId(),
                 segments,
