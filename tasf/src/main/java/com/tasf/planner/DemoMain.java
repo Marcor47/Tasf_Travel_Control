@@ -8,6 +8,7 @@ import com.tasf.planner.core.WorkingSolution;
 import com.tasf.planner.model.Airport;
 import com.tasf.planner.model.BaggageLot;
 import com.tasf.planner.model.FlightInstance;
+import com.tasf.planner.model.RoutePlan;
 import com.tasf.planner.nsga.NSGA2Planner;
 import com.tasf.planner.repository.AirportRepository;
 import com.tasf.planner.repository.FlightRepository;
@@ -20,7 +21,7 @@ import java.util.Map;
 public class DemoMain {
 
     //CONFIGURACIÓN DE PRUEBA
-    private static final int MAX_LOTS = 10; // ⚠️ cambia a -1 para usar TODOS
+    private static final int MAX_LOTS = 10; // cambia a -1 para usar TODOS
 
     public static void main(String[] args) {
 
@@ -155,7 +156,77 @@ public class DemoMain {
         }
 
         System.out.println("Frente de Pareto = "
-                + nsga2Result.getFirstFront().size() + " soluciones");
+        + nsga2Result.getFirstFront().size() + " soluciones");
+        System.out.println("Score NSGA-II (compromiso) = "
+                + evaluator.solutionScore(lots, nsga2Result.getCompromisePlan()));
+
+
+
+        // =========================
+        // 🔹 ANÁLISIS COMPARATIVO
+        // =========================
+        System.out.println("\n===== ANÁLISIS COMPARATIVO =====");
+
+        int alnsPlanned = 0, alnsUnplanned = 0;
+        double alnsTardiness = 0, alnsWaiting = 0, alnsTransfers = 0;
+
+        int nsgaPlanned = 0, nsgaUnplanned = 0;
+        double nsgaTardiness = 0, nsgaWaiting = 0, nsgaTransfers = 0;
+
+        WorkingSolution nsgaSolution = nsga2Result.getCompromisePlan();
+
+        for (BaggageLot lot : lots) {
+            RoutePlan alnsP = alnsSolution.getPlan(lot.getId());
+            RoutePlan nsgaP = nsgaSolution.getPlan(lot.getId());
+
+            if (alnsP == null) {
+                alnsUnplanned++;
+            } else {
+                alnsPlanned++;
+                alnsTardiness += alnsP.getTardinessHours();
+                alnsWaiting   += alnsP.getTotalWaitingHours();
+                alnsTransfers += alnsP.transfers();
+            }
+
+            if (nsgaP == null) {
+                nsgaUnplanned++;
+            } else {
+                nsgaPlanned++;
+                nsgaTardiness += nsgaP.getTardinessHours();
+                nsgaWaiting   += nsgaP.getTotalWaitingHours();
+                nsgaTransfers += nsgaP.transfers();
+            }
+        }
+
+        double alnsScore = evaluator.solutionScore(lots, alnsSolution);
+        double nsgaScore = evaluator.solutionScore(lots, nsgaSolution);
+
+        System.out.printf("%-30s %10s %10s%n", "Métrica", "ALNS", "NSGA-II");
+        System.out.println("-".repeat(52));
+        System.out.printf("%-30s %10.1f %10.1f%n", "Score total (min)",       alnsScore,      nsgaScore);
+        System.out.printf("%-30s %10.1f %10.1f%n", "Score total (hrs equiv)", alnsScore/60.0, nsgaScore/60.0);
+        System.out.printf("%-30s %10d %10d%n",     "Lotes planificados",      alnsPlanned,    nsgaPlanned);
+        System.out.printf("%-30s %10d %10d%n",     "Lotes SIN ruta",          alnsUnplanned,  nsgaUnplanned);
+        System.out.printf("%-30s %10.1f %10.1f%n", "Tardanza total (min)",    alnsTardiness,  nsgaTardiness);
+        System.out.printf("%-30s %10.1f %10.1f%n", "Espera total (min)",      alnsWaiting,    nsgaWaiting);
+        System.out.printf("%-30s %10.1f %10.1f%n", "Transbordos totales",     alnsTransfers,  nsgaTransfers);
+        System.out.printf("%-30s %10.1f %10.1f%n", "Tardanza promedio (min)",
+                alnsPlanned > 0 ? alnsTardiness / alnsPlanned : 0,
+                nsgaPlanned > 0 ? nsgaTardiness / nsgaPlanned : 0);
+
+        System.out.println("\n¿Cuándo usar cada uno?");
+        if (alnsScore < nsgaScore) {
+            System.out.println(" ALNS tiene menor score agregado (mejor si priorizás minimizar costo total)");
+        } else {
+            System.out.println(" NSGA-II tiene menor score agregado en la solución compromiso");
+        }
+        if (alnsTardiness <= nsgaTardiness) {
+                System.out.println(" Ambos sin tardanza, o ALNS igual/menor tardanza NSGA-II");
+        } else {
+                System.out.println(" NSGA-II entrega menos tardanza en su solución compromiso");
+        }
+        System.out.println(" NSGA-II además ofrece " + nsga2Result.getFirstFront().size()
+                + " soluciones alternativas en el frente de Pareto para elegir manualmente");
 
 
 
