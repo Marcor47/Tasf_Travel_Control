@@ -64,8 +64,15 @@ public class WorkingSolution {
         }
         for (RouteSegment segment : plan.getSegments()) {
             String dest = segment.getDestination();
+
+            var airport = context.getAirports().get(dest);
+
+            if (airport == null) {
+                throw new IllegalStateException("Airport not found in context: " + dest);
+            }
+
             int projected = warehouseLoad(dest);
-            int capacity = context.getAirports().get(dest).getWarehouseCapacity();
+            int capacity = airport.getWarehouseCapacity();
             if (projected + lot.getQuantity() > capacity) {
                 return false;
             }

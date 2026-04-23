@@ -28,8 +28,7 @@ public class ShipmentRepository {
 
                 while ((line = br.readLine()) != null) {
 
-                    line = line.trim();
-
+                    line = clean(line);
                     if (line.isEmpty()) continue;
 
                     String[] parts = line.split("-");
@@ -45,13 +44,10 @@ public class ShipmentRepository {
                         int hour = Integer.parseInt(parts[2]);
                         int minute = Integer.parseInt(parts[3]);
 
-                        String destination = parts[4];
+                        String destination = cleanCode(parts[4]);
                         int quantity = Integer.parseInt(parts[5]);
 
-                        // 🔥 tiempo en minutos
                         int registrationTime = hour * 60 + minute;
-
-                        // 🔥 deadline (48h después)
                         int dueTime = registrationTime + (48 * 60);
 
                         lots.add(new BaggageLot(
@@ -65,7 +61,7 @@ public class ShipmentRepository {
                         ));
 
                     } catch (Exception e) {
-                        System.out.println("⚠ Error parseando envío: " + line);
+                        System.out.println("⚠ Error envío: " + line);
                     }
                 }
             }
@@ -75,8 +71,19 @@ public class ShipmentRepository {
     }
 
     private String extractOrigin(String filename) {
-        // _envios_SKBO_.txt
         String[] parts = filename.split("_");
-        return parts.length > 2 ? parts[2] : "UNK";
+        return parts.length > 2 ? cleanCode(parts[2]) : "UNK";
+    }
+
+    private String clean(String s) {
+        return s
+                .replace("\uFEFF", "")
+                .replace("\u200B", "")
+                .replace("\u00A0", "")
+                .trim();
+    }
+
+    private String cleanCode(String s) {
+        return clean(s).toUpperCase().replaceAll("[^A-Z0-9]", "");
     }
 }
