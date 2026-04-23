@@ -18,7 +18,7 @@ public class FlightRepository {
 
             while ((line = br.readLine()) != null) {
 
-                line = line.trim();
+                line = clean(line);
 
                 if (line.isEmpty()) continue;
 
@@ -30,8 +30,8 @@ public class FlightRepository {
                 }
 
                 try {
-                    String origin = parts[0];
-                    String destination = parts[1];
+                    String origin = cleanCode(parts[0]);
+                    String destination = cleanCode(parts[1]);
 
                     String[] dep = parts[2].split(":");
                     String[] arr = parts[3].split(":");
@@ -42,7 +42,6 @@ public class FlightRepository {
                     int arrHour = Integer.parseInt(arr[0]);
                     int arrMin = Integer.parseInt(arr[1]);
 
-                    // 🔥 Convertimos a minutos absolutos
                     int departure = depHour * 60 + depMin;
                     int arrival = arrHour * 60 + arrMin;
 
@@ -65,5 +64,18 @@ public class FlightRepository {
         }
 
         return flights;
+    }
+
+    private String clean(String s) {
+        return s
+                .replace("\uFEFF", "")
+                .replace("\u200B", "")
+                .replace("\u00A0", "")
+                .trim();
+    }
+
+    // 🔥 SOLO PARA ICAO
+    private String cleanCode(String s) {
+        return clean(s).toUpperCase().replaceAll("[^A-Z0-9]", "");
     }
 }

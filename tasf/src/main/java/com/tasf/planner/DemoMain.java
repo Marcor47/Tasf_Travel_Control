@@ -19,15 +19,19 @@ import java.util.Map;
 
 public class DemoMain {
 
+    //CONFIGURACIÓN DE PRUEBA
+    private static final int MAX_LOTS = 10; // ⚠️ cambia a -1 para usar TODOS
+
     public static void main(String[] args) {
 
-        // 🔹 Ingreso de datos
-
+        
         Map<String, Airport> airports;
         List<FlightInstance> flights;
         List<BaggageLot> lots;
 
         try {
+            System.out.println("Cargando datos...");
+
             AirportRepository airportRepo = new AirportRepository();
             FlightRepository flightRepo = new FlightRepository();
             ShipmentRepository shipmentRepo = new ShipmentRepository();
@@ -38,14 +42,20 @@ public class DemoMain {
 
             System.out.println("Aeropuertos: " + airports.size());
             System.out.println("Vuelos: " + flights.size());
-            System.out.println("Lotes: " + lots.size());
+            System.out.println("Lotes (original): " + lots.size());
+
+            // 🔥 LIMITAR DATASET PARA PRUEBAS
+            if (MAX_LOTS > 0 && lots.size() > MAX_LOTS) {
+                lots = lots.subList(0, MAX_LOTS);
+                System.out.println("Lotes (recortado): " + lots.size());
+            }
 
         } catch (IOException e) {
             System.err.println("Error leyendo archivos: " + e.getMessage());
             e.printStackTrace();
-            return; //  IMPORTANTE: detener ejecución si falla
+            return;
         }
-
+        
 
 
         /*
@@ -75,7 +85,7 @@ public class DemoMain {
 
 
 
-        // 🔹 Crear contexto
+        // 🔹 CONTEXTO
         PlanningContext context = new PlanningContext(
                 airports,
                 flights,
@@ -86,25 +96,47 @@ public class DemoMain {
 
 
 
-        // 🔹 ALNS
-        ALNSPlanner alns = new ALNSPlanner(context, 2026L); //semilla aleatoria
-        WorkingSolution alnsSolution = alns.solve(lots, 120, null); //120 iteraciones y sin vuelos cancelados
+
+        // =========================
+        // 🔥 ALNS
+        // =========================
+        System.out.println("\n Iniciando ALNS...");
+        long startALNS = System.currentTimeMillis();
+
+        ALNSPlanner alns = new ALNSPlanner(context, 2026L);
+        WorkingSolution alnsSolution = alns.solve(lots, 120, null);
+
+        long endALNS = System.currentTimeMillis();
+        System.out.println(" ALNS terminado en " + (endALNS - startALNS) + " ms");
 
 
 
-        // 🔹 NSGA-II
-        NSGA2Planner nsga2 = new NSGA2Planner(context, 2026L); //semilla aleatoria
-        NSGA2Planner.Result nsga2Result = nsga2.solve(lots, 24, 40); // 24 poblacion por generacion y  40 generaciones
+
+        // =========================
+        // 🔥 NSGA-II
+        // =========================
+        System.out.println("\n Iniciando NSGA-II...");
+        long startNSGA = System.currentTimeMillis();
+
+        NSGA2Planner nsga2 = new NSGA2Planner(context, 2026L);
+        NSGA2Planner.Result nsga2Result = nsga2.solve(lots, 24, 40);
+
+        long endNSGA = System.currentTimeMillis();
+        System.out.println(" NSGA-II terminado en " + (endNSGA - startNSGA) + " ms");
 
 
 
+        // =========================
+        // 🔹 RESULTADOS (solo muestra parcial)
+        // =========================
 
+        int preview = Math.min(10, lots.size());
 
-        // 🔹 RESULTADOS
-
-        System.out.println("===== ALNS =====");
-        for (BaggageLot lot : lots) {
+        System.out.println("\n===== ALNS (preview) =====");
+        for (int i = 0; i < preview; i++) {
+            BaggageLot lot = lots.get(i);
             var plan = alnsSolution.getPlan(lot.getId());
+
             System.out.println(lot.getId() + " -> "
                     + (plan == null ? "SIN-RUTA" : plan.compactPath()));
         }
@@ -113,11 +145,11 @@ public class DemoMain {
                 + evaluator.solutionScore(lots, alnsSolution));
 
 
-
-
-        System.out.println("===== NSGA-II =====");
-        for (BaggageLot lot : lots) {
+        System.out.println("\n===== NSGA-II (preview) =====");
+        for (int i = 0; i < preview; i++) {
+            BaggageLot lot = lots.get(i);
             var plan = nsga2Result.getCompromisePlan().getPlan(lot.getId());
+
             System.out.println(lot.getId() + " -> "
                     + (plan == null ? "SIN-RUTA" : plan.compactPath()));
         }
@@ -125,5 +157,8 @@ public class DemoMain {
         System.out.println("Frente de Pareto = "
                 + nsga2Result.getFirstFront().size() + " soluciones");
 
+
+
+        System.out.println("\n Ejecución completada correctamente.");
     }
 }

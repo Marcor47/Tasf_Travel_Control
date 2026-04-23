@@ -2,10 +2,7 @@ package com.tasf.planner.repository;
 
 import com.tasf.planner.model.Airport;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.io.FileInputStream;
-import java.io.IOException;
+import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
@@ -18,59 +15,94 @@ public class AirportRepository {
         String currentContinent = "UNKNOWN";
 
         try (BufferedReader br = new BufferedReader(
-                new InputStreamReader(new FileInputStream(path), StandardCharsets.UTF_8))) {
+                new InputStreamReader(new FileInputStream(path), StandardCharsets.UTF_16))) {
 
             String line;
 
             while ((line = br.readLine()) != null) {
 
-                line = line.trim();
-
-                // 🚫 Saltar vacías
+                line = clean(line);
                 if (line.isEmpty()) continue;
 
-                // 🌍 Detectar continente
-                if (line.contains("America del Sur")) {
+                String upper = line.toUpperCase();
+
+                // =========================
+                // CONTINENTES
+                // =========================
+                if (upper.contains("AMERICA DEL SUR")) {
                     currentContinent = "America";
                     continue;
                 }
-                if (line.contains("Europa")) {
+                if (upper.contains("EUROPA")) {
                     currentContinent = "Europa";
                     continue;
                 }
-                if (line.contains("Asia")) {
+                if (upper.contains("ASIA")) {
                     currentContinent = "Asia";
                     continue;
                 }
 
-                // 🚫 Ignorar encabezados u otras líneas
+                // solo líneas de aeropuertos
                 if (!line.matches("^\\d+.*")) continue;
 
                 try {
-                    // ✅ 1. Código ICAO (posición fija)
-                    String code = line.substring(3, 7).trim();
 
-                    // ✅ 2. Buscar capacidad (último número antes de "Latitude")
-                    int latIndex = line.indexOf("Latitude");
+                    // ======================================================
+                    // 🔥 FIX REAL: NO substring fijo (3,7) — eso está mal
+                    // ======================================================
+
+                    String[] parts = line.trim().split("\\s+");
+
+                    // Formato esperado:
+                    // 0 = índice
+                    // 1 = ICAO
+                    // 2 = ciudad
+                    // ...
+
+                    if (parts.length < 5) continue;
+
+                    String codeRaw = parts[1];
+                    String code = cleanCode(codeRaw);
+
+                    // encontrar capacidad (último número antes de LATITUDE)
+                    int latIndex = upper.indexOf("LATITUDE");
                     if (latIndex == -1) continue;
 
                     String beforeLat = line.substring(0, latIndex).trim();
+                    String[] beforeParts = beforeLat.split("\\s+");
 
-                    String[] parts = beforeLat.split("\\s+");
+                    int capacity = Integer.parseInt(beforeParts[beforeParts.length - 1]);
 
-                    // último número = capacidad
-                    int capacity = Integer.parseInt(parts[parts.length - 1]);
-
-                    // ✅ Guardar aeropuerto
                     airports.put(code, new Airport(code, currentContinent, capacity));
 
                 } catch (Exception e) {
-                    System.out.println("⚠ Error parseando:");
-                    System.out.println(line);
+                    System.out.println("⚠ Error aeropuerto: " + line);
                 }
             }
         }
 
         return airports;
+    }
+
+    // =========================
+    // CLEAN GENERAL
+    // =========================
+    private String clean(String s) {
+        return s
+                .replace("\uFEFF", "")
+                .replace("\uFFFE", "")
+                .replace("\u200B", "")
+                .replace("\u00A0", "")
+                .replace("\u0000", "")
+                .trim();
+    }
+
+    // =========================
+    // ICAO CLEAN
+    // =========================
+    private String cleanCode(String s) {
+        return clean(s)
+                .toUpperCase()
+                .replaceAll("[^A-Z0-9]", "");
     }
 }
