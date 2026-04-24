@@ -45,7 +45,7 @@ public class DemoMain {
             System.out.println("Vuelos: " + flights.size());
             System.out.println("Lotes (original): " + lots.size());
 
-            // 🔥 LIMITAR DATASET PARA PRUEBAS
+            //  LIMITAR DATASET PARA PRUEBAS
             if (MAX_LOTS > 0 && lots.size() > MAX_LOTS) {
                 lots = lots.subList(0, MAX_LOTS);
                 System.out.println("Lotes (recortado): " + lots.size());
@@ -86,7 +86,7 @@ public class DemoMain {
 
 
 
-        // 🔹 CONTEXTO
+        //  CONTEXTO
         PlanningContext context = new PlanningContext(
                 airports,
                 flights,
@@ -99,7 +99,7 @@ public class DemoMain {
 
 
         // =========================
-        // 🔥 ALNS
+        //  ALNS
         // =========================
         System.out.println("\n Iniciando ALNS...");
         long startALNS = System.currentTimeMillis();
@@ -114,7 +114,7 @@ public class DemoMain {
 
 
         // =========================
-        // 🔥 NSGA-II
+        //  NSGA-II
         // =========================
         System.out.println("\n Iniciando NSGA-II...");
         long startNSGA = System.currentTimeMillis();
@@ -128,7 +128,7 @@ public class DemoMain {
 
 
         // =========================
-        // 🔹 RESULTADOS (solo muestra parcial)
+        //  RESULTADOS (solo muestra parcial)
         // =========================
 
         int preview = Math.min(10, lots.size());
@@ -163,7 +163,7 @@ public class DemoMain {
 
 
         // =========================
-        // 🔹 ANÁLISIS COMPARATIVO
+        //  ANÁLISIS COMPARATIVO
         // =========================
         System.out.println("\n===== ANÁLISIS COMPARATIVO =====");
 
