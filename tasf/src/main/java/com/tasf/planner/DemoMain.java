@@ -154,10 +154,12 @@ public class DemoMain {
         double nsgaScore = evaluator.solutionScore(lots, nsgaSolution);
 
         // Ponderaciones de ScenarioConfig.defaultWeek4()
-        double wTravel    = 1.0;
-        double wWaiting   = 0.8;
-        double wTransfers = 4.0;
-        double wTardiness = 30.0;
+        var config = context.getConfig();
+
+        double wTravel    = 1.0; // este sí es fijo
+        double wWaiting   = config.getWaitingPenalty();
+        double wTransfers = config.getTransferPenalty();
+        double wTardiness = config.getTardinessPenalty();
 
         double alnsScoreFromParts = wTravel    * alnsTotalTravel
                                   + wWaiting   * alnsWaiting

@@ -11,7 +11,6 @@ public class ShipmentRepository {
 
     private static final LocalDateTime BASE = LocalDateTime.of(2026, 1, 1, 0, 0);
 
-    // Clase interna para el heap con timestamp absoluto
     private static class LotEntry {
         BaggageLot lot;
         long absoluteMinutes;
@@ -25,8 +24,6 @@ public class ShipmentRepository {
     public List<BaggageLot> loadShipmentsFromFolder(String folderPath, int maxLots)
             throws IOException {
 
-        // Max-heap por absoluteMinutes descendente — descarta el más tardío
-        // cuando supera maxLots, manteniendo siempre los k más tempranos
         PriorityQueue<LotEntry> heap = new PriorityQueue<>(
                 (a, b) -> Long.compare(b.absoluteMinutes, a.absoluteMinutes)
         );
@@ -54,10 +51,8 @@ public class ShipmentRepository {
                     }
 
                     try {
-                        // ID único por archivo: origen + id local
                         String id = origin + "_" + parts[0];
 
-                        // Fecha completa desde el campo parts[1] (ej. 20260102)
                         String dateStr = parts[1];
                         int year  = Integer.parseInt(dateStr.substring(0, 4));
                         int month = Integer.parseInt(dateStr.substring(4, 6));
@@ -68,9 +63,9 @@ public class ShipmentRepository {
                         LocalDateTime ts = LocalDateTime.of(year, month, day, hour, min);
                         long absoluteMinutes = Duration.between(BASE, ts).toMinutes();
 
-                        // Minutos dentro del día para compatibilidad con vuelos
-                        int registrationTimeInDay = (int) (absoluteMinutes % 1440);
-                        int dueTime = registrationTimeInDay + (48 * 60);
+                        // ✅ TIEMPO ABSOLUTO (FIX)
+                        int registrationTime = (int) absoluteMinutes;
+                        int dueTime = registrationTime + (48 * 60);
 
                         String destination = cleanCode(parts[4]);
                         int quantity       = Integer.parseInt(parts[5]);
@@ -80,15 +75,13 @@ public class ShipmentRepository {
                                 origin,
                                 destination,
                                 quantity,
-                                registrationTimeInDay,
+                                registrationTime,
                                 dueTime,
                                 false
                         );
 
-                        LotEntry entry = new LotEntry(lot, absoluteMinutes);
-                        heap.offer(entry);
+                        heap.offer(new LotEntry(lot, absoluteMinutes));
 
-                        // Si supera el límite, descarta el más tardío (tope del max-heap)
                         if (maxLots > 0 && heap.size() > maxLots) {
                             heap.poll();
                         }
@@ -100,7 +93,6 @@ public class ShipmentRepository {
             }
         }
 
-        // Extraer todos los lotes del heap y ordenar por absoluteMinutes ascendente
         List<LotEntry> entries = new ArrayList<>(heap);
         entries.sort(Comparator.comparingLong(e -> e.absoluteMinutes));
 
