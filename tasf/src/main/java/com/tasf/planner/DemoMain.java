@@ -55,7 +55,6 @@ public class DemoMain {
                     ScenarioConfig.defaultWeek4()
             );
             RouteEvaluator evaluator = new RouteEvaluator(context);
-            
             // Verificacion inicial del evaluador 
             System.out.println("=== Verificación de consistencia del evaluador ===");
             List<BaggageLot> testLots = shipmentRepo.loadShipmentsFromFolder("data/envios/", 10);
@@ -66,9 +65,9 @@ public class DemoMain {
             for (BaggageLot lot : testLots) {
                 RoutePlan p = testSol.getPlan(lot.getId());
                 if (p != null) scoreB += p.getTotalTravelHours()
-                                       + 0.8 * p.getTotalWaitingHours() * 60      
+                                       + 0.8 * p.getTotalWaitingHours()      
                                        + 4.0 * p.transfers()
-                                       + 30.0 * p.getTardinessHours() * 60;  
+                                       + 30.0 * p.getTardinessHours();  
             }
             System.out.printf("Score A (evaluador): %.2f%n", scoreA);
             System.out.printf("Score B (manual):    %.2f%n", scoreB);
@@ -129,9 +128,9 @@ public class DemoMain {
                             alnsUnplanned++;
                         } else {
                             alnsPlanned++;
-                            alnsTotalTravel += alnsP.getTotalTravelHours()*60;
-                            alnsTardiness   += alnsP.getTardinessHours()*60;
-                            alnsWaiting     += alnsP.getTotalWaitingHours()*60;
+                            alnsTotalTravel += alnsP.getTotalTravelHours();
+                            alnsTardiness   += alnsP.getTardinessHours();
+                            alnsWaiting     += alnsP.getTotalWaitingHours();
                             alnsTransfers   += alnsP.transfers();
                         }
 
@@ -139,9 +138,9 @@ public class DemoMain {
                             nsgaUnplanned++;
                         } else {
                             nsgaPlanned++;
-                            nsgaTotalTravel += nsgaP.getTotalTravelHours()*60;
-                            nsgaTardiness   += nsgaP.getTardinessHours()*60;
-                            nsgaWaiting     += nsgaP.getTotalWaitingHours()*60;
+                            nsgaTotalTravel += nsgaP.getTotalTravelHours();
+                            nsgaTardiness   += nsgaP.getTardinessHours();
+                            nsgaWaiting     += nsgaP.getTotalWaitingHours();
                             nsgaTransfers   += nsgaP.transfers();
                         }
                     }
