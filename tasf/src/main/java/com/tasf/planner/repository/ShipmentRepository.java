@@ -3,54 +3,74 @@ package com.tasf.planner.repository;
 import com.tasf.planner.model.BaggageLot;
 
 import java.io.*;
+import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.*;
 
 public class ShipmentRepository {
 
-    public List<BaggageLot> loadShipmentsFromFolder(String folderPath) throws IOException {
+    private static final LocalDateTime BASE = LocalDateTime.of(2026, 1, 1, 0, 0);
 
-        List<BaggageLot> lots = new ArrayList<>();
+    private static class LotEntry {
+        BaggageLot lot;
+        long absoluteMinutes;
+
+        LotEntry(BaggageLot lot, long absoluteMinutes) {
+            this.lot = lot;
+            this.absoluteMinutes = absoluteMinutes;
+        }
+    }
+
+    public List<BaggageLot> loadShipmentsFromFolder(String folderPath, int maxLots)
+            throws IOException {
+
+        PriorityQueue<LotEntry> heap = new PriorityQueue<>(
+                (a, b) -> Long.compare(b.absoluteMinutes, a.absoluteMinutes)
+        );
 
         File folder = new File(folderPath);
         File[] files = folder.listFiles();
-
-        if (files == null) return lots;
+        if (files == null) return new ArrayList<>();
 
         for (File file : files) {
-
             if (!file.getName().contains("_envios_")) continue;
 
             String origin = extractOrigin(file.getName());
 
             try (BufferedReader br = new BufferedReader(new FileReader(file))) {
-
                 String line;
-
                 while ((line = br.readLine()) != null) {
 
                     line = clean(line);
                     if (line.isEmpty()) continue;
 
                     String[] parts = line.split("-");
-
-                    if (parts.length < 6) {
+                    if (parts.length < 7) {
                         System.out.println("⚠ Línea envío inválida: " + line);
                         continue;
                     }
 
                     try {
-                        String id = parts[0];
+                        String id = origin + "_" + parts[0];
 
-                        int hour = Integer.parseInt(parts[2]);
-                        int minute = Integer.parseInt(parts[3]);
+                        String dateStr = parts[1];
+                        int year  = Integer.parseInt(dateStr.substring(0, 4));
+                        int month = Integer.parseInt(dateStr.substring(4, 6));
+                        int day   = Integer.parseInt(dateStr.substring(6, 8));
+                        int hour  = Integer.parseInt(parts[2]);
+                        int min   = Integer.parseInt(parts[3]);
 
-                        String destination = cleanCode(parts[4]);
-                        int quantity = Integer.parseInt(parts[5]);
+                        LocalDateTime ts = LocalDateTime.of(year, month, day, hour, min);
+                        long absoluteMinutes = Duration.between(BASE, ts).toMinutes();
 
-                        int registrationTime = hour * 60 + minute;
+                        // ✅ TIEMPO ABSOLUTO (FIX)
+                        int registrationTime = (int) absoluteMinutes;
                         int dueTime = registrationTime + (48 * 60);
 
-                        lots.add(new BaggageLot(
+                        String destination = cleanCode(parts[4]);
+                        int quantity       = Integer.parseInt(parts[5]);
+
+                        BaggageLot lot = new BaggageLot(
                                 id,
                                 origin,
                                 destination,
@@ -58,7 +78,13 @@ public class ShipmentRepository {
                                 registrationTime,
                                 dueTime,
                                 false
-                        ));
+                        );
+
+                        heap.offer(new LotEntry(lot, absoluteMinutes));
+
+                        if (maxLots > 0 && heap.size() > maxLots) {
+                            heap.poll();
+                        }
 
                     } catch (Exception e) {
                         System.out.println("⚠ Error envío: " + line);
@@ -67,7 +93,14 @@ public class ShipmentRepository {
             }
         }
 
-        return lots;
+        List<LotEntry> entries = new ArrayList<>(heap);
+        entries.sort(Comparator.comparingLong(e -> e.absoluteMinutes));
+
+        List<BaggageLot> result = new ArrayList<>();
+        for (LotEntry entry : entries) {
+            result.add(entry.lot);
+        }
+        return result;
     }
 
     private String extractOrigin(String filename) {

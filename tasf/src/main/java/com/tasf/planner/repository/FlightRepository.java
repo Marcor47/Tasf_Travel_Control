@@ -19,8 +19,8 @@ public class FlightRepository {
             while ((line = br.readLine()) != null) {
 
                 line = clean(line);
-
                 if (line.isEmpty()) continue;
+                if (line.startsWith("//")) continue; // ignorar comentarios
 
                 String[] parts = line.split("-");
 
@@ -30,22 +30,21 @@ public class FlightRepository {
                 }
 
                 try {
-                    String origin = cleanCode(parts[0]);
+                    String origin      = cleanCode(parts[0]);
                     String destination = cleanCode(parts[1]);
 
                     String[] dep = parts[2].split(":");
                     String[] arr = parts[3].split(":");
 
                     int depHour = Integer.parseInt(dep[0]);
-                    int depMin = Integer.parseInt(dep[1]);
-
+                    int depMin  = Integer.parseInt(dep[1]);
                     int arrHour = Integer.parseInt(arr[0]);
-                    int arrMin = Integer.parseInt(arr[1]);
+                    int arrMin  = Integer.parseInt(arr[1]);
 
                     int departure = depHour * 60 + depMin;
-                    int arrival = arrHour * 60 + arrMin;
+                    int arrival   = arrHour * 60 + arrMin;
 
-                    // ✅ FIX: si el vuelo cruza medianoche, sumar 1440 a la llegada
+                    // Fix vuelos que cruzan medianoche
                     if (arrival < departure) {
                         arrival += 1440;
                     }
@@ -79,7 +78,6 @@ public class FlightRepository {
                 .trim();
     }
 
-    // 🔥 SOLO PARA ICAO
     private String cleanCode(String s) {
         return clean(s).toUpperCase().replaceAll("[^A-Z0-9]", "");
     }
