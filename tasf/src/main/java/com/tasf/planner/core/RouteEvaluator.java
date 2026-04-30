@@ -14,14 +14,13 @@ public class RouteEvaluator {
     private final PlanningContext context;
 
     private static final int MAX_DAYS_WAIT = 2;
-    private static final int MAX_CONNECTION_MINUTES = 12 * 60; // 🔴 NUEVO (punto 4)
-    private static final int MAX_TOTAL_SLACK = 24 * 60;        // 🔴 NUEVO (punto 4)
+    private static final int MAX_CONNECTION_MINUTES = 12 * 60; 
+    private static final int MAX_TOTAL_SLACK = 24 * 60;
 
     public RouteEvaluator(PlanningContext context) {
         this.context = context;
     }
 
-    // ✅ FIX 1: sin double, sin ceil, más eficiente
     private int adjustToNextAvailableDeparture(int flightDeparture, int currentTime) {
 
         if (flightDeparture >= currentTime) {
@@ -82,12 +81,12 @@ public class RouteEvaluator {
 
             int arr = dep + flightDuration;
 
-            // 🔴 FIX 2: poda por due date (clave para performance)
+           
             if (arr > lot.getDueHour() + MAX_TOTAL_SLACK) {
                 continue;
             }
 
-            // 🔴 FIX 3: control de conexiones
+           
             if (!partial.isEmpty()) {
                 int connection = dep - currentTime;
 
@@ -100,7 +99,6 @@ public class RouteEvaluator {
                 }
             }
 
-            // 🔴 FIX 4 (REAL): poda por tiempo total acumulado
             int totalSoFar = arr - lot.getRegistrationHour();
             if (totalSoFar > (lot.getDueHour() - lot.getRegistrationHour()) + MAX_TOTAL_SLACK) {
                 continue;

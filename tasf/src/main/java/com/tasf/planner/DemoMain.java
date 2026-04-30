@@ -14,235 +14,160 @@ import com.tasf.planner.repository.AirportRepository;
 import com.tasf.planner.repository.FlightRepository;
 import com.tasf.planner.repository.ShipmentRepository;
 
+import java.io.FileWriter;
+import java.io.PrintWriter;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
-
 public class DemoMain {
 
     // Cambia a -1 para usar TODOS los lotes
-    private static final int MAX_LOTS = 10;
+    private static final int[]  K_VALUES  = {10, 50, 100, 500};
+    private static final int    REPLICAS  = 30;
+    private static final String CSV_PATH  = "resultados_experimento.csv";
 
     public static void main(String[] args) {
 
         Map<String, Airport> airports;
         List<FlightInstance> flights;
         List<BaggageLot> lots;
+        try (PrintWriter csv = new PrintWriter(new FileWriter(CSV_PATH, false))) {
+            // -- Inicializacion CSV
+            csv.println("k,algoritmo,replica,score,tiempo_ms,"
+                      + "total_travel_min,espera_min,transbordos,"
+                      + "tardanza_min,sin_ruta");
 
-        try {
+            // -- Contexto -------------------------------------
             System.out.println("Cargando datos...");
 
             AirportRepository airportRepo   = new AirportRepository();
             FlightRepository  flightRepo    = new FlightRepository();
             ShipmentRepository shipmentRepo = new ShipmentRepository();
-
+            
             airports = airportRepo.loadAirports("data/aeropuertos.txt");
             flights  = flightRepo.loadFlights("data/planes_vuelo.txt");
-            lots     = shipmentRepo.loadShipmentsFromFolder("data/envios/", MAX_LOTS);
-
             System.out.println("Aeropuertos cargados             : " + airports.size());
             System.out.println("Vuelos cargados                  : " + flights.size());
-            System.out.println("Lotes cargados (k más tempranos) : " + lots.size());
+            
+            PlanningContext context = new PlanningContext(
+                    airports,
+                    flights,
+                    ScenarioConfig.defaultWeek4()
+            );
+            RouteEvaluator evaluator = new RouteEvaluator(context);
+            
+            // Verificacion inicial del evaluador 
+            System.out.println("=== Verificación de consistencia del evaluador ===");
+            List<BaggageLot> testLots = shipmentRepo.loadShipmentsFromFolder("data/envios/", 10);
+            ALNSPlanner testAlns = new ALNSPlanner(context, 1L);
+            WorkingSolution testSol = testAlns.solve(testLots, 120, null);
+            double scoreA = evaluator.solutionScore(testLots, testSol);
+            double scoreB = 0;
+            for (BaggageLot lot : testLots) {
+                RoutePlan p = testSol.getPlan(lot.getId());
+                if (p != null) scoreB += p.getTotalTravelHours()
+                                       + 0.8 * p.getTotalWaitingHours() * 60      
+                                       + 4.0 * p.transfers()
+                                       + 30.0 * p.getTardinessHours() * 60;  
+            }
+            System.out.printf("Score A (evaluador): %.2f%n", scoreA);
+            System.out.printf("Score B (manual):    %.2f%n", scoreB);
+            System.out.printf("Diferencia:          %.4f%n", Math.abs(scoreA - scoreB));
+            if (Math.abs(scoreA - scoreB) > 1.0)
+                System.out.println("ADVERTENCIA: scores inconsistentes — revisar unidades");
+            else
+                System.out.println("OK: evaluador consistente. Iniciando experimento.");
+            
+             for (int k : K_VALUES) {
+                lots = shipmentRepo.loadShipmentsFromFolder("data/envios/", k);
+                System.out.printf("%n--- k = %d ---%n", k);
+                for (int seed = 1; seed <= REPLICAS; seed++) {
+                    // =========================
+                    //  ALNS
+                    // =========================
+                    System.out.println("\n Iniciando ALNS...");
+                    long startALNS = System.currentTimeMillis();
 
+                    ALNSPlanner alns = new ALNSPlanner(context, (long)seed);
+                    WorkingSolution alnsSolution = alns.solve(lots, 120, null);
+
+                    long endALNS = System.currentTimeMillis();
+                    System.out.println(" ALNS terminado en " + (endALNS - startALNS) + " ms");
+
+                    // =========================
+                    //  NSGA-II
+                    // =========================
+                    System.out.println("\n Iniciando NSGA-II...");
+                    long startNSGA = System.currentTimeMillis();
+
+                    NSGA2Planner nsga2 = new NSGA2Planner(context, (long)seed);
+                    NSGA2Planner.Result nsga2Result = nsga2.solve(lots, 24, 40);
+
+                    long endNSGA = System.currentTimeMillis();
+                    System.out.println(" NSGA-II terminado en " + (endNSGA - startNSGA) + " ms");
+                    
+                    // =========================
+                    //  ANÁLISIS COMPARATIVO
+                    // =========================
+                    System.out.println("\n===== ANÁLISIS COMPARATIVO =====");
+
+                    int    alnsPlanned = 0, alnsUnplanned = 0;
+                    double alnsTotalTravel = 0, alnsTardiness = 0,
+                           alnsWaiting = 0,    alnsTransfers = 0;
+
+                    int    nsgaPlanned = 0, nsgaUnplanned = 0;
+                    double nsgaTotalTravel = 0, nsgaTardiness = 0,
+                           nsgaWaiting = 0,    nsgaTransfers = 0;
+
+                    WorkingSolution nsgaSolution = nsga2Result.getCompromisePlan();
+
+                    for (BaggageLot lot : lots) {
+                        RoutePlan alnsP = alnsSolution.getPlan(lot.getId());
+                        RoutePlan nsgaP = nsgaSolution.getPlan(lot.getId());
+
+                        if (alnsP == null) {
+                            alnsUnplanned++;
+                        } else {
+                            alnsPlanned++;
+                            alnsTotalTravel += alnsP.getTotalTravelHours()*60;
+                            alnsTardiness   += alnsP.getTardinessHours()*60;
+                            alnsWaiting     += alnsP.getTotalWaitingHours()*60;
+                            alnsTransfers   += alnsP.transfers();
+                        }
+
+                        if (nsgaP == null) {
+                            nsgaUnplanned++;
+                        } else {
+                            nsgaPlanned++;
+                            nsgaTotalTravel += nsgaP.getTotalTravelHours()*60;
+                            nsgaTardiness   += nsgaP.getTardinessHours()*60;
+                            nsgaWaiting     += nsgaP.getTotalWaitingHours()*60;
+                            nsgaTransfers   += nsgaP.transfers();
+                        }
+                    }
+
+                    double alnsScore = evaluator.solutionScore(lots, alnsSolution);
+                    double nsgaScore = evaluator.solutionScore(lots, nsgaSolution);
+                    
+                    csv.printf("%d,ALNS,%d,%.2f,%d,%.2f,%.2f,%.0f,%.2f,%d%n",
+                        k, seed, alnsScore, endALNS-startALNS,
+                        alnsTotalTravel, alnsWaiting, alnsTransfers, alnsTardiness, alnsUnplanned);
+                    csv.printf("%d,NSGA-II,%d,%.2f,%d,%.2f,%.2f,%.0f,%.2f,%d%n",
+                        k, seed, nsgaScore, endNSGA-startNSGA,
+                        nsgaTotalTravel, nsgaWaiting, nsgaTransfers, nsgaTardiness, nsgaUnplanned);
+                    csv.flush();
+                    
+                    System.out.printf("k=%4d | rep=%2d | ALNS=%8.1f | NSGA=%8.1f | %dms / %dms%n",
+                    k, seed, alnsScore, nsgaScore,(endALNS-startALNS), (endNSGA-startNSGA));
+                }
+            }
         } catch (IOException e) {
-            System.err.println("Error leyendo archivos: " + e.getMessage());
+            System.err.println("Error: " + e.getMessage());
             e.printStackTrace();
-            return;
         }
-
-        // ── Contexto ──────────────────────────────────────────────────────
-        PlanningContext context = new PlanningContext(
-                airports,
-                flights,
-                ScenarioConfig.defaultWeek4()
-        );
-
-        RouteEvaluator evaluator = new RouteEvaluator(context);
-
-        // =========================
-        //  ALNS
-        // =========================
-        System.out.println("\n Iniciando ALNS...");
-        long startALNS = System.currentTimeMillis();
-
-        ALNSPlanner alns = new ALNSPlanner(context, 2026L);
-        WorkingSolution alnsSolution = alns.solve(lots, 120, null);
-
-        long endALNS = System.currentTimeMillis();
-        System.out.println(" ALNS terminado en " + (endALNS - startALNS) + " ms");
-
-        // =========================
-        //  NSGA-II
-        // =========================
-        System.out.println("\n Iniciando NSGA-II...");
-        long startNSGA = System.currentTimeMillis();
-
-        NSGA2Planner nsga2 = new NSGA2Planner(context, 2026L);
-        NSGA2Planner.Result nsga2Result = nsga2.solve(lots, 24, 40);
-
-        long endNSGA = System.currentTimeMillis();
-        System.out.println(" NSGA-II terminado en " + (endNSGA - startNSGA) + " ms");
-
-        // =========================
-        //  RESULTADOS
-        // =========================
-        int preview = Math.min(10, lots.size());
-
-        System.out.println("\n===== ALNS (preview) =====");
-        for (int i = 0; i < preview; i++) {
-            BaggageLot lot = lots.get(i);
-            var plan = alnsSolution.getPlan(lot.getId());
-            System.out.println(lot.getId() + " -> "
-                    + (plan == null ? "SIN-RUTA" : plan.compactPath()));
-        }
-        System.out.println("Score ALNS = "
-                + evaluator.solutionScore(lots, alnsSolution));
-
-        System.out.println("\n===== NSGA-II (preview) =====");
-        for (int i = 0; i < preview; i++) {
-            BaggageLot lot = lots.get(i);
-            var plan = nsga2Result.getCompromisePlan().getPlan(lot.getId());
-            System.out.println(lot.getId() + " -> "
-                    + (plan == null ? "SIN-RUTA" : plan.compactPath()));
-        }
-        System.out.println("Frente de Pareto = "
-                + nsga2Result.getFirstFront().size() + " soluciones");
-        System.out.println("Score NSGA-II (compromiso) = "
-                + evaluator.solutionScore(lots, nsga2Result.getCompromisePlan()));
-
-        // =========================
-        //  ANÁLISIS COMPARATIVO
-        // =========================
-        System.out.println("\n===== ANÁLISIS COMPARATIVO =====");
-
-        int    alnsPlanned = 0, alnsUnplanned = 0;
-        double alnsTotalTravel = 0, alnsTardiness = 0,
-               alnsWaiting = 0,    alnsTransfers = 0;
-
-        int    nsgaPlanned = 0, nsgaUnplanned = 0;
-        double nsgaTotalTravel = 0, nsgaTardiness = 0,
-               nsgaWaiting = 0,    nsgaTransfers = 0;
-
-        WorkingSolution nsgaSolution = nsga2Result.getCompromisePlan();
-
-        for (BaggageLot lot : lots) {
-            RoutePlan alnsP = alnsSolution.getPlan(lot.getId());
-            RoutePlan nsgaP = nsgaSolution.getPlan(lot.getId());
-
-            if (alnsP == null) {
-                alnsUnplanned++;
-            } else {
-                alnsPlanned++;
-                alnsTotalTravel += alnsP.getTotalTravelHours();
-                alnsTardiness   += alnsP.getTardinessHours();
-                alnsWaiting     += alnsP.getTotalWaitingHours();
-                alnsTransfers   += alnsP.transfers();
-            }
-
-            if (nsgaP == null) {
-                nsgaUnplanned++;
-            } else {
-                nsgaPlanned++;
-                nsgaTotalTravel += nsgaP.getTotalTravelHours();
-                nsgaTardiness   += nsgaP.getTardinessHours();
-                nsgaWaiting     += nsgaP.getTotalWaitingHours();
-                nsgaTransfers   += nsgaP.transfers();
-            }
-        }
-
-        double alnsScore = evaluator.solutionScore(lots, alnsSolution);
-        double nsgaScore = evaluator.solutionScore(lots, nsgaSolution);
-
-        // Ponderaciones de ScenarioConfig.defaultWeek4()
-        var config = context.getConfig();
-
-        double wTravel    = 1.0; // este sí es fijo
-        double wWaiting   = config.getWaitingPenalty();
-        double wTransfers = config.getTransferPenalty();
-        double wTardiness = config.getTardinessPenalty();
-
-        double alnsScoreFromParts = wTravel    * alnsTotalTravel
-                                  + wWaiting   * alnsWaiting
-                                  + wTransfers * alnsTransfers
-                                  + wTardiness * alnsTardiness;
-        double nsgaScoreFromParts = wTravel    * nsgaTotalTravel
-                                  + wWaiting   * nsgaWaiting
-                                  + wTransfers * nsgaTransfers
-                                  + wTardiness * nsgaTardiness;
-
-        System.out.printf("%-35s %10s %10s%n", "Métrica", "ALNS", "NSGA-II");
-        System.out.println("-".repeat(57));
-        System.out.printf("%-35s %10.1f %10.1f%n", "Score total (min)",
-                alnsScore, nsgaScore);
-        System.out.printf("%-35s %10.1f %10.1f%n", "Score total (hrs equiv)",
-                alnsScore / 60.0, nsgaScore / 60.0);
-        System.out.println("-".repeat(57));
-        System.out.printf("%-35s %10.1f %10.1f%n", "  TotalTravel x1.0 (min)",
-                wTravel * alnsTotalTravel, wTravel * nsgaTotalTravel);
-        System.out.printf("%-35s %10.1f %10.1f%n", "  Espera x0.8 (min)",
-                wWaiting * alnsWaiting, wWaiting * nsgaWaiting);
-        System.out.printf("%-35s %10.1f %10.1f%n", "  Transbordos x4.0",
-                wTransfers * alnsTransfers, wTransfers * nsgaTransfers);
-        System.out.printf("%-35s %10.1f %10.1f%n", "  Tardanza x30.0 (min)",
-                wTardiness * alnsTardiness, wTardiness * nsgaTardiness);
-        System.out.printf("%-35s %10.1f %10.1f%n", "  Score reconstruido",
-                alnsScoreFromParts, nsgaScoreFromParts);
-        System.out.println("-".repeat(57));
-        System.out.printf("%-35s %10.1f %10.1f%n", "TotalTravel bruto (min)",
-                alnsTotalTravel, nsgaTotalTravel);
-        System.out.printf("%-35s %10.1f %10.1f%n", "Espera bruta (min)",
-                alnsWaiting, nsgaWaiting);
-        System.out.printf("%-35s %10.1f %10.1f%n", "Transbordos totales",
-                alnsTransfers, nsgaTransfers);
-        System.out.printf("%-35s %10.1f %10.1f%n", "Tardanza total (min)",
-                alnsTardiness, nsgaTardiness);
-        System.out.printf("%-35s %10d %10d%n", "Lotes planificados",
-                alnsPlanned, nsgaPlanned);
-        System.out.printf("%-35s %10d %10d%n", "Lotes SIN ruta",
-                alnsUnplanned, nsgaUnplanned);
-        System.out.printf("%-35s %10.1f %10.1f%n", "TotalTravel promedio (min)",
-                alnsPlanned > 0 ? alnsTotalTravel / alnsPlanned : 0,
-                nsgaPlanned > 0 ? nsgaTotalTravel / nsgaPlanned : 0);
-        System.out.printf("%-35s %10.1f %10.1f%n", "Espera promedio (min)",
-                alnsPlanned > 0 ? alnsWaiting / alnsPlanned : 0,
-                nsgaPlanned > 0 ? nsgaWaiting / nsgaPlanned : 0);
-        System.out.printf("%-35s %10.1f %10.1f%n", "Tardanza promedio (min)",
-                alnsPlanned > 0 ? alnsTardiness / alnsPlanned : 0,
-                nsgaPlanned > 0 ? nsgaTardiness / nsgaPlanned : 0);
-        System.out.printf("%-35s %10d %10d%n", "Tiempo ejecucion (ms)",
-                (endALNS - startALNS), (endNSGA - startNSGA));
-
-        System.out.println("\n¿Cuándo usar cada uno?");
-        if (alnsScore < nsgaScore) {
-            System.out.println(" ALNS tiene menor score agregado"
-                    + " (mejor si priorizas minimizar costo total)");
-        } else {
-            System.out.println(" NSGA-II tiene menor score agregado"
-                    + " en la solucion compromiso");
-        }
-        if (alnsTotalTravel <= nsgaTotalTravel) {
-            System.out.println(" ALNS logra menor tiempo total de viaje"
-                    + " (componente de mayor peso en el score)");
-        } else {
-            System.out.println(" NSGA-II logra menor tiempo total de viaje");
-        }
-        if (alnsWaiting > nsgaWaiting) {
-            System.out.println(" NSGA-II reduce esperas en escalas"
-                    + " (mejor experiencia operativa en conexiones)");
-        } else {
-            System.out.println(" ALNS igual o menor espera en escalas");
-        }
-        if (alnsTransfers > nsgaTransfers) {
-            System.out.println(" NSGA-II reduce transbordos"
-                    + " (menor complejidad operativa)");
-        } else {
-            System.out.println(" ALNS igual o menor numero de transbordos");
-        }
-        System.out.println(" NSGA-II ademas ofrece "
-                + nsga2Result.getFirstFront().size()
-                + " soluciones alternativas en el frente de Pareto"
-                + " para elegir manualmente");
-
+        
+        System.out.println("\nCSV generado: " + CSV_PATH);
+        System.out.println("Filas escritas: " + (K_VALUES.length * REPLICAS * 2));
         System.out.println("\n Ejecucion completada correctamente.");
     }
 }
