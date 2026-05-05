@@ -24,8 +24,8 @@ import java.util.Map;
 public class DemoMain {
 
     // Valores de k a evaluar — ajustar cuando se confirme el día peak
-    private static final int[]  K_VALUES = {10, 50, 100, 500};
-    private static final int    REPLICAS = 30;
+    private static final int[]  K_VALUES = {10, 50, 500, 3000};
+    private static final int    REPLICAS = 1;
     private static final String CSV_PATH = "resultados_experimento.csv";
 
     public static void main(String[] args) {

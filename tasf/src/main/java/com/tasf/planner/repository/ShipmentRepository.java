@@ -115,26 +115,6 @@ public class ShipmentRepository {
         return result;
     }
 
-    // ── método original — se conserva para compatibilidad ───────────────────
-
-    /**
-     * @deprecated Usar loadShipmentsForDay() para garantizar que todos los
-     *             lotes pertenecen al mismo día UTC.
-     */
-    @Deprecated
-    public List<BaggageLot> loadShipmentsFromFolder(String folderPath, int maxLots)
-            throws IOException {
-        // sin mapa de aeropuertos → no puede convertir a UTC; aviso explícito
-        System.out.println("⚠ loadShipmentsFromFolder() no convierte a UTC. " +
-                           "Usar loadShipmentsForDay() con mapa de aeropuertos.");
-        List<LotEntry> all = loadAllUtc(folderPath, Collections.emptyMap());
-        all.sort(Comparator.comparingLong(e -> e.utcMinutes));
-        int limit = (maxLots <= 0) ? all.size() : Math.min(maxLots, all.size());
-        List<BaggageLot> result = new ArrayList<>(limit);
-        for (int i = 0; i < limit; i++) result.add(all.get(i).lot);
-        return result;
-    }
-
     // ── implementación interna ───────────────────────────────────────────────
 
     /**
@@ -189,8 +169,10 @@ public class ShipmentRepository {
 
                         // convertir a UTC: UTC = local - gmtOffset
                         long utcMinutes = localMinutes - gmtOrigin;
-
-                        int registrationTimeUtc = (int) utcMinutes;
+                       
+                        int registrationTimeUtc = (int)(utcMinutes % 1440); // comparable con vuelos
+                        if (registrationTimeUtc < 0) registrationTimeUtc += 1440; // guard negativo
+              
                         int dueTimeUtc          = registrationTimeUtc + (48 * 60);
 
                         String destination = cleanCode(parts[4]);
