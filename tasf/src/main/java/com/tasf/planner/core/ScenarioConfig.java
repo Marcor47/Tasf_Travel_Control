@@ -27,7 +27,7 @@ public class ScenarioConfig {
     }
  
     public static ScenarioConfig defaultWeek4() {
-        return new ScenarioConfig(2, 2, 30.0, 4.0, 0.8, 500.0, 100.0);
+        return new ScenarioConfig(2, 10, 30.0, 4.0, 0.8, 500.0, 100.0);
     }
  
     public int getMaxLegs() {

@@ -10,30 +10,18 @@ import java.util.*;
 
 public class ALNSPlanner {
 
-    // ── Fix 1: limitar candidatos por lote ──────────────────────────────────
-    // El DFS puede generar 50-200 rutas por lote. greedyRepair y regretRepair
-    // siempre eligen la de menor score, así que conservar más de MAX_CANDIDATES
-    // solo cuesta memoria e iteraciones sin mejorar la solución.
-    private static final int MAX_CANDIDATES = 8;
-
-    // ── Fix 2: cap absoluto de destroy ──────────────────────────────────────
-    // Con k=3000, el 25% implica remover 750 lotes por iteración → 90.000
-    // asignaciones en 120 iteraciones. Un cap de 50 mantiene diversificación
-    // sin costo cuadrático.
-    private static final int MAX_DESTROY_COUNT = 50;
-    private static final double DESTROY_RATIO  = 0.01; // 1% del total
+    private static final int    MAX_CANDIDATES    = 8;
+    private static final int    MAX_DESTROY_COUNT = 50;
+    private static final double DESTROY_RATIO     = 0.01;
 
     private final PlanningContext context;
     private final RouteEvaluator  evaluator;
     private final Random          random;
 
     private final List<String> destroyOperators = List.of(
-            "randomDestroy",
-            "worstDestroy",
-            "cancelDestroy");
+            "randomDestroy", "worstDestroy", "cancelDestroy");
     private final List<String> repairOperators = List.of(
-            "greedyRepair",
-            "regretRepair");
+            "greedyRepair", "regretRepair");
 
     private final Map<String, Double> destroyWeights = new HashMap<>();
     private final Map<String, Double> repairWeights  = new HashMap<>();
@@ -50,45 +38,42 @@ public class ALNSPlanner {
 
     /**
      * Resuelve usando el mapa de candidatos precalculado externamente.
-     * Usar este método desde DemoMain para evitar recalcular candidatos
-     * en cada una de las 30 réplicas del mismo k.
      *
-     * @param lots               lotes a planificar
-     * @param timeBudgetSeconds  presupuesto de tiempo en segundos (Fix 3)
-     * @param cancelledFlightId  vuelo cancelado para cancelDestroy (null si ninguno)
-     * @param candidateMap       mapa precalculado por buildCandidateMap()
+     * @param lots                lotes a planificar
+     * @param timeBudgetSeconds   presupuesto de tiempo en segundos
+     * @param cancelledFlightId   vuelo cancelado para cancelDestroy (null si ninguno)
+     * @param candidateMap        mapa precalculado por buildCandidateMap()
+     * @param overnightArrivals   llegadas de vuelos overnight del día anterior;
+     *                            null o vacío si es el primer día.
+     *                            Se inyectan en el timeline del almacén ANTES
+     *                            de iniciar el solve, en su minuto real rebased.
      */
     public WorkingSolution solveWithCandidates(
             List<BaggageLot> lots,
             int timeBudgetSeconds,
             String cancelledFlightId,
-            Map<String, List<RoutePlan>> candidateMap) {
+            Map<String, List<RoutePlan>> candidateMap,
+            List<WorkingSolution.OvernightArrival> overnightArrivals) {
 
-        WorkingSolution current = seedGreedy(lots, candidateMap);
+        WorkingSolution current = seedGreedy(lots, candidateMap, overnightArrivals);
         WorkingSolution best    = current.copy();
         double currentScore     = evaluator.solutionScore(lots, current);
         double bestScore        = currentScore;
         double temperature      = 50.0;
 
-        // ── Fix 3: time-budget en vez de iteraciones fijas ──────────────────
-        // iterations ahora es segundos, no un conteo arbitrario.
-        // Esto hace que las réplicas sean comparables en tiempo — importante
-        // para la regresión log-log de H2.
-        long deadline = System.currentTimeMillis() + timeBudgetSeconds * 1000L;
-        int  iteration = 0;
+        long deadline  = System.currentTimeMillis() + timeBudgetSeconds * 1000L;
 
         while (System.currentTimeMillis() < deadline) {
-            iteration++;
 
             String destroyOp = pickWeighted(destroyWeights);
             String repairOp  = pickWeighted(repairWeights);
 
-            WorkingSolution trial   = current.copy();
+            WorkingSolution  trial   = current.copy();
             List<BaggageLot> removed = destroy(destroyOp, lots, trial, cancelledFlightId);
             repair(repairOp, removed, candidateMap, trial);
 
-            double trialScore = evaluator.solutionScore(lots, trial);
-            boolean accepted  = trialScore < currentScore
+            double  trialScore = evaluator.solutionScore(lots, trial);
+            boolean accepted   = trialScore < currentScore
                     || random.nextDouble() < Math.exp(
                             (currentScore - trialScore) / Math.max(0.001, temperature));
 
@@ -115,39 +100,38 @@ public class ALNSPlanner {
     }
 
     /**
+     * Sobrecarga sin overnight (primer día o llamadas internas).
+     */
+    public WorkingSolution solveWithCandidates(
+            List<BaggageLot> lots,
+            int timeBudgetSeconds,
+            String cancelledFlightId,
+            Map<String, List<RoutePlan>> candidateMap) {
+        return solveWithCandidates(lots, timeBudgetSeconds, cancelledFlightId,
+                candidateMap, Collections.emptyList());
+    }
+
+    /**
      * Resuelve calculando candidatos internamente.
-     * Conveniente para llamadas únicas (verificación, demo rápido).
-     * Para el experimento con 30 réplicas preferir solveWithCandidates()
-     * junto con buildCandidateMap() precalculado fuera del bucle de semillas.
      */
     public WorkingSolution solve(
             List<BaggageLot> lots,
             int timeBudgetSeconds,
             String cancelledFlightId) {
         return solveWithCandidates(lots, timeBudgetSeconds, cancelledFlightId,
-                buildCandidateMap(lots));
+                buildCandidateMap(lots), Collections.emptyList());
     }
 
     /**
      * Precalcula los candidatos para una lista de lotes.
-     * Llamar UNA vez por k fuera del bucle de semillas en DemoMain:
-     *
-     *   Map<String,List<RoutePlan>> shared = alnsRef.buildCandidateMap(lots);
-     *   for (int seed = 1; seed <= REPLICAS; seed++) {
-     *       new ALNSPlanner(context, seed).solveWithCandidates(lots, 30, null, shared);
-     *   }
      */
     public Map<String, List<RoutePlan>> buildCandidateMap(List<BaggageLot> lots) {
         Map<String, List<RoutePlan>> candidateMap = new HashMap<>();
         for (BaggageLot lot : lots) {
             List<RoutePlan> candidates = evaluator.enumerateCandidates(lot);
-
-            // Fix 1: conservar solo los MAX_CANDIDATES mejores
-            // enumerateCandidates() ya los devuelve ordenados por score
             if (candidates.size() > MAX_CANDIDATES) {
                 candidates = new ArrayList<>(candidates.subList(0, MAX_CANDIDATES));
             }
-
             candidateMap.put(lot.getId(), candidates);
         }
         return candidateMap;
@@ -155,11 +139,22 @@ public class ALNSPlanner {
 
     // ── inicialización greedy ────────────────────────────────────────────────
 
+    /**
+     * Construye la solución semilla greedy.
+     * Inyecta los overnight arrivals en el WorkingSolution inicial ANTES de
+     * asignar cualquier lote del día, de forma que canAssign() ya ve la
+     * ocupación de almacén procedente de vuelos del día anterior.
+     */
     private WorkingSolution seedGreedy(
             List<BaggageLot> lots,
-            Map<String, List<RoutePlan>> candidateMap) {
+            Map<String, List<RoutePlan>> candidateMap,
+            List<WorkingSolution.OvernightArrival> overnightArrivals) {
 
-        WorkingSolution seed    = new WorkingSolution(context);
+        WorkingSolution seed = new WorkingSolution(context);
+
+        // Inyectar llegadas overnight: cada grupo en su minuto real (rebased)
+        seed.injectOvernightArrivals(overnightArrivals);
+
         List<BaggageLot> ordered = new ArrayList<>(lots);
         ordered.sort(Comparator
                 .comparing(BaggageLot::isReplanningPriority).reversed()
@@ -185,8 +180,6 @@ public class ALNSPlanner {
             String cancelledFlightId) {
 
         List<BaggageLot> ordered = new ArrayList<>(lots);
-
-        // Fix 2: cap de removeCount entre 1% y MAX_DESTROY_COUNT
         int removeCount = Math.min(MAX_DESTROY_COUNT,
                           Math.max(1, (int) Math.ceil(lots.size() * DESTROY_RATIO)));
 
@@ -262,8 +255,8 @@ public class ALNSPlanner {
         List<BaggageLot> pending = new ArrayList<>(removed);
 
         while (!pending.isEmpty()) {
-            BaggageLot bestLot  = null;
-            RoutePlan  bestPlan = null;
+            BaggageLot bestLot    = null;
+            RoutePlan  bestPlan   = null;
             double     bestRegret = -1.0;
 
             for (BaggageLot lot : pending) {
@@ -276,8 +269,7 @@ public class ALNSPlanner {
                 feasible.sort(Comparator.comparingDouble(RoutePlan::getScore));
                 double first  = feasible.get(0).getScore();
                 double second = feasible.size() > 1
-                        ? feasible.get(1).getScore()
-                        : first + 100.0;
+                        ? feasible.get(1).getScore() : first + 100.0;
                 double regret = second - first;
 
                 if (regret > bestRegret) {

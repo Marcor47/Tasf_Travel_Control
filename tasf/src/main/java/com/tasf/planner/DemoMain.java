@@ -9,6 +9,7 @@ import com.tasf.planner.model.Airport;
 import com.tasf.planner.model.BaggageLot;
 import com.tasf.planner.model.FlightInstance;
 import com.tasf.planner.model.RoutePlan;
+import com.tasf.planner.model.RouteSegment;
 import com.tasf.planner.nsga.NSGA2Planner;
 import com.tasf.planner.repository.AirportRepository;
 import com.tasf.planner.repository.FlightRepository;
@@ -18,157 +19,387 @@ import java.io.FileWriter;
 import java.io.PrintWriter;
 import java.io.IOException;
 import java.time.LocalDate;
-import java.util.List;
-import java.util.Map;
+import java.time.format.DateTimeFormatter;
+import java.util.*;
+import java.util.stream.Collectors;
 
 public class DemoMain {
 
-    // Valores de k a evaluar — ajustar cuando se confirme el día peak
-    private static final int[]  K_VALUES = {15000};
-    private static final int    REPLICAS = 1;
-    private static final String CSV_PATH = "resultados_experimento.csv";
+    // ── Parámetros del experimento ───────────────────────────────────────────
 
+    /**
+     * Mínimo de maletas totales sumadas a lo largo de los días seleccionados.
+     * 0 = acepta cualquier volumen.
+     */
+    private static final int K_MIN_TOTAL_BAGS = 300000;
+
+    /**
+     * Cantidad de días consecutivos a simular.
+     * 0 = correr hasta que el sistema colapse (sin límite de días).
+     */
+    private static final int DAYS = 10;
+
+    /** Presupuesto de tiempo por solve diario de ALNS (segundos). */
+    private static final int TIME_BUDGET_SEC = 30;
+
+    private static final String CSV_PATH = "resultados_experimento.csv";
+    private static final String LOG_PATH = "simulacion_diaria.txt";
+
+    private static final DateTimeFormatter FMT = DateTimeFormatter.ISO_LOCAL_DATE;
+
+    // ════════════════════════════════════════════════════════════════════════
     public static void main(String[] args) {
 
-        Map<String, Airport> airports;
-        List<FlightInstance> flights;
-        List<BaggageLot> lots;
+        try (PrintWriter csv = new PrintWriter(new FileWriter(CSV_PATH, false));
+             PrintWriter log = new PrintWriter(new FileWriter(LOG_PATH, false))) {
 
-        try (PrintWriter csv = new PrintWriter(new FileWriter(CSV_PATH, false))) {
+            csv.println("dia,algoritmo,lotes,maletas,score,tiempo_ms,"
+                    + "total_travel_min,espera_min,transbordos,tardanza_min,"
+                    + "sin_ruta,colapso");
 
-            csv.println("k,algoritmo,replica,score,tiempo_ms,"
-                      + "total_travel_min,espera_min,transbordos,"
-                      + "tardanza_min,sin_ruta");
+            log.println("==========================================================");
+            log.println("  SIMULACIÓN DÍA A DÍA — SISTEMA DE ROUTING DE EQUIPAJE  ");
+            log.println("==========================================================");
+            log.printf("K_MIN=%d  DAYS=%d (0=hasta colapso)  DWELL=%d min%n%n",
+                    K_MIN_TOTAL_BAGS, DAYS, WorkingSolution.WAREHOUSE_DWELL_MINUTES);
 
+            // ── Carga de datos ───────────────────────────────────────────────
             System.out.println("Cargando datos...");
-
             AirportRepository  airportRepo  = new AirportRepository();
             FlightRepository   flightRepo   = new FlightRepository();
             ShipmentRepository shipmentRepo = new ShipmentRepository();
 
-            // 1. Aeropuertos — necesario antes que vuelos y envíos
-            airports = airportRepo.loadAirports("data/aeropuertos.txt");
+            Map<String, Airport> airports = airportRepo.loadAirports("data/aeropuertos.txt");
+            List<FlightInstance> flights  = flightRepo.loadFlights("data/planes_vuelo.txt", airports);
 
-            // 2. Vuelos — ahora recibe airports para convertir a UTC
-            flights = flightRepo.loadFlights("data/planes_vuelo.txt", airports);
+            System.out.printf("Aeropuertos: %d  |  Vuelos: %d%n", airports.size(), flights.size());
+            log.printf("Aeropuertos: %d  |  Vuelos: %d%n%n", airports.size(), flights.size());
 
-            System.out.println("Aeropuertos cargados : " + airports.size());
-            System.out.println("Vuelos cargados      : " + flights.size());
+            PlanningContext context   = new PlanningContext(airports, flights,
+                    ScenarioConfig.defaultWeek4());
+            RouteEvaluator  evaluator = new RouteEvaluator(context);
 
-            // 3. Buscar el día con suficientes lotes para el mayor K pedido
-            int largestK = K_VALUES[K_VALUES.length - 1];
-            System.out.printf("%nBuscando día con al menos %d lotes (±10%%)...%n", largestK);
-            LocalDate peakDay = shipmentRepo.findDayWithK("data/envios/", airports, largestK);
+            // ── Buscar días con suficientes maletas ──────────────────────────
+            System.out.printf("Buscando secuencia de días con >= %d maletas totales...%n",
+                    K_MIN_TOTAL_BAGS);
+            List<LocalDate> simulationDays = shipmentRepo.findConsecutiveDaysWithK(
+                    "data/envios/", airports, K_MIN_TOTAL_BAGS, DAYS);
 
-            if (peakDay == null) {
-                System.err.println("No se encontró un día con suficientes lotes. Abortando.");
+            if (simulationDays == null || simulationDays.isEmpty()) {
+                System.err.println("No se encontró secuencia válida. Abortando.");
+                log.println("ERROR: no se encontró secuencia válida.");
                 return;
             }
-            System.out.printf("Día seleccionado para el experimento: %s%n%n", peakDay);
 
-            // 4. Contexto de planificación
-            PlanningContext context = new PlanningContext(
-                    airports, flights, ScenarioConfig.defaultWeek4()
-            );
-            RouteEvaluator evaluator = new RouteEvaluator(context);
+            log.printf("Días seleccionados (%d): %s → %s%n%n",
+                    simulationDays.size(),
+                    simulationDays.get(0).format(FMT),
+                    simulationDays.get(simulationDays.size() - 1).format(FMT));
 
-            // 5. Verificación de consistencia del evaluador (una sola vez con k=10)
-            System.out.println("=== Verificación de consistencia del evaluador ===");
-            List<BaggageLot> testLots = shipmentRepo.loadShipmentsForDay(
-                    "data/envios/", airports, peakDay, 10);
-            ALNSPlanner testAlns = new ALNSPlanner(context, 1L);
-            WorkingSolution testSol = testAlns.solve(testLots, 120, null);
-            double scoreA = evaluator.solutionScore(testLots, testSol);
-            double scoreB = 0;
-            for (BaggageLot lot : testLots) {
-                RoutePlan p = testSol.getPlan(lot.getId());
-                if (p != null) scoreB += p.getTotalTravelHours()
-                                       + 0.8  * p.getTotalWaitingHours()
-                                       + 4.0  * p.transfers()
-                                       + 30.0 * p.getTardinessHours();
-            }
-            System.out.printf("Score A (evaluador): %.2f%n", scoreA);
-            System.out.printf("Score B (manual):    %.2f%n", scoreB);
-            System.out.printf("Diferencia:          %.4f%n", Math.abs(scoreA - scoreB));
-            if (Math.abs(scoreA - scoreB) > 1.0)
-                System.out.println("ADVERTENCIA: scores inconsistentes — revisar unidades");
-            else
-                System.out.println("OK: evaluador consistente. Iniciando experimento.");
+            // ── Estado overnight que persiste entre días ─────────────────────
+            //
+            // Lista de OvernightArrival: cada entrada representa UN vuelo que
+            // aterrizó más allá de medianoche, con el aeropuerto destino,
+            // el minuto de llegada rebased al nuevo día (arrivalHour % 1440)
+            // y la cantidad de maletas.
+            //
+            // NO se agregan por aeropuerto: cada vuelo mantiene su hora
+            // individual para que el timeline del almacén los distribuya
+            // correctamente y no los acumule todos en el minuto 0.
+            List<WorkingSolution.OvernightArrival> pendingOvernight = new ArrayList<>();
 
-            // 6. Experimento principal
-            for (int k : K_VALUES) {
+            boolean collapsed      = false;
+            int     collapseDay    = -1;
+            String  collapseReason = "";
 
-                // Todos los lotes son del mismo día UTC, primeros k por hora de registro
-                lots = shipmentRepo.loadShipmentsForDay("data/envios/", airports, peakDay, k);
-                System.out.printf("%n--- k = %d (%d lotes del día %s) ---%n",
-                        k, lots.size(), peakDay);
+            // ── Bucle principal ──────────────────────────────────────────────
+            for (int dayIndex = 0; dayIndex < simulationDays.size(); dayIndex++) {
 
-                for (int seed = 1; seed <= REPLICAS; seed++) {
+                LocalDate today     = simulationDays.get(dayIndex);
+                int       dayNumber = dayIndex + 1;
 
-                    // ── ALNS ────────────────────────────────────────────
-                    long startALNS = System.currentTimeMillis();
-                    WorkingSolution alnsSolution =
-                            new ALNSPlanner(context, (long) seed).solve(lots, 120, null);
-                    long endALNS = System.currentTimeMillis();
+                log.println("══════════════════════════════════════════════════════════");
+                log.printf("  DÍA %d — %s%n", dayNumber, today.format(FMT));
+                log.println("══════════════════════════════════════════════════════════");
+                System.out.printf("%n=== DÍA %d (%s) ===%n", dayNumber, today.format(FMT));
 
-                    // ── NSGA-II ─────────────────────────────────────────
-                    long startNSGA = System.currentTimeMillis();
-                    NSGA2Planner.Result nsga2Result =
-                            new NSGA2Planner(context, (long) seed).solve(lots, 24, 40);
-                    long endNSGA = System.currentTimeMillis();
+                List<BaggageLot> lots = shipmentRepo.loadShipmentsForDay(
+                        "data/envios/", airports, today, 0);
+                int totalBags = lots.stream().mapToInt(BaggageLot::getQuantity).sum();
 
-                    WorkingSolution nsgaSolution = nsga2Result.getCompromisePlan();
+                log.printf("Lotes: %d  |  Maletas: %d%n", lots.size(), totalBags);
+                System.out.printf("Lotes: %d  |  Maletas: %d%n", lots.size(), totalBags);
 
-                    // ── acumuladores ────────────────────────────────────
-                    double alnsTT = 0, alnsW = 0, alnsT = 0; int alnsU = 0; double alnsX = 0;
-                    double nsgaTT = 0, nsgaW = 0, nsgaT = 0; int nsgaU = 0; double nsgaX = 0;
+                // ── Log overnight entrante y detección de overflow pre-solve ─
+                log.println();
+                if (pendingOvernight.isEmpty()) {
+                    log.println("Overnight entrante: ninguno.");
+                } else {
 
-                    for (BaggageLot lot : lots) {
-                        RoutePlan ap = alnsSolution.getPlan(lot.getId());
-                        RoutePlan np = nsgaSolution.getPlan(lot.getId());
-
-                        if (ap == null) alnsU++;
-                        else {
-                            // getTotalTravelHours() devuelve minutos (nombre engañoso)
-                            alnsTT += ap.getTotalTravelHours();
-                            alnsW  += ap.getTotalWaitingHours();
-                            alnsX  += ap.transfers();
-                            alnsT  += ap.getTardinessHours();
-                        }
-                        if (np == null) nsgaU++;
-                        else {
-                            nsgaTT += np.getTotalTravelHours();
-                            nsgaW  += np.getTotalWaitingHours();
-                            nsgaX  += np.transfers();
-                            nsgaT  += np.getTardinessHours();
+                    // Simular pico overnight para detectar overflow antes del solve
+                    Map<String, Integer> overnightPeak =
+                            simulateOvernightPeak(pendingOvernight, airports);
+                    for (Map.Entry<String, Integer> e : overnightPeak.entrySet()) {
+                        int cap  = airports.get(e.getKey()).getWarehouseCapacity();
+                        int peak = e.getValue();
+                        if (peak > cap) {
+                            log.printf("  *** OVERFLOW overnight %s: pico=%d cap=%d%n",
+                                    e.getKey(), peak, cap);
+                            if (!collapsed) {
+                                collapsed      = true;
+                                collapseDay    = dayNumber;
+                                collapseReason = String.format(
+                                        "Almacén %s overflow overnight día %d (pico=%d > cap=%d)",
+                                        e.getKey(), dayNumber, peak, cap);
+                            }
                         }
                     }
-
-                    double alnsScore = evaluator.solutionScore(lots, alnsSolution);
-                    double nsgaScore = evaluator.solutionScore(lots, nsgaSolution);
-
-                    // ── escribir CSV ────────────────────────────────────
-                    csv.printf("%d,ALNS,%d,%.2f,%d,%.2f,%.2f,%.0f,%.2f,%d%n",
-                            k, seed, alnsScore, endALNS - startALNS,
-                            alnsTT, alnsW, alnsX, alnsT, alnsU);
-                    csv.printf("%d,NSGA-II,%d,%.2f,%d,%.2f,%.2f,%.0f,%.2f,%d%n",
-                            k, seed, nsgaScore, endNSGA - startNSGA,
-                            nsgaTT, nsgaW, nsgaX, nsgaT, nsgaU);
-                    csv.flush();
-
-                    System.out.printf("k=%4d | rep=%2d | ALNS=%10.1f | NSGA=%10.1f | %dms / %dms%n",
-                            k, seed, alnsScore, nsgaScore,
-                            endALNS - startALNS, endNSGA - startNSGA);
                 }
+
+                if (collapsed && collapseDay == dayNumber) {
+                    log.println();
+                    log.println("*** COLAPSO DETECTADO AL INICIO DEL DÍA ***");
+                    log.println("Razón: " + collapseReason);
+                    System.out.println("*** COLAPSO (overnight): " + collapseReason);
+                }
+
+                // ── Precomputar candidatos ───────────────────────────────────
+                System.out.print("Precalculando candidatos... ");
+                long tCand = System.currentTimeMillis();
+                Map<String, List<RoutePlan>> candidates =
+                        new ALNSPlanner(context, 1L).buildCandidateMap(lots);
+                System.out.printf("%.1f s%n",
+                        (System.currentTimeMillis() - tCand) / 1000.0);
+
+                // ── ALNS ─────────────────────────────────────────────────────
+                // pendingOvernight se inyecta dentro de solveWithCandidates()
+                // → seedGreedy() → injectOvernightArrivals(), distribuido por minuto.
+                long startALNS = System.currentTimeMillis();
+                WorkingSolution alnsSol =
+                        new ALNSPlanner(context, 1L)
+                                .solveWithCandidates(lots, TIME_BUDGET_SEC, null,
+                                        candidates, pendingOvernight);
+                long alnsMs = System.currentTimeMillis() - startALNS;
+
+                // ── NSGA-II ──────────────────────────────────────────────────
+                long startNSGA = System.currentTimeMillis();
+                NSGA2Planner.Result nsga2Result =
+                        new NSGA2Planner(context, 1L).solve(lots, 24, 40);
+                long nsgaMs = System.currentTimeMillis() - startNSGA;
+                WorkingSolution nsgaSol = nsga2Result.getCompromisePlan();
+
+                double        alnsScore = evaluator.solutionScore(lots, alnsSol);
+                double        nsgaScore = evaluator.solutionScore(lots, nsgaSol);
+                SolutionStats alnsStats = computeStats(lots, alnsSol);
+                SolutionStats nsgaStats = computeStats(lots, nsgaSol);
+
+                // ── Log almacenes al cierre del día ──────────────────────────
+                log.println();
+                log.println("--- Estado del almacén al final del día (ALNS) ---");
+                log.printf("%-8s  %6s  %8s  %7s  %12s  %6s%n",
+                        "Airport", "Cap", "PeakLoad", "EndLoad", "OvernightOut", "Status");
+
+                // Calcular overnight del día actual → serán pendingOvernight del día siguiente
+                List<WorkingSolution.OvernightArrival> nextOvernight =
+                        computeOvernightArrivals(lots, alnsSol);
+
+                for (String code : sortedCodes(airports)) {
+                    Airport ap       = airports.get(code);
+                    int     capacity = ap.getWarehouseCapacity();
+                    int     peakLoad = alnsSol.warehousePeakLoad(code, 0, 1440);
+                    int     endLoad  = alnsSol.warehouseLoadAt(code, 1440);
+                    int     ovOut    = nextOvernight.stream()
+                            .filter(oa -> oa.airportCode.equals(code))
+                            .mapToInt(oa -> oa.quantity).sum();
+
+                    boolean overflow = peakLoad > capacity;
+
+                    if (peakLoad > 0 || ovOut > 0 || endLoad > 0) {
+                        log.printf("%-8s  %6d  %8d  %7d  %12d  %6s%n",
+                                code, capacity, peakLoad, endLoad, ovOut,
+                                overflow ? "OVERFLOW" : "OK");
+                    }
+
+                    if (overflow && !collapsed) {
+                        collapsed      = true;
+                        collapseDay    = dayNumber;
+                        collapseReason = String.format(
+                                "Almacén %s overflow día %d (pico=%d > cap=%d)",
+                                code, dayNumber, peakLoad, capacity);
+                    }
+                }
+
+                if (alnsStats.unrouted > 0 && !collapsed) {
+                    collapsed      = true;
+                    collapseDay    = dayNumber;
+                    collapseReason = String.format(
+                            "%d lotes sin ruta en día %d", alnsStats.unrouted, dayNumber);
+                }
+                if (alnsStats.lateLots > 0 && !collapsed) {
+                    collapsed      = true;
+                    collapseDay    = dayNumber;
+                    collapseReason = String.format(
+                            "%d lotes con tardanza en día %d", alnsStats.lateLots, dayNumber);
+                }
+
+                // ── Resumen del día ──────────────────────────────────────────
+                String colFlag = (collapsed && collapseDay == dayNumber) ? "SI" : "no";
+                log.println();
+                log.println("--- Resumen ---");
+                log.printf("ALNS  score=%.1f  sin_ruta=%d  tardios=%d  tiempo=%dms%n",
+                        alnsScore, alnsStats.unrouted, alnsStats.lateLots, alnsMs);
+                log.printf("NSGA  score=%.1f  sin_ruta=%d  tardios=%d  tiempo=%dms%n",
+                        nsgaScore, nsgaStats.unrouted, nsgaStats.lateLots, nsgaMs);
+                if ("SI".equals(colFlag)) {
+                    log.println("*** COLAPSO ***  Razón: " + collapseReason);
+                    System.out.println("*** COLAPSO día " + dayNumber + ": " + collapseReason);
+                } else {
+                    log.println("Sin colapso.");
+                }
+                log.flush();
+
+                csv.printf("%s,ALNS,%d,%d,%.2f,%d,%.2f,%.2f,%.0f,%.2f,%d,%s%n",
+                        today.format(FMT), lots.size(), totalBags,
+                        alnsScore, alnsMs,
+                        alnsStats.totalTravel, alnsStats.totalWait,
+                        alnsStats.totalTransfers, alnsStats.totalTardiness,
+                        alnsStats.unrouted, colFlag);
+                csv.printf("%s,NSGA-II,%d,%d,%.2f,%d,%.2f,%.2f,%.0f,%.2f,%d,%s%n",
+                        today.format(FMT), lots.size(), totalBags,
+                        nsgaScore, nsgaMs,
+                        nsgaStats.totalTravel, nsgaStats.totalWait,
+                        nsgaStats.totalTransfers, nsgaStats.totalTardiness,
+                        nsgaStats.unrouted, colFlag);
+                csv.flush();
+
+                System.out.printf("ALNS=%.1f  NSGA=%.1f  sin_ruta=%d/%d  colapso=%s%n",
+                        alnsScore, nsgaScore,
+                        alnsStats.unrouted, nsgaStats.unrouted, colFlag);
+
+                pendingOvernight = nextOvernight;
+                if (collapsed) break;
             }
+
+            // ── Resumen final ────────────────────────────────────────────────
+            log.println();
+            log.println("==========================================================");
+            log.println("  RESUMEN FINAL");
+            log.println("==========================================================");
+            if (collapsed)
+                log.printf("Colapso en día %d — %s%n", collapseDay, collapseReason);
+            else
+                log.printf("Sin colapso en %d días simulados.%n", simulationDays.size());
+            log.flush();
+
+            System.out.println("\nLog : " + LOG_PATH);
+            System.out.println("CSV : " + CSV_PATH);
+            if (collapsed)
+                System.out.printf("Colapso día %d: %s%n", collapseDay, collapseReason);
+            else
+                System.out.println("Sin colapso.");
 
         } catch (IOException e) {
             System.err.println("Error: " + e.getMessage());
             e.printStackTrace();
         }
+    }
 
-        System.out.println("\nCSV generado : " + CSV_PATH);
-        System.out.println("Filas escritas: " + (K_VALUES.length * REPLICAS * 2));
-        System.out.println("Ejecución completada correctamente.");
+    // ── Overnight arrivals ───────────────────────────────────────────────────
+
+    /**
+     * Construye la lista de OvernightArrival desde la solución del día actual.
+     *
+     * Un lote es overnight cuando su último segmento llega después del minuto 1440
+     * (medianoche del día actual). Su minuto rebased al nuevo día es
+     * arrivalHour % 1440 — el instante exacto dentro del día siguiente en que
+     * entra al almacén destino.
+     *
+     * Se genera UNA entrada por lote (no se fusionan), así cada vuelo mantiene
+     * su propia hora de llegada y el timeline las distribuye correctamente.
+     */
+    private static List<WorkingSolution.OvernightArrival> computeOvernightArrivals(
+            List<BaggageLot> lots, WorkingSolution sol) {
+
+        List<WorkingSolution.OvernightArrival> result = new ArrayList<>();
+        for (BaggageLot lot : lots) {
+            RoutePlan plan = sol.getPlan(lot.getId());
+            if (plan == null) continue;
+            List<RouteSegment> segs = plan.getSegments();
+            if (segs.isEmpty()) continue;
+            RouteSegment last = segs.get(segs.size() - 1);
+            if (last.getArrivalHour() > 1440) {
+                result.add(new WorkingSolution.OvernightArrival(
+                        last.getDestination(),
+                        last.getArrivalHour() % 1440,
+                        lot.getQuantity()));
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Simula el pico de carga de almacén considerando solo los overnight,
+     * para detectar overflow antes del solve del nuevo día.
+     */
+    private static Map<String, Integer> simulateOvernightPeak(
+            List<WorkingSolution.OvernightArrival> arrivals,
+            Map<String, Airport> airports) {
+
+        Map<String, TreeMap<Integer, Integer>> timelines = new HashMap<>();
+        for (WorkingSolution.OvernightArrival oa : arrivals) {
+            int arrMin = oa.arrivalMinuteRebased;
+            int depMin = arrMin + WorkingSolution.WAREHOUSE_DWELL_MINUTES;
+            timelines.computeIfAbsent(oa.airportCode, k -> new TreeMap<>())
+                     .merge(arrMin, +oa.quantity, Integer::sum);
+            timelines.computeIfAbsent(oa.airportCode, k -> new TreeMap<>())
+                     .merge(depMin, -oa.quantity, Integer::sum);
+        }
+
+        Map<String, Integer> peaks = new TreeMap<>();
+        for (Map.Entry<String, TreeMap<Integer, Integer>> e : timelines.entrySet()) {
+            int running = 0, peak = 0;
+            for (int delta : e.getValue().values()) {
+                running += delta;
+                if (running > peak) peak = running;
+            }
+            peaks.put(e.getKey(), Math.max(0, peak));
+        }
+        return peaks;
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────────────
+
+    private static SolutionStats computeStats(List<BaggageLot> lots, WorkingSolution sol) {
+        SolutionStats s = new SolutionStats();
+        for (BaggageLot lot : lots) {
+            RoutePlan p = sol.getPlan(lot.getId());
+            if (p == null) { s.unrouted++; }
+            else {
+                s.totalTravel    += p.getTotalTravelHours();
+                s.totalWait      += p.getTotalWaitingHours();
+                s.totalTransfers += p.transfers();
+                s.totalTardiness += p.getTardinessHours();
+                if (p.getTardinessHours() > 0) s.lateLots++;
+            }
+        }
+        return s;
+    }
+
+    private static List<String> sortedCodes(Map<String, Airport> airports) {
+        return airports.keySet().stream().sorted().collect(Collectors.toList());
+    }
+
+    private static List<WorkingSolution.OvernightArrival> sortedArrivals(
+            List<WorkingSolution.OvernightArrival> arrivals) {
+        return arrivals.stream()
+                .sorted(Comparator
+                        .comparing((WorkingSolution.OvernightArrival a) -> a.airportCode)
+                        .thenComparingInt(a -> a.arrivalMinuteRebased))
+                .collect(Collectors.toList());
+    }
+
+    private static class SolutionStats {
+        int    unrouted, lateLots;
+        double totalTravel, totalWait, totalTransfers, totalTardiness;
     }
 }

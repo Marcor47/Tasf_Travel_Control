@@ -16,33 +16,44 @@ import java.util.*;
  *  - Una maleta ocupa espacio SOLO en el almacén de su destino FINAL.
  *    En aeropuertos de escala simplemente transita — no se descarga.
  *  - La maleta entra al almacén cuando llega (arrivalHour del último segmento).
- *  - La maleta sale del almacén WAREHOUSE_DWELL_MINUTES después de llegar
- *    (el cliente la recoge / sale hacia entrega final).
+ *  - La maleta sale del almacén WAREHOUSE_DWELL_MINUTES después de llegar.
  *  - canAssign() verifica que en ningún minuto del intervalo [arrival, arrival+dwell)
  *    se supere la capacidad del almacén destino.
+ *
+ * Vuelos overnight:
+ *  - Bolsas en tránsito cuyo vuelo aterriza en el día siguiente se inyectan
+ *    al inicio del nuevo WorkingSolution del día siguiente mediante
+ *    injectOvernightArrivals(), respetando su hora de llegada real rebased
+ *    al nuevo día (arrivalHour % 1440).  Esto significa que cada grupo de
+ *    bolsas aparece en el timeline en su minuto correcto, no todas juntas
+ *    al minuto 0.
  */
 public class WorkingSolution {
 
-    /** Tiempo que una maleta ocupa el almacén tras llegar (minutos). */
-    private static final int WAREHOUSE_DWELL_MINUTES = 10;
+    /**
+     * Tiempo que una maleta ocupa el almacén tras llegar (minutos).
+     * Parámetro de restricción del caso: 10 minutos.
+     * Cambiar aquí es suficiente para ajustar el comportamiento de dwell.
+     */
+    public static final int WAREHOUSE_DWELL_MINUTES = 10;
 
     private final PlanningContext context;
-    private final Map<String, RoutePlan> assignments;
-    private final Map<String, Integer>   residualCapacity;
+    private final Map<String, RoutePlan>              assignments;
+    private final Map<String, Integer>                residualCapacity;
 
     /**
      * Timeline de almacén: airportCode → TreeMap<minute, deltaLoad>
      * Cada evento es un delta: +quantity al llegar, -quantity al salir.
-     * Para consultar la carga en el minuto T se suman todos los deltas ≤ T.
+     * Para consultar la carga en el minuto T se suman todos los deltas <= T.
      */
     private final Map<String, TreeMap<Integer, Integer>> warehouseTimeline;
 
     // ── constructor ──────────────────────────────────────────────────────────
 
     public WorkingSolution(PlanningContext context) {
-        this.context           = context;
-        this.assignments       = new HashMap<>();
-        this.residualCapacity  = new HashMap<>();
+        this.context          = context;
+        this.assignments      = new HashMap<>();
+        this.residualCapacity = new HashMap<>();
         this.warehouseTimeline = new HashMap<>();
 
         for (FlightInstance flight : context.getFlights()) {
@@ -94,7 +105,6 @@ public class WorkingSolution {
     public int warehousePeakLoad(String airportCode, int fromMinute, int toMinute) {
         TreeMap<Integer, Integer> timeline = warehouseTimeline.get(airportCode);
         if (timeline == null) return 0;
-        // reconstruir carga acumulada en cada punto de evento dentro del rango
         int runningLoad = warehouseLoadAt(airportCode, fromMinute - 1);
         int peak = runningLoad;
         for (Map.Entry<Integer, Integer> e :
@@ -103,6 +113,51 @@ public class WorkingSolution {
             if (runningLoad > peak) peak = runningLoad;
         }
         return Math.max(0, peak);
+    }
+
+    // ── overnight injection ──────────────────────────────────────────────────
+
+    /**
+     * Representa la llegada de un grupo de maletas de un vuelo overnight.
+     * arrivalMinuteRebased es la hora de llegada ya expresada en minutos
+     * relativos al nuevo día (arrivalHour % 1440).
+     */
+    public static class OvernightArrival {
+        public final String airportCode;
+        public final int    arrivalMinuteRebased; // minutos dentro del nuevo día [0, 1440)
+        public final int    quantity;
+
+        public OvernightArrival(String airportCode, int arrivalMinuteRebased, int quantity) {
+            this.airportCode          = airportCode;
+            this.arrivalMinuteRebased = arrivalMinuteRebased;
+            this.quantity             = quantity;
+        }
+    }
+
+    /**
+     * Inyecta en el timeline del almacén las llegadas de vuelos overnight
+     * ANTES de que empiece el solve del nuevo día.
+     *
+     * Cada arrival se registra en su minuto real dentro del nuevo día
+     * (arrivalMinuteRebased), y su salida del almacén se programa
+     * WAREHOUSE_DWELL_MINUTES minutos después, exactamente igual que
+     * cualquier otro vuelo que llega durante el día.
+     *
+     * Llamar una sola vez por WorkingSolution, antes de seedGreedy/solve.
+     * canAssign() verá la ocupación overnight automáticamente al calcular
+     * warehousePeakLoad() para los nuevos lotes del día.
+     *
+     * @param arrivals lista de llegadas overnight calculada por DemoMain
+     *                 a partir de la solución del día anterior
+     */
+    public void injectOvernightArrivals(List<OvernightArrival> arrivals) {
+        if (arrivals == null || arrivals.isEmpty()) return;
+        for (OvernightArrival a : arrivals) {
+            int arrMin = a.arrivalMinuteRebased;
+            int depMin = arrMin + WAREHOUSE_DWELL_MINUTES;
+            addWarehouseDelta(a.airportCode, arrMin, +a.quantity);
+            addWarehouseDelta(a.airportCode, depMin, -a.quantity);
+        }
     }
 
     // ── lógica principal ─────────────────────────────────────────────────────
@@ -118,7 +173,6 @@ public class WorkingSolution {
         }
 
         // 2. Verificar almacén SOLO en el destino final
-        //    La maleta ocupa almacén desde arrival hasta arrival + DWELL
         RouteSegment lastSeg = lastSegment(plan);
         if (lastSeg != null) {
             String finalDest = lastSeg.getDestination();
@@ -126,7 +180,7 @@ public class WorkingSolution {
             if (airport == null) {
                 throw new IllegalStateException("Airport not found: " + finalDest);
             }
-            int arrivalMinute = lastSeg.getArrivalHour();
+            int arrivalMinute   = lastSeg.getArrivalHour();
             int departureMinute = arrivalMinute + WAREHOUSE_DWELL_MINUTES;
             int peakLoad = warehousePeakLoad(finalDest, arrivalMinute, departureMinute);
             if (peakLoad + lot.getQuantity() > airport.getWarehouseCapacity()) {
@@ -143,13 +197,11 @@ public class WorkingSolution {
         }
         assignments.put(lot.getId(), plan);
 
-        // Reducir capacidad de cada vuelo usado
         for (RouteSegment segment : plan.getSegments()) {
             residualCapacity.computeIfPresent(
                     segment.getFlightId(), (k, v) -> v - lot.getQuantity());
         }
 
-        // Registrar ocupación temporal en almacén del destino FINAL únicamente
         RouteSegment lastSeg = lastSegment(plan);
         if (lastSeg != null) {
             int arrivalMinute   = lastSeg.getArrivalHour();
@@ -163,13 +215,11 @@ public class WorkingSolution {
         RoutePlan existing = assignments.remove(lot.getId());
         if (existing == null) return;
 
-        // Restaurar capacidad de vuelos
         for (RouteSegment segment : existing.getSegments()) {
             residualCapacity.computeIfPresent(
                     segment.getFlightId(), (k, v) -> v + lot.getQuantity());
         }
 
-        // Revertir ocupación de almacén del destino final
         RouteSegment lastSeg = lastSegment(existing);
         if (lastSeg != null) {
             int arrivalMinute   = lastSeg.getArrivalHour();
@@ -192,12 +242,22 @@ public class WorkingSolution {
                 .merge(minute, delta, Integer::sum);
     }
 
-    // ── compatibilidad con código existente ──────────────────────────────────
+    public boolean isWarehouseOverflowed(String airportCode) {
+        var airport = context.getAirports().get(airportCode);
+        if (airport == null) return false;
+        TreeMap<Integer, Integer> timeline = warehouseTimeline.get(airportCode);
+        if (timeline == null) return false;
+        int running = 0;
+        for (int delta : timeline.values()) {
+            running += delta;
+            if (running > airport.getWarehouseCapacity()) return true;
+        }
+        return false;
+    }
 
     /** @deprecated Usar warehouseLoadAt(code, minute) para consultas temporales. */
     @Deprecated
     public int warehouseLoad(String airportCode) {
-        // devuelve carga actual en t=0 — útil solo para debug de estado inicial
         return warehouseLoadAt(airportCode, Integer.MAX_VALUE);
     }
 }
