@@ -28,6 +28,14 @@ public class NSGA2Planner {
             List<BaggageLot> lots,
             int populationSize,
             int generations) {
+        return solve(lots, populationSize, generations, List.of());
+    }
+
+    public Result solve(
+            List<BaggageLot> lots,
+            int populationSize,
+            int generations,
+            List<WorkingSolution.OvernightArrival> overnightArrivals) {
         Map<String, List<RoutePlan>> candidateMap = new HashMap<>();
         for (BaggageLot lot : lots) {
             candidateMap.put(lot.getId(), evaluator.enumerateCandidates(lot));
@@ -37,7 +45,7 @@ public class NSGA2Planner {
         for (int i = 0; i < populationSize; i++) {
             population.add(randomIndividual(lots, candidateMap));
         }
-        evaluatePopulation(population, lots, candidateMap);
+        evaluatePopulation(population, lots, candidateMap, overnightArrivals);
  
         for (int generation = 0; generation < generations; generation++) {
             List<Individual> offspring = new ArrayList<>();
@@ -48,7 +56,7 @@ public class NSGA2Planner {
                 mutate(child, candidateMap);
                 offspring.add(child);
             }
-            evaluatePopulation(offspring, lots, candidateMap);
+            evaluatePopulation(offspring, lots, candidateMap, overnightArrivals);
  
             List<Individual> merged = new ArrayList<>(population);
             merged.addAll(offspring);
@@ -81,9 +89,10 @@ public class NSGA2Planner {
     private void evaluatePopulation(
             List<Individual> population,
             List<BaggageLot> lots,
-            Map<String, List<RoutePlan>> candidateMap) {
+            Map<String, List<RoutePlan>> candidateMap,
+            List<WorkingSolution.OvernightArrival> overnightArrivals) {
         for (Individual individual : population) {
-            decodeAndEvaluate(individual, lots, candidateMap);
+            decodeAndEvaluate(individual, lots, candidateMap, overnightArrivals);
         }
         assignRanksAndCrowding(population);
     }
@@ -91,8 +100,10 @@ public class NSGA2Planner {
     private void decodeAndEvaluate(
             Individual individual,
             List<BaggageLot> lots,
-            Map<String, List<RoutePlan>> candidateMap) {
+            Map<String, List<RoutePlan>> candidateMap,
+            List<WorkingSolution.OvernightArrival> overnightArrivals) {
         WorkingSolution solution = new WorkingSolution(context);
+        solution.injectOvernightArrivals(overnightArrivals);
         List<BaggageLot> ordered = new ArrayList<>(lots);
         ordered.sort(Comparator
                 .comparing(BaggageLot::isReplanningPriority).reversed()

@@ -12,13 +12,13 @@ import java.util.*;
  *  - residualCapacity  : espacio restante por vuelo
  *  - warehouseTimeline : ocupación temporal del almacén por aeropuerto
  *
- * Modelo de almacén:
- *  - Una maleta ocupa espacio SOLO en el almacén de su destino FINAL.
- *    En aeropuertos de escala simplemente transita — no se descarga.
- *  - La maleta entra al almacén cuando llega (arrivalHour del último segmento).
- *  - La maleta sale del almacén WAREHOUSE_DWELL_MINUTES después de llegar.
- *  - canAssign() verifica que en ningún minuto del intervalo [arrival, arrival+dwell)
- *    se supere la capacidad del almacén destino.
+ * Modelo de almacen:
+ *  - En cada aeropuerto de conexion, una maleta ocupa espacio desde que llega
+ *    hasta que sale su siguiente vuelo.
+ *  - En el destino final, una maleta ocupa espacio desde que llega hasta
+ *    WAREHOUSE_DWELL_MINUTES minutos despues.
+ *  - canAssign() verifica que en ningun minuto de esos intervalos se supere
+ *    la capacidad del almacen correspondiente.
  *
  * Vuelos overnight:
  *  - Bolsas en tránsito cuyo vuelo aterriza en el día siguiente se inyectan
@@ -125,11 +125,22 @@ public class WorkingSolution {
     public static class OvernightArrival {
         public final String airportCode;
         public final int    arrivalMinuteRebased; // minutos dentro del nuevo día [0, 1440)
+        public final int    releaseMinuteRebased;
         public final int    quantity;
 
         public OvernightArrival(String airportCode, int arrivalMinuteRebased, int quantity) {
+            this(airportCode, arrivalMinuteRebased,
+                    arrivalMinuteRebased + WAREHOUSE_DWELL_MINUTES, quantity);
+        }
+
+        public OvernightArrival(
+                String airportCode,
+                int arrivalMinuteRebased,
+                int releaseMinuteRebased,
+                int quantity) {
             this.airportCode          = airportCode;
             this.arrivalMinuteRebased = arrivalMinuteRebased;
+            this.releaseMinuteRebased = releaseMinuteRebased;
             this.quantity             = quantity;
         }
     }
@@ -154,7 +165,8 @@ public class WorkingSolution {
         if (arrivals == null || arrivals.isEmpty()) return;
         for (OvernightArrival a : arrivals) {
             int arrMin = a.arrivalMinuteRebased;
-            int depMin = arrMin + WAREHOUSE_DWELL_MINUTES;
+            int depMin = a.releaseMinuteRebased;
+            if (depMin <= arrMin) continue;
             addWarehouseDelta(a.airportCode, arrMin, +a.quantity);
             addWarehouseDelta(a.airportCode, depMin, -a.quantity);
         }
@@ -172,17 +184,16 @@ public class WorkingSolution {
             }
         }
 
-        // 2. Verificar almacén SOLO en el destino final
-        RouteSegment lastSeg = lastSegment(plan);
-        if (lastSeg != null) {
-            String finalDest = lastSeg.getDestination();
-            var airport = context.getAirports().get(finalDest);
+        // 2. Verificar almacen en conexiones y destino final
+        for (WarehouseInterval interval : warehouseIntervals(plan)) {
+            var airport = context.getAirports().get(interval.airportCode);
             if (airport == null) {
-                throw new IllegalStateException("Airport not found: " + finalDest);
+                throw new IllegalStateException("Airport not found: " + interval.airportCode);
             }
-            int arrivalMinute   = lastSeg.getArrivalHour();
-            int departureMinute = arrivalMinute + WAREHOUSE_DWELL_MINUTES;
-            int peakLoad = warehousePeakLoad(finalDest, arrivalMinute, departureMinute);
+            int peakLoad = warehousePeakLoad(
+                    interval.airportCode,
+                    interval.startMinute,
+                    interval.endMinuteExclusive - 1);
             if (peakLoad + lot.getQuantity() > airport.getWarehouseCapacity()) {
                 return false;
             }
@@ -202,12 +213,9 @@ public class WorkingSolution {
                     segment.getFlightId(), (k, v) -> v - lot.getQuantity());
         }
 
-        RouteSegment lastSeg = lastSegment(plan);
-        if (lastSeg != null) {
-            int arrivalMinute   = lastSeg.getArrivalHour();
-            int departureMinute = arrivalMinute + WAREHOUSE_DWELL_MINUTES;
-            addWarehouseDelta(lastSeg.getDestination(), arrivalMinute,   +lot.getQuantity());
-            addWarehouseDelta(lastSeg.getDestination(), departureMinute, -lot.getQuantity());
+        for (WarehouseInterval interval : warehouseIntervals(plan)) {
+            addWarehouseDelta(interval.airportCode, interval.startMinute, +lot.getQuantity());
+            addWarehouseDelta(interval.airportCode, interval.endMinuteExclusive, -lot.getQuantity());
         }
     }
 
@@ -220,20 +228,46 @@ public class WorkingSolution {
                     segment.getFlightId(), (k, v) -> v + lot.getQuantity());
         }
 
-        RouteSegment lastSeg = lastSegment(existing);
-        if (lastSeg != null) {
-            int arrivalMinute   = lastSeg.getArrivalHour();
-            int departureMinute = arrivalMinute + WAREHOUSE_DWELL_MINUTES;
-            addWarehouseDelta(lastSeg.getDestination(), arrivalMinute,   -lot.getQuantity());
-            addWarehouseDelta(lastSeg.getDestination(), departureMinute, +lot.getQuantity());
+        for (WarehouseInterval interval : warehouseIntervals(existing)) {
+            addWarehouseDelta(interval.airportCode, interval.startMinute, -lot.getQuantity());
+            addWarehouseDelta(interval.airportCode, interval.endMinuteExclusive, +lot.getQuantity());
         }
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────
 
-    private RouteSegment lastSegment(RoutePlan plan) {
+    private List<WarehouseInterval> warehouseIntervals(RoutePlan plan) {
         List<RouteSegment> segs = plan.getSegments();
-        return segs.isEmpty() ? null : segs.get(segs.size() - 1);
+        List<WarehouseInterval> intervals = new ArrayList<>();
+
+        for (int i = 0; i < segs.size(); i++) {
+            RouteSegment segment = segs.get(i);
+            int startMinute = segment.getArrivalHour();
+            int endMinuteExclusive = (i == segs.size() - 1)
+                    ? startMinute + WAREHOUSE_DWELL_MINUTES
+                    : segs.get(i + 1).getDepartureHour();
+
+            if (endMinuteExclusive > startMinute) {
+                intervals.add(new WarehouseInterval(
+                        segment.getDestination(),
+                        startMinute,
+                        endMinuteExclusive));
+            }
+        }
+
+        return intervals;
+    }
+
+    private static class WarehouseInterval {
+        final String airportCode;
+        final int startMinute;
+        final int endMinuteExclusive;
+
+        WarehouseInterval(String airportCode, int startMinute, int endMinuteExclusive) {
+            this.airportCode = airportCode;
+            this.startMinute = startMinute;
+            this.endMinuteExclusive = endMinuteExclusive;
+        }
     }
 
     private void addWarehouseDelta(String airportCode, int minute, int delta) {
