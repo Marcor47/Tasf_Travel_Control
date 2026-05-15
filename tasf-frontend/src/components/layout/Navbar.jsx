@@ -28,7 +28,7 @@ export default function Navbar({ running, onToggle, clock }) {
 
       {/* Modos */}
       <div className="flex gap-1">
-        <span className="text-gray-500 mr-2">Período</span>
+        <span className="text-gray-500 mr-2">Modo: </span>
         {modes.map(m => (
           <button key={m.path}
             onClick={() => nav(m.path)}
