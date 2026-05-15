@@ -1,92 +1,98 @@
 package com.tasf.planner.repository;
-
+ 
 import com.tasf.planner.model.Airport;
-
+ 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
-
+ 
+/**
+ * Carga aeropuertos desde el archivo PDDS.
+ *
+ * Formato de línea de aeropuerto:
+ *   01   SKBO   Bogota   Colombia   bogo   -5   430   Latitude: ...
+ *
+ * Columnas relevantes (separadas por espacios):
+ *   parts[0] = índice
+ *   parts[1] = código ICAO
+ *   ...antes de "Latitude:" está:
+ */
 public class AirportRepository {
-
+ 
     public Map<String, Airport> loadAirports(String path) throws IOException {
-
         Map<String, Airport> airports = new HashMap<>();
         String currentContinent = "UNKNOWN";
-
+ 
         try (BufferedReader br = new BufferedReader(
                 new InputStreamReader(new FileInputStream(path), StandardCharsets.UTF_16))) {
-
+ 
             String line;
-
             while ((line = br.readLine()) != null) {
-
                 line = clean(line);
                 if (line.isEmpty()) continue;
-
+ 
                 String upper = line.toUpperCase();
-
-                // =========================
-                // CONTINENTES
-                // =========================
-                if (upper.contains("AMERICA DEL SUR")) {
-                    currentContinent = "America";
-                    continue;
-                }
-                if (upper.contains("EUROPA")) {
-                    currentContinent = "Europa";
-                    continue;
-                }
-                if (upper.contains("ASIA")) {
-                    currentContinent = "Asia";
-                    continue;
-                }
-
-                // solo líneas de aeropuertos
+ 
+                // ── detectar continente ──────────────────────────────────
+                if (upper.contains("AMERICA DEL SUR")) { currentContinent = "America del Sur"; continue; }
+                if (upper.contains("AMERICA DEL NORTE")) { currentContinent = "America del Norte"; continue; }
+                if (upper.contains("EUROPA"))            { currentContinent = "Europa";    continue; }
+                if (upper.contains("ASIA"))              { currentContinent = "Asia";      continue; }
+                if (upper.contains("AFRICA"))            { currentContinent = "Africa";    continue; }
+                if (upper.contains("OCEANIA"))           { currentContinent = "Oceania";   continue; }
+ 
+                // solo líneas que empiezan con número (filas de aeropuerto)
                 if (!line.matches("^\\d+.*")) continue;
-
+ 
                 try {
-
-                    // ======================================================
-                    // 🔥 FIX REAL: NO substring fijo (3,7) — eso está mal
-                    // ======================================================
-
-                    String[] parts = line.trim().split("\\s+");
-
-                    // Formato esperado:
-                    // 0 = índice
-                    // 1 = ICAO
-                    // 2 = ciudad
-                    // ...
-
-                    if (parts.length < 5) continue;
-
-                    String codeRaw = parts[1];
-                    String code = cleanCode(codeRaw);
-
-                    // encontrar capacidad (último número antes de LATITUDE)
+                    // ── encontrar índice de "Latitude:" ─────────────────
                     int latIndex = upper.indexOf("LATITUDE");
                     if (latIndex == -1) continue;
-
+ 
+                    // todo lo que está antes de "Latitude:"
                     String beforeLat = line.substring(0, latIndex).trim();
-                    String[] beforeParts = beforeLat.split("\\s+");
-
-                    int capacity = Integer.parseInt(beforeParts[beforeParts.length - 1]);
-
-                    airports.put(code, new Airport(code, currentContinent, capacity));
-
+                    String[] parts   = beforeLat.split("\\s+");
+ 
+                    // Necesitamos al menos: idx ICAO ciudad país abrev GMT capacidad
+                    if (parts.length < 5) continue;
+ 
+                    String code     = cleanCode(parts[1]);           // ICAO
+                    // capacidad = último token antes de Latitude
+                    int capacity    = Integer.parseInt(parts[parts.length - 1]);
+                    // GMT      = penúltimo token (ej. "-5", "+1", "0")
+                    String gmtToken = parts[parts.length - 2];
+                    int gmtHours    = parseGmt(gmtToken);
+                    int gmtOffset   = gmtHours * 60;                 // convertir a minutos
+ 
+                    airports.put(code, new Airport(code, currentContinent, capacity, gmtOffset));
+ 
                 } catch (Exception e) {
                     System.out.println("⚠ Error aeropuerto: " + line);
                 }
             }
         }
-
+ 
+        System.out.println("Aeropuertos cargados: " + airports.size());
         return airports;
     }
-
-    // =========================
-    // CLEAN GENERAL
-    // =========================
+ 
+    // ── helpers ─────────────────────────────────────────────────────────────
+ 
+    /**
+     * Parsea tokens de GMT como "-5", "+1", "0", "5".
+     * Si el token no es un entero reconocible devuelve 0 (UTC).
+     */
+    private int parseGmt(String token) {
+        try {
+            // quitar el signo '+' explícito si lo tiene
+            return Integer.parseInt(token.replace("+", ""));
+        } catch (NumberFormatException e) {
+            System.out.println("⚠ GMT no reconocido '" + token + "' — usando 0");
+            return 0;
+        }
+    }
+ 
     private String clean(String s) {
         return s
                 .replace("\uFEFF", "")
@@ -96,13 +102,8 @@ public class AirportRepository {
                 .replace("\u0000", "")
                 .trim();
     }
-
-    // =========================
-    // ICAO CLEAN
-    // =========================
+ 
     private String cleanCode(String s) {
-        return clean(s)
-                .toUpperCase()
-                .replaceAll("[^A-Z0-9]", "");
+        return clean(s).toUpperCase().replaceAll("[^A-Z0-9]", "");
     }
 }
