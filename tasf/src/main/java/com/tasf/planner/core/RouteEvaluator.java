@@ -23,17 +23,12 @@ public class RouteEvaluator {
 
     private int adjustToNextAvailableDeparture(int flightDeparture, int currentTime) {
 
-        if (flightDeparture >= currentTime) {
-            return flightDeparture;
-        }
-
-        int daysOffset = (currentTime - flightDeparture + 1439) / 1440;
-
-        if (daysOffset > MAX_DAYS_WAIT) {
-            return -1;
-        }
-
-        return flightDeparture + daysOffset * 1440;
+        int day = currentTime / 1440;
+        int todayDep = day * 1440 + flightDeparture;
+        if (todayDep >= currentTime) return todayDep;
+        int nextDep = todayDep + 1440;
+        if (nextDep - currentTime > MAX_DAYS_WAIT * 1440) return -1;
+        return nextDep;
     }
 
     public List<RoutePlan> enumerateCandidates(BaggageLot lot) {
