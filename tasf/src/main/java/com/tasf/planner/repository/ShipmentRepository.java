@@ -52,6 +52,10 @@ public class ShipmentRepository {
             this.utcMinutes = utcMinutes;
             this.utcDate    = BASE_UTC.plusMinutes(utcMinutes).toLocalDate();
         }
+
+        System.out.printf("Lotes cargados del día %s: %d lotes / %d maletas (objetivo=%d maletas)%n",
+                targetDay, result.size(), bagsAccumulated, maxLots);
+        return result;
     }
 
     // ── API pública ──────────────────────────────────────────────────────────
@@ -132,6 +136,26 @@ public class ShipmentRepository {
 
         System.out.printf("Lotes cargados del día %s: %d lotes / %d maletas (objetivo=%d maletas)%n",
                 targetDay, result.size(), bagsAccumulated, maxLots);
+        return result;
+    }
+
+    public List<BaggageLot> loadShipmentsForDays(String folderPath,
+                                                 Map<String, Airport> airports,
+                                                 List<LocalDate> targetDays) throws IOException {
+        Set<LocalDate> selectedDays = new HashSet<>(targetDays);
+        List<LotEntry> selectedEntries = new ArrayList<>();
+        for (LotEntry entry : loadAllUtc(folderPath, airports)) {
+            if (selectedDays.contains(entry.utcDate)) {
+                selectedEntries.add(entry);
+            }
+        }
+
+        selectedEntries.sort(Comparator.comparingLong(e -> e.utcMinutes));
+
+        List<BaggageLot> result = new ArrayList<>();
+        for (LotEntry entry : selectedEntries) {
+            result.add(entry.lot);
+        }
         return result;
     }
 

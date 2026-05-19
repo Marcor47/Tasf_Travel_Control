@@ -28,17 +28,21 @@ public class AnovaExperimentMain {
     private static final int[] K_LEVELS = {15000, 20000, 25000, 30000};
     private static final int RUNS_PER_K = 30;
     private static final int ALNS_TIME_BUDGET_SEC = 30;
+    private static final int ALNS_MAX_ITERATIONS = 0;
     private static final int NSGA_POPULATION_SIZE = 24;
     private static final int NSGA_GENERATIONS = 40;
 
     private static final String OUTPUT_PATH = "anova_experimento.csv";
+    private static final String TIMING_OUTPUT_PATH = "anova_timing_experimento.csv";
     private static final DateTimeFormatter FMT = DateTimeFormatter.ISO_LOCAL_DATE;
 
     public static void main(String[] args) {
-        try (PrintWriter csv = new PrintWriter(new FileWriter(OUTPUT_PATH, false))) {
+        try (PrintWriter csv = new PrintWriter(new FileWriter(OUTPUT_PATH, false));
+             PrintWriter timingCsv = new PrintWriter(new FileWriter(TIMING_OUTPUT_PATH, false))) {
             csv.println("run,k,algo,maletas,score,tiempo_ms,"
                     + "total_travel_min,espera_min,transbordos,tardanza_min,"
                     + "sin_ruta");
+            timingCsv.println("run,k,algo,maletas,candidatos_ms,solve_ms,total_ms");
 
             System.out.println("Cargando datos para experimento ANOVA...");
             AirportRepository airportRepo = new AirportRepository();
@@ -81,7 +85,8 @@ public class AnovaExperimentMain {
 
                     long alnsStart = System.currentTimeMillis();
                     WorkingSolution alnsSol = new ALNSPlanner(context, seed)
-                            .solveWithCandidates(lots, ALNS_TIME_BUDGET_SEC, null,
+                            .solveWithCandidates(lots, ALNS_TIME_BUDGET_SEC,
+                                    ALNS_MAX_ITERATIONS, null,
                                     candidates, Collections.emptyList());
                     long alnsSolveMs = System.currentTimeMillis() - alnsStart;
                     long alnsTotalMs = candidateMs + alnsSolveMs;
@@ -89,6 +94,8 @@ public class AnovaExperimentMain {
                     writeRow(csv, run, k, "ALNS", totalBags,
                             evaluator.solutionScore(lots, alnsSol), alnsTotalMs,
                             computeStats(lots, alnsSol));
+                    timingCsv.printf("%d,%d,ALNS,%d,%d,%d,%d%n",
+                            run, k, totalBags, candidateMs, alnsSolveMs, alnsTotalMs);
 
                     long nsgaStart = System.currentTimeMillis();
                     NSGA2Planner.Result nsgaResult = new NSGA2Planner(context, seed)
@@ -100,11 +107,15 @@ public class AnovaExperimentMain {
                     writeRow(csv, run, k, "NSGA-II", totalBags,
                             evaluator.solutionScore(lots, nsgaSol), nsgaMs,
                             computeStats(lots, nsgaSol));
+                    timingCsv.printf("%d,%d,NSGA-II,%d,%d,%d,%d%n",
+                            run, k, totalBags, 0, nsgaMs, nsgaMs);
                     csv.flush();
+                    timingCsv.flush();
                 }
             }
 
             System.out.println("\nANOVA CSV: " + OUTPUT_PATH);
+            System.out.println("ANOVA timing CSV: " + TIMING_OUTPUT_PATH);
 
         } catch (IOException e) {
             System.err.println("Error ANOVA: " + e.getMessage());

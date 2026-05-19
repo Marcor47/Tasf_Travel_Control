@@ -44,6 +44,13 @@ public class DemoMain {
     /** Presupuesto de tiempo por solve diario de ALNS (segundos). */
     private static final int TIME_BUDGET_SEC = 30;
 
+    /**
+     * Limite de iteraciones ALNS.
+     * 0 = desactivado. Si tiempo e iteraciones estan activos, gana el primero
+     * que se alcance.
+     */
+    private static final int ALNS_MAX_ITERATIONS = 0;
+
     private static final String CSV_PATH = "resultados_experimento.csv";
     private static final String TIMING_CSV_PATH = "timing_experimento.csv";
     private static final String LOG_PATH = "simulacion_diaria.txt";
@@ -192,7 +199,8 @@ public class DemoMain {
                 // → seedGreedy() → injectOvernightArrivals(), distribuido por minuto.
                 WorkingSolution alnsSol =
                         new ALNSPlanner(context, 1L)
-                                .solveWithCandidates(lots, TIME_BUDGET_SEC, null,
+                                .solveWithCandidates(lots, TIME_BUDGET_SEC,
+                                        ALNS_MAX_ITERATIONS, null,
                                         candidates, pendingOvernight);
                 long alnsSolveMs = System.currentTimeMillis() - startALNS - candidateMs;
                 long alnsMs = System.currentTimeMillis() - startALNS;
