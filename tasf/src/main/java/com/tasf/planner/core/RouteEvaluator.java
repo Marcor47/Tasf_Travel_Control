@@ -13,9 +13,7 @@ public class RouteEvaluator {
 
     private final PlanningContext context;
 
-    private static final int MAX_DAYS_WAIT = 2;
     private static final int MAX_CONNECTION_MINUTES = 12 * 60; 
-    private static final int MAX_TOTAL_SLACK = 24 * 60;
 
     public RouteEvaluator(PlanningContext context) {
         this.context = context;
@@ -27,7 +25,6 @@ public class RouteEvaluator {
         int todayDep = day * 1440 + flightDeparture;
         if (todayDep >= currentTime) return todayDep;
         int nextDep = todayDep + 1440;
-        if (nextDep - currentTime > MAX_DAYS_WAIT * 1440) return -1;
         return nextDep;
     }
 
@@ -76,8 +73,7 @@ public class RouteEvaluator {
 
             int arr = dep + flightDuration;
 
-           
-            if (arr > lot.getDueHour() + MAX_TOTAL_SLACK) {
+            if (arr > lot.getDueHour()) {
                 continue;
             }
 
@@ -95,7 +91,7 @@ public class RouteEvaluator {
             }
 
             int totalSoFar = arr - lot.getRegistrationHour();
-            if (totalSoFar > (lot.getDueHour() - lot.getRegistrationHour()) + MAX_TOTAL_SLACK) {
+            if (totalSoFar > lot.getDueHour() - lot.getRegistrationHour()) {
                 continue;
             }
 

@@ -135,6 +135,26 @@ public class ShipmentRepository {
         return result;
     }
 
+    public List<BaggageLot> loadShipmentsForDays(String folderPath,
+                                                 Map<String, Airport> airports,
+                                                 List<LocalDate> targetDays) throws IOException {
+        Set<LocalDate> selectedDays = new HashSet<>(targetDays);
+        List<LotEntry> selectedEntries = new ArrayList<>();
+        for (LotEntry entry : loadAllUtc(folderPath, airports)) {
+            if (selectedDays.contains(entry.utcDate)) {
+                selectedEntries.add(entry);
+            }
+        }
+
+        selectedEntries.sort(Comparator.comparingLong(e -> e.utcMinutes));
+
+        List<BaggageLot> result = new ArrayList<>();
+        for (LotEntry entry : selectedEntries) {
+            result.add(entry.lot);
+        }
+        return result;
+    }
+
     // ── método original — se conserva para compatibilidad ───────────────────
 
     /**

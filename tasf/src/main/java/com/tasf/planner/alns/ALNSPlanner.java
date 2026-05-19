@@ -54,16 +54,55 @@ public class ALNSPlanner {
             String cancelledFlightId,
             Map<String, List<RoutePlan>> candidateMap,
             List<WorkingSolution.OvernightArrival> overnightArrivals) {
+        return solveWithCandidates(lots, timeBudgetSeconds, 0, cancelledFlightId,
+                candidateMap, overnightArrivals);
+    }
 
-        WorkingSolution current = seedGreedy(lots, candidateMap, overnightArrivals);
+    /**
+     * Resuelve usando presupuesto por tiempo, por iteraciones, o ambos.
+     *
+     * @param timeBudgetSeconds 0 = sin limite de tiempo
+     * @param maxIterations     0 = sin limite de iteraciones
+     */
+    public WorkingSolution solveWithCandidates(
+            List<BaggageLot> lots,
+            int timeBudgetSeconds,
+            int maxIterations,
+            String cancelledFlightId,
+            Map<String, List<RoutePlan>> candidateMap,
+            List<WorkingSolution.OvernightArrival> overnightArrivals) {
+        return solveWithCandidates(lots, timeBudgetSeconds, maxIterations,
+                cancelledFlightId, candidateMap, overnightArrivals, null);
+    }
+
+    public WorkingSolution solveWithCandidates(
+            List<BaggageLot> lots,
+            int timeBudgetSeconds,
+            int maxIterations,
+            String cancelledFlightId,
+            Map<String, List<RoutePlan>> candidateMap,
+            List<WorkingSolution.OvernightArrival> overnightArrivals,
+            WorkingSolution baseSolution) {
+
+        if (timeBudgetSeconds <= 0 && maxIterations <= 0) {
+            throw new IllegalArgumentException(
+                    "ALNS requires a time limit, an iteration limit, or both.");
+        }
+
+        WorkingSolution current = seedGreedy(lots, candidateMap, overnightArrivals, baseSolution);
         WorkingSolution best    = current.copy();
         double currentScore     = evaluator.solutionScore(lots, current);
         double bestScore        = currentScore;
         double temperature      = 50.0;
 
-        long deadline  = System.currentTimeMillis() + timeBudgetSeconds * 1000L;
+        long deadline = timeBudgetSeconds > 0
+                ? System.currentTimeMillis() + timeBudgetSeconds * 1000L
+                : Long.MAX_VALUE;
+        int iterations = 0;
 
-        while (System.currentTimeMillis() < deadline) {
+        while (System.currentTimeMillis() < deadline
+                && (maxIterations <= 0 || iterations < maxIterations)) {
+            iterations++;
 
             String destroyOp = pickWeighted(destroyWeights);
             String repairOp  = pickWeighted(repairWeights);
@@ -111,6 +150,16 @@ public class ALNSPlanner {
                 candidateMap, Collections.emptyList());
     }
 
+    public WorkingSolution solveWithCandidates(
+            List<BaggageLot> lots,
+            int timeBudgetSeconds,
+            int maxIterations,
+            String cancelledFlightId,
+            Map<String, List<RoutePlan>> candidateMap) {
+        return solveWithCandidates(lots, timeBudgetSeconds, maxIterations,
+                cancelledFlightId, candidateMap, Collections.emptyList());
+    }
+
     /**
      * Resuelve calculando candidatos internamente.
      */
@@ -120,6 +169,15 @@ public class ALNSPlanner {
             String cancelledFlightId) {
         return solveWithCandidates(lots, timeBudgetSeconds, cancelledFlightId,
                 buildCandidateMap(lots), Collections.emptyList());
+    }
+
+    public WorkingSolution solve(
+            List<BaggageLot> lots,
+            int timeBudgetSeconds,
+            int maxIterations,
+            String cancelledFlightId) {
+        return solveWithCandidates(lots, timeBudgetSeconds, maxIterations,
+                cancelledFlightId, buildCandidateMap(lots), Collections.emptyList());
     }
 
     /**
@@ -149,8 +207,18 @@ public class ALNSPlanner {
             List<BaggageLot> lots,
             Map<String, List<RoutePlan>> candidateMap,
             List<WorkingSolution.OvernightArrival> overnightArrivals) {
+        return seedGreedy(lots, candidateMap, overnightArrivals, null);
+    }
 
-        WorkingSolution seed = new WorkingSolution(context);
+    private WorkingSolution seedGreedy(
+            List<BaggageLot> lots,
+            Map<String, List<RoutePlan>> candidateMap,
+            List<WorkingSolution.OvernightArrival> overnightArrivals,
+            WorkingSolution baseSolution) {
+
+        WorkingSolution seed = baseSolution == null
+                ? new WorkingSolution(context)
+                : baseSolution.copy();
 
         // Inyectar llegadas overnight: cada grupo en su minuto real (rebased)
         seed.injectOvernightArrivals(overnightArrivals);
