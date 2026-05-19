@@ -394,8 +394,8 @@ public class DemoMain {
 
         Map<String, TreeMap<Integer, Integer>> timelines = new HashMap<>();
         for (WorkingSolution.OvernightArrival oa : arrivals) {
-            int arrMin = oa.arrivalMinuteRebased;
-            int depMin = oa.releaseMinuteRebased;
+            int arrMin = oa.arrivalMinute;
+            int depMin = oa.releaseMinute;
             if (depMin <= arrMin) continue;
             timelines.computeIfAbsent(oa.airportCode, k -> new TreeMap<>())
                      .merge(arrMin, +oa.quantity, Integer::sum);
@@ -439,15 +439,6 @@ public class DemoMain {
 
     private static List<String> sortedCodes(Map<String, Airport> airports) {
         return airports.keySet().stream().sorted().collect(Collectors.toList());
-    }
-
-    private static List<WorkingSolution.OvernightArrival> sortedArrivals(
-            List<WorkingSolution.OvernightArrival> arrivals) {
-        return arrivals.stream()
-                .sorted(Comparator
-                        .comparing((WorkingSolution.OvernightArrival a) -> a.airportCode)
-                        .thenComparingInt(a -> a.arrivalMinuteRebased))
-                .collect(Collectors.toList());
     }
 
     private static class SolutionStats {

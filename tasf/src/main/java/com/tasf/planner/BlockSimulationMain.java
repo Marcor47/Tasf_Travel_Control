@@ -17,7 +17,6 @@ import java.io.IOException;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -43,8 +42,6 @@ public class BlockSimulationMain {
     private static final long SEED = 1L;
 
     private static final LocalDateTime BASE_UTC = LocalDateTime.of(2026, 1, 1, 0, 0);
-    private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.BASIC_ISO_DATE;
-
     public static void main(String[] args) {
         if (24 % BLOCK_HOURS != 0) {
             throw new IllegalArgumentException("BLOCK_HOURS must divide 24.");

@@ -2,31 +2,29 @@ import { useNavigate, useLocation } from "react-router-dom";
 import { User, Clock, BarChart2, Bell, Settings, Play, Pause } from "lucide-react";
 
 const modes = [
-  { label:"Día-a-Día", path:"/"        },
-  { label:"Período",   path:"/periodo" },
-  { label:"Colapso",   path:"/colapso" },
+  { label: "Dia-a-Dia", path: "/" },
+  { label: "Periodo", path: "/periodo" },
+  { label: "Colapso", path: "/colapso" },
 ];
 
 const menu = [
-  { label:"Registro",   path:"/registro",  icon:<User size={14}/> },
-  { label:"Historial",  path:"/historial", icon:<Clock size={14}/> },
-  { label:"Reportes",   path:"/reportes",  icon:<BarChart2 size={14}/> },
-  { label:"Monitoreo",  path:"/monitoreo", icon:<Bell size={14}/> },
+  { label: "Registro", path: "/registro", icon: <User size={14}/> },
+  { label: "Historial", path: "/historial", icon: <Clock size={14}/> },
+  { label: "Reportes", path: "/reportes", icon: <BarChart2 size={14}/> },
+  { label: "Monitoreo", path: "/monitoreo", icon: <Bell size={14}/> },
 ];
 
 export default function Navbar({ running, onToggle, clock }) {
-  const nav      = useNavigate();
+  const nav = useNavigate();
   const { pathname } = useLocation();
 
   return (
     <nav className="flex items-center justify-between px-4 py-2
                     bg-[#010f1e] border-b border-teal/30 text-sm">
-      {/* Logo */}
       <span className="font-bold text-teal tracking-widest text-xs">
         TASFTRAVELCONTROL
       </span>
 
-      {/* Modos */}
       <div className="flex gap-1">
         <span className="text-gray-500 mr-2">Modo: </span>
         {modes.map(m => (
@@ -41,7 +39,6 @@ export default function Navbar({ running, onToggle, clock }) {
         ))}
       </div>
 
-      {/* Menú */}
       <div className="flex gap-4 text-gray-400">
         {menu.map(m => (
           <button key={m.path}
@@ -53,7 +50,6 @@ export default function Navbar({ running, onToggle, clock }) {
         ))}
       </div>
 
-      {/* Reloj + controles */}
       <div className="flex items-center gap-3">
         <span className="text-gray-400 text-xs">{clock}</span>
         <button onClick={onToggle}

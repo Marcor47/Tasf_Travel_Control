@@ -46,7 +46,7 @@ public class ALNSPlanner {
      * @param overnightArrivals   llegadas de vuelos overnight del día anterior;
      *                            null o vacío si es el primer día.
      *                            Se inyectan en el timeline del almacén ANTES
-     *                            de iniciar el solve, en su minuto real rebased.
+     *                            de iniciar el solve, en minutos absolutos.
      */
     public WorkingSolution solveWithCandidates(
             List<BaggageLot> lots,
@@ -220,7 +220,7 @@ public class ALNSPlanner {
                 ? new WorkingSolution(context)
                 : baseSolution.copy();
 
-        // Inyectar llegadas overnight: cada grupo en su minuto real (rebased)
+        // Inyectar ocupacion previa: cada grupo en su minuto absoluto real.
         seed.injectOvernightArrivals(overnightArrivals);
 
         List<BaggageLot> ordered = new ArrayList<>(lots);

@@ -14,17 +14,28 @@ public class Airport {
     private final String region;
     private final int    warehouseCapacity;
     private final int    gmtOffset;          // en minutos respecto a UTC
+    private final double latitude;
+    private final double longitude;
  
     public Airport(String code, String region, int warehouseCapacity, int gmtOffset) {
+        this(code, region, warehouseCapacity, gmtOffset, 0.0, 0.0);
+    }
+
+    public Airport(String code, String region, int warehouseCapacity, int gmtOffset,
+                   double latitude, double longitude) {
         this.code             = code;
         this.region           = region;
         this.warehouseCapacity = warehouseCapacity;
         this.gmtOffset        = gmtOffset;
+        this.latitude         = latitude;
+        this.longitude        = longitude;
     }
  
     public String getCode()              { return code; }
     public String getRegion()            { return region; }
     public int    getWarehouseCapacity() { return warehouseCapacity; }
+    public double getLatitude()          { return latitude; }
+    public double getLongitude()         { return longitude; }
  
     /**
      * Offset respecto a UTC, en minutos.

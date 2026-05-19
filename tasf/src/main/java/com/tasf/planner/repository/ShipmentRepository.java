@@ -53,9 +53,6 @@ public class ShipmentRepository {
             this.utcDate    = BASE_UTC.plusMinutes(utcMinutes).toLocalDate();
         }
 
-        System.out.printf("Lotes cargados del día %s: %d lotes / %d maletas (objetivo=%d maletas)%n",
-                targetDay, result.size(), bagsAccumulated, maxLots);
-        return result;
     }
 
     // ── API pública ──────────────────────────────────────────────────────────

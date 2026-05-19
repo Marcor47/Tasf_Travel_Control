@@ -1,4 +1,4 @@
-import { packages, baggage, kpis } from "../../data/mockData";
+import { packages, baggage, kpis as mockKpis } from "../../data/mockData";
 import { statusLabel } from "../../hooks/useStatusColor";
 
 function StatusDot({ s }) {
@@ -12,10 +12,18 @@ function StatusDot({ s }) {
   );
 }
 
-export default function SLAMonitor() {
+function eventStatus(event) {
+  if (event.type === "landed" && event.finalDestination) return "ok";
+  if (event.type === "landed") return "transit";
+  return "alert";
+}
+
+export default function SLAMonitor({ kpis = mockKpis, events = [] }) {
+  const shownKpis = { ...mockKpis, ...kpis };
+  const liveEvents = events.length ? events.slice(-5).reverse() : [];
+
   return (
     <div className="flex flex-col gap-2 text-xs">
-      {/* Monitor de plazos */}
       <div className="bg-[#031525] border border-teal/20 rounded p-2">
         <p className="text-teal font-bold mb-2 uppercase tracking-wide text-[10px]">
           Monitor de Plazos (SLA)
@@ -29,11 +37,23 @@ export default function SLAMonitor() {
             </tr>
           </thead>
           <tbody>
-            {packages.map(p => (
+            {liveEvents.length ? liveEvents.map((event, idx) => (
+              <tr key={`${event.minute}-${event.type}-${idx}`} className="border-b border-white/5">
+                <td className="py-1 text-gray-300">
+                  {event.type === "landed" ? "ARR" : "DEP"}-{idx + 1}
+                </td>
+                <td className="py-1 text-gray-400">
+                  {event.from} - {event.to} ({event.bags})
+                </td>
+                <td className="py-1">
+                  <StatusDot s={eventStatus(event)}/>
+                </td>
+              </tr>
+            )) : packages.map(p => (
               <tr key={p.id} className="border-b border-white/5">
                 <td className="py-1 text-gray-300">{p.id}</td>
                 <td className="py-1 text-gray-400">
-                  {p.origin} → {p.destination}
+                  {p.origin} - {p.destination}
                 </td>
                 <td className="py-1">
                   <StatusDot s={p.status}/>
@@ -44,12 +64,11 @@ export default function SLAMonitor() {
         </table>
       </div>
 
-      {/* Detalle del paquete */}
       <div className="bg-[#031525] border border-teal/20 rounded p-2">
         <p className="text-teal font-bold mb-2 uppercase tracking-wide text-[10px]">
           Detalle del Paquete
         </p>
-        <input placeholder="Ingrese número de paquete o maleta"
+        <input placeholder="Ingrese numero de paquete o maleta"
           className="w-full bg-[#021020] border border-white/10 rounded
                      px-2 py-1 text-xs text-gray-300 mb-2
                      focus:outline-none focus:border-teal"/>
@@ -75,16 +94,15 @@ export default function SLAMonitor() {
         </table>
       </div>
 
-      {/* Contadores maletas */}
       <div className="bg-[#031525] border border-teal/20 rounded p-2">
         <p className="text-teal font-bold mb-2 uppercase tracking-wide text-[10px]">
           Maletas
         </p>
         <div className="grid grid-cols-3 gap-1 text-center">
           {[
-            ["Entregadas",     kpis.deliveredOnTime, "text-green-400"],
-            ["En Riesgo",      kpis.atRisk,          "text-yellow-400"],
-            ["Fuera de plazo", kpis.outOfDeadline,   "text-red-400"],
+            ["Entregadas",     shownKpis.deliveredOnTime, "text-green-400"],
+            ["En Riesgo",      shownKpis.atRisk,          "text-yellow-400"],
+            ["Fuera de plazo", shownKpis.outOfDeadline,   "text-red-400"],
           ].map(([label, val, color]) => (
             <div key={label} className="bg-[#021020] rounded p-1">
               <p className={`text-lg font-bold ${color}`}>{val}</p>
@@ -94,12 +112,11 @@ export default function SLAMonitor() {
         </div>
       </div>
 
-      {/* KPIs */}
       <div className="bg-[#031525] border border-teal/20 rounded p-2">
         <div className="grid grid-cols-2 gap-1">
           {[
-            ["Vuelos en Curso",        kpis.activeFlights,      ""],
-            ["Saturación al Colapso",  kpis.saturationPercent+"%",""],
+            ["Vuelos en Curso",       shownKpis.activeFlights, ""],
+            ["Saturacion al Colapso", `${shownKpis.saturationPercent}%`, ""],
           ].map(([label, val]) => (
             <div key={label} className="bg-[#021020] rounded p-2 text-center">
               <p className="text-2xl font-bold text-white">{val}</p>
@@ -112,7 +129,7 @@ export default function SLAMonitor() {
             Tiempo de Entrega Promedio
           </p>
           <p className="text-2xl font-bold text-white">
-            {kpis.avgDeliveryDays} días
+            {Number(shownKpis.avgDeliveryDays || 0).toFixed(2)} dias
           </p>
         </div>
       </div>

@@ -20,13 +20,9 @@ import java.util.*;
  *  - canAssign() verifica que en ningun minuto de esos intervalos se supere
  *    la capacidad del almacen correspondiente.
  *
- * Vuelos overnight:
- *  - Bolsas en tránsito cuyo vuelo aterriza en el día siguiente se inyectan
- *    al inicio del nuevo WorkingSolution del día siguiente mediante
- *    injectOvernightArrivals(), respetando su hora de llegada real rebased
- *    al nuevo día (arrivalHour % 1440).  Esto significa que cada grupo de
- *    bolsas aparece en el timeline en su minuto correcto, no todas juntas
- *    al minuto 0.
+ * Carryover entre bloques/dias:
+ *  - Los grupos que ya estan ocupando almacen al iniciar un nuevo solve se
+ *    inyectan con minutos absolutos en el mismo timeline usado por las rutas.
  */
 public class WorkingSolution {
 
@@ -115,57 +111,47 @@ public class WorkingSolution {
         return Math.max(0, peak);
     }
 
-    // ── overnight injection ──────────────────────────────────────────────────
+    // ── carryover injection ──────────────────────────────────────────────────
 
     /**
-     * Representa la llegada de un grupo de maletas de un vuelo overnight.
-     * arrivalMinuteRebased es la hora de llegada ya expresada en minutos
-     * relativos al nuevo día (arrivalHour % 1440).
+     * Representa un grupo de maletas que ocupa almacen entre dos minutos
+     * absolutos. Se conserva el nombre de clase porque DemoMain aun modela
+     * este estado como overnight entre dias.
      */
     public static class OvernightArrival {
         public final String airportCode;
-        public final int    arrivalMinuteRebased; // minutos dentro del nuevo día [0, 1440)
-        public final int    releaseMinuteRebased;
+        public final int    arrivalMinute;
+        public final int    releaseMinute;
         public final int    quantity;
 
-        public OvernightArrival(String airportCode, int arrivalMinuteRebased, int quantity) {
-            this(airportCode, arrivalMinuteRebased,
-                    arrivalMinuteRebased + WAREHOUSE_DWELL_MINUTES, quantity);
+        public OvernightArrival(String airportCode, int arrivalMinute, int quantity) {
+            this(airportCode, arrivalMinute,
+                    arrivalMinute + WAREHOUSE_DWELL_MINUTES, quantity);
         }
 
         public OvernightArrival(
                 String airportCode,
-                int arrivalMinuteRebased,
-                int releaseMinuteRebased,
+                int arrivalMinute,
+                int releaseMinute,
                 int quantity) {
             this.airportCode          = airportCode;
-            this.arrivalMinuteRebased = arrivalMinuteRebased;
-            this.releaseMinuteRebased = releaseMinuteRebased;
+            this.arrivalMinute        = arrivalMinute;
+            this.releaseMinute        = releaseMinute;
             this.quantity             = quantity;
         }
     }
 
     /**
-     * Inyecta en el timeline del almacén las llegadas de vuelos overnight
-     * ANTES de que empiece el solve del nuevo día.
-     *
-     * Cada arrival se registra en su minuto real dentro del nuevo día
-     * (arrivalMinuteRebased), y su salida del almacén se programa
-     * WAREHOUSE_DWELL_MINUTES minutos después, exactamente igual que
-     * cualquier otro vuelo que llega durante el día.
+     * Inyecta ocupacion de almacen existente antes de iniciar un nuevo solve.
      *
      * Llamar una sola vez por WorkingSolution, antes de seedGreedy/solve.
-     * canAssign() verá la ocupación overnight automáticamente al calcular
-     * warehousePeakLoad() para los nuevos lotes del día.
-     *
-     * @param arrivals lista de llegadas overnight calculada por DemoMain
-     *                 a partir de la solución del día anterior
+     * canAssign() vera esta ocupacion al calcular warehousePeakLoad().
      */
     public void injectOvernightArrivals(List<OvernightArrival> arrivals) {
         if (arrivals == null || arrivals.isEmpty()) return;
         for (OvernightArrival a : arrivals) {
-            int arrMin = a.arrivalMinuteRebased;
-            int depMin = a.releaseMinuteRebased;
+            int arrMin = a.arrivalMinute;
+            int depMin = a.releaseMinute;
             if (depMin <= arrMin) continue;
             addWarehouseDelta(a.airportCode, arrMin, +a.quantity);
             addWarehouseDelta(a.airportCode, depMin, -a.quantity);
