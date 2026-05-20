@@ -1,0 +1,9 @@
+# Backend
+cd tasf/
+./mvnw clean compile
+./mvnw spring-boot:run        # → http://localhost:8080
+
+# Frontend (otra terminal)
+cd tasf-frontend/
+npm install --legacy-peer-deps
+npm run dev                   # → http://localhost:5173
