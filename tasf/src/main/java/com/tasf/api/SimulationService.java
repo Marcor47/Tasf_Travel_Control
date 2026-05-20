@@ -305,12 +305,29 @@ public class SimulationService {
     }
 
     private List<RouteState> recentRoutes(List<SimEvent> events, int minute) {
-        return events.stream()
-                .filter(e -> e.minute() <= minute)
-                .sorted(Comparator.comparingInt(SimEvent::minute).reversed())
-                .limit(20)
-                .map(e -> new RouteState(e.from(), e.to(), e.bags(), e.type()))
+        // Vuelos que ya aterrizaron
+        Set<String> landed = events.stream()
+                .filter(e -> "landed".equals(e.type()) && e.minute() <= minute)
+                .map(SimEvent::flightId)
+                .collect(Collectors.toSet());
+
+        // Vuelos activos: salieron pero aún no aterrizaron
+        List<RouteState> active = events.stream()
+                .filter(e -> "departed".equals(e.type()) && e.minute() <= minute)
+                .filter(e -> !landed.contains(e.flightId()))
+                .map(e -> new RouteState(e.from(), e.to(), e.bags(), "departed"))
                 .collect(Collectors.toList());
+
+        // Vuelos aterrizados en los últimos 180 minutos simulados
+        List<RouteState> recentLanded = events.stream()
+                .filter(e -> "landed".equals(e.type()))
+                .filter(e -> e.minute() <= minute && e.minute() >= minute - 180)
+                .map(e -> new RouteState(e.from(), e.to(), e.bags(), "landed"))
+                .collect(Collectors.toList());
+
+        List<RouteState> result = new ArrayList<>(active);
+        result.addAll(recentLanded);
+        return result;
     }
 
     private void broadcast(SimulationState newState) {
