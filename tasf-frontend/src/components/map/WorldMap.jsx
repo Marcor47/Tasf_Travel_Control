@@ -3,12 +3,10 @@ import {
   ComposableMap, Geographies, Geography,
   Marker, Line
 } from "react-simple-maps";
-import { airports as mockAirports, routes as mockRoutes } from "../../data/mockData";
 
 const GEO_URL =
   "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json";
 
-// Inyecta la animación CSS una sola vez en el documento
 function injectAnimation() {
   if (document.getElementById("route-anim-style")) return;
   const style = document.createElement("style");
@@ -23,44 +21,46 @@ function injectAnimation() {
     }
     .route-landed {
       animation: none;
-      opacity: 0.3;
+      opacity: 0.25;
     }
   `;
   document.head.appendChild(style);
 }
 
-export default function WorldMap({ airports = [], routes = [], onAirportClick }) {
+export default function WorldMap({ airports = [], routes = [], onAirportClick, running = false }) {
   useEffect(() => { injectAnimation(); }, []);
 
-  const shownAirports = airports.length ? airports : mockAirports;
-
-  // Solo mostrar rutas activas (departed pero NO landed aún)
-  // El backend envía routes con status "departed" o "landed"
-  // Filtramos: mostramos departed, y landed solo 30 segundos (usamos ref para timestamp)
   const landedTimestamps = useRef({});
+  const now = Date.now();
 
-  // Marcar cuándo cada ruta aterrizó para desvanecerla gradualmente
-  const rawRoutes = routes.length ? routes : mockRoutes;
-  rawRoutes.forEach(r => {
-    const key = `${r.from}-${r.to}`;
-    if (r.status === "landed" && !landedTimestamps.current[key]) {
-      landedTimestamps.current[key] = Date.now();
-    }
-    if (r.status === "departed") {
-      delete landedTimestamps.current[key];
-    }
-  });
+  // Solo mostrar rutas si la simulación está activa Y hay rutas reales del backend
+  // Nunca usar mockRoutes — si no hay datos del backend, mapa vacío
+  if (running && routes.length > 0) {
+    routes.forEach(r => {
+      const key = `${r.from}-${r.to}-${r.status}`;
+      if (r.status === "landed" && !landedTimestamps.current[key]) {
+        landedTimestamps.current[key] = Date.now();
+      }
+      if (r.status === "departed") {
+        // limpiar landed previo de esta ruta
+        const landedKey = `${r.from}-${r.to}-landed`;
+        delete landedTimestamps.current[landedKey];
+      }
+    });
+  }
 
   // Filtrar: quitar rutas landed hace más de 8 segundos
-  const now = Date.now();
-  const visibleRoutes = rawRoutes.filter(r => {
-    const key = `${r.from}-${r.to}`;
+  const visibleRoutes = (!running || routes.length === 0) ? [] : routes.filter(r => {
     if (r.status === "landed") {
+      const key = `${r.from}-${r.to}-landed`;
       const ts = landedTimestamps.current[key];
       return ts && (now - ts) < 8000;
     }
     return true;
   });
+
+  // Solo mostrar aeropuertos del backend cuando hay datos reales
+  const shownAirports = airports.length > 0 ? airports : [];
 
   const airportMap = Object.fromEntries(
     shownAirports.map(a => [a.code, [a.lng, a.lat]])
@@ -85,28 +85,26 @@ export default function WorldMap({ airports = [], routes = [], onAirportClick })
           }
         </Geographies>
 
-        {/* Rutas animadas */}
+        {/* Rutas: solo si simulación activa */}
         {visibleRoutes.map((r, i) => {
           const from = airportMap[r.from];
           const to   = airportMap[r.to];
           if (!from || !to) return null;
-          const isLanded  = r.status === "landed";
-          const color     = isLanded ? "#2DD4BF" : "#F4A261";
-          const cssClass  = isLanded ? "route-landed" : "route-active";
+          const isLanded = r.status === "landed";
           return (
             <Line key={`${r.from}-${r.to}-${i}`}
               from={from} to={to}
-              stroke={color}
+              stroke={isLanded ? "#2DD4BF" : "#F4A261"}
               strokeWidth={isLanded ? 0.8 : 1.4}
               strokeLinecap="round"
               strokeDasharray="8 4"
-              className={cssClass}/>
+              className={isLanded ? "route-landed" : "route-active"}/>
           );
         })}
 
         {/* Aeropuertos */}
         {shownAirports.map(a => {
-          const pct = Math.min(1, (a.current || 0) / Math.max(1, a.capacity || 1));
+          const pct  = Math.min(1, (a.current || 0) / Math.max(1, a.capacity || 1));
           const fill = pct > 0.85 ? "#E76F51"
                      : pct > 0.6  ? "#F4A261"
                      : "#1C7293";
@@ -119,10 +117,10 @@ export default function WorldMap({ airports = [], routes = [], onAirportClick })
                 fill={fill}
                 stroke="#fff"
                 strokeWidth={0.8}
-                style={{ cursor: "pointer" }}/>
+                style={{ cursor:"pointer" }}/>
               <text textAnchor="middle" y={-8}
-                style={{ fontSize:7, fill:"#9DBDCC", fontFamily:"sans-serif",
-                         pointerEvents:"none" }}>
+                style={{ fontSize:7, fill:"#9DBDCC",
+                         fontFamily:"sans-serif", pointerEvents:"none" }}>
                 {a.code}
               </text>
             </Marker>

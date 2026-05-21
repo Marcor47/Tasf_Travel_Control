@@ -17,7 +17,11 @@ export default function Dashboard({ mode, simulation }) {
 
       {/* Mapa central */}
       <div className="flex-1 relative">
-        <WorldMap airports={simulation?.airports ?? []} routes={simulation?.routes ?? []}/>
+        <WorldMap
+          airports={simulation?.airports ?? []}
+          routes={simulation?.routes ?? []}
+          running={simulation?.running ?? false}
+        />
         {/* Botón para demo del colapso */}
         {mode === "colapso" && (
           <button
