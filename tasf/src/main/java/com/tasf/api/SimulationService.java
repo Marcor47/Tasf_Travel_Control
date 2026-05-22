@@ -35,8 +35,8 @@ public class SimulationService {
     private static final int            BLOCK_HOURS         = 3;
     // Tiempo real por bloque: ALNS tarda ~30s, así que damos 60s y usamos
     // los 30s restantes para animar el bloque en pantalla
-    private static final int            BLOCK_REAL_SECONDS  = 60;
-    private static final int            ALNS_TIME_BUDGET_SEC = 25;
+    private static final int            BLOCK_REAL_SECONDS  = 45;
+    private static final int            ALNS_TIME_BUDGET_SEC = 20;
     private static final int            ALNS_MAX_ITERATIONS  = 0;
     // Intervalo de broadcast en ms durante la animación del bloque
     private static final int            BROADCAST_INTERVAL_MS = 500;
@@ -101,7 +101,7 @@ public class SimulationService {
             // 2. Encontrar ventana de días en el dataset real
             int             daysToLoad = daysForMode(request.mode());
             List<LocalDate> days       = shipmentRepo.findConsecutiveDaysWithK(
-                    "data/envios/", airports, 0, daysToLoad);
+                    "data/envios/", airports, 10000, daysToLoad);
 
             if (days == null || days.isEmpty()) {
                 running.set(false);

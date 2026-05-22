@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ComposableMap, Geographies, Geography,
   Marker, Line
@@ -27,41 +27,56 @@ function injectAnimation() {
   document.head.appendChild(style);
 }
 
+const LANDED_TTL_MS = 6000; // cuánto tiempo se muestra una línea landed antes de borrarse
+
 export default function WorldMap({ airports = [], routes = [], onAirportClick, running = false }) {
   useEffect(() => { injectAnimation(); }, []);
 
-  const landedTimestamps = useRef({});
-  const now = Date.now();
+  // Tick cada 500ms para forzar re-render y que las líneas landed desaparezcan
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (!running) return;
+    const id = setInterval(() => setTick(t => t + 1), 500);
+    return () => clearInterval(id);
+  }, [running]);
 
-  // Solo mostrar rutas si la simulación está activa Y hay rutas reales del backend
-  // Nunca usar mockRoutes — si no hay datos del backend, mapa vacío
+  const landedTimestamps = useRef({});
+
+  // Registrar cuándo cada ruta aterrizó
   if (running && routes.length > 0) {
     routes.forEach(r => {
-      const key = `${r.from}-${r.to}-${r.status}`;
-      if (r.status === "landed" && !landedTimestamps.current[key]) {
-        landedTimestamps.current[key] = Date.now();
-      }
-      if (r.status === "departed") {
-        // limpiar landed previo de esta ruta
-        const landedKey = `${r.from}-${r.to}-landed`;
-        delete landedTimestamps.current[landedKey];
+      const key = `${r.from}-${r.to}`;
+      if (r.status === "landed") {
+        if (!landedTimestamps.current[key]) {
+          landedTimestamps.current[key] = Date.now();
+        }
+      } else if (r.status === "departed") {
+        // Si volvió a salir (ruta recurrente), limpiar el timestamp anterior
+        delete landedTimestamps.current[key];
       }
     });
   }
 
-  // Filtrar: quitar rutas landed hace más de 8 segundos
-  const visibleRoutes = (!running || routes.length === 0) ? [] : routes.filter(r => {
-    if (r.status === "landed") {
-      const key = `${r.from}-${r.to}-landed`;
-      const ts = landedTimestamps.current[key];
-      return ts && (now - ts) < 8000;
+  // Limpiar entradas expiradas del ref para no acumular memoria
+  const now = Date.now();
+  Object.keys(landedTimestamps.current).forEach(key => {
+    if (now - landedTimestamps.current[key] > LANDED_TTL_MS + 1000) {
+      delete landedTimestamps.current[key];
     }
-    return true;
   });
 
-  // Solo mostrar aeropuertos del backend cuando hay datos reales
-  const shownAirports = airports.length > 0 ? airports : [];
+  // Construir rutas visibles
+  const visibleRoutes = (!running || routes.length === 0) ? [] : routes.filter(r => {
+    if (r.status === "landed") {
+      const key = `${r.from}-${r.to}`;
+      const ts = landedTimestamps.current[key];
+      // Mostrar solo si aterrizó hace menos de LANDED_TTL_MS
+      return ts !== undefined && (now - ts) < LANDED_TTL_MS;
+    }
+    return true; // departed siempre visible
+  });
 
+  const shownAirports = airports.length > 0 ? airports : [];
   const airportMap = Object.fromEntries(
     shownAirports.map(a => [a.code, [a.lng, a.lat]])
   );
@@ -85,7 +100,7 @@ export default function WorldMap({ airports = [], routes = [], onAirportClick, r
           }
         </Geographies>
 
-        {/* Rutas: solo si simulación activa */}
+        {/* Rutas animadas */}
         {visibleRoutes.map((r, i) => {
           const from = airportMap[r.from];
           const to   = airportMap[r.to];

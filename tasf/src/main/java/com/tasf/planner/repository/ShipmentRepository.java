@@ -42,6 +42,29 @@ public class ShipmentRepository {
 
     // ── clase interna ────────────────────────────────────────────────────────
 
+    // Caché en memoria: evita releer 9.5M de lotes en cada simulación
+    private List<LotEntry>       cachedEntries   = null;
+    private String               cachedFolder    = null;
+    private Map<String, Airport> cachedAirports  = null;
+
+    private List<LotEntry> loadAllUtcCached(String folderPath,
+                                             Map<String, Airport> airports)
+            throws IOException {
+        // Usar caché si ya se cargó la misma carpeta
+        if (cachedEntries != null
+                && folderPath.equals(cachedFolder)
+                && airports == cachedAirports) {
+            System.out.println("Usando caché de lotes (" + cachedEntries.size() + " entradas)");
+            return cachedEntries;
+        }
+        System.out.println("Cargando lotes desde disco (primera vez)...");
+        cachedEntries  = loadAllUtc(folderPath, airports);
+        cachedFolder   = folderPath;
+        cachedAirports = airports;
+        System.out.println("Caché listo: " + cachedEntries.size() + " entradas.");
+        return cachedEntries;
+    }
+
     private static class LotEntry {
         final BaggageLot lot;
         final long utcMinutes;   // minutos desde BASE_UTC — ya en UTC
@@ -73,7 +96,7 @@ public class ShipmentRepository {
         // contar MALETAS por día UTC (no lotes — cada lote tiene N maletas)
         Map<LocalDate, Integer> bagsByDay  = new TreeMap<>();
         Map<LocalDate, Integer> lotsByDay  = new TreeMap<>();
-        for (LotEntry entry : loadAllUtc(folderPath, airports)) {
+        for (LotEntry entry : loadAllUtcCached(folderPath, airports)) {
             bagsByDay.merge(entry.utcDate, entry.lot.getQuantity(), Integer::sum);
             lotsByDay.merge(entry.utcDate, 1, Integer::sum);
         }
@@ -112,7 +135,7 @@ public class ShipmentRepository {
                                                  int maxLots) throws IOException {
 
         List<LotEntry> dayEntries = new ArrayList<>();
-        for (LotEntry entry : loadAllUtc(folderPath, airports)) {
+        for (LotEntry entry : loadAllUtcCached(folderPath, airports)) {
             if (entry.utcDate.equals(targetDay)) {
                 dayEntries.add(entry);
             }
@@ -141,7 +164,7 @@ public class ShipmentRepository {
                                                  List<LocalDate> targetDays) throws IOException {
         Set<LocalDate> selectedDays = new HashSet<>(targetDays);
         List<LotEntry> selectedEntries = new ArrayList<>();
-        for (LotEntry entry : loadAllUtc(folderPath, airports)) {
+        for (LotEntry entry : loadAllUtcCached(folderPath, airports)) {
             if (selectedDays.contains(entry.utcDate)) {
                 selectedEntries.add(entry);
             }
@@ -281,7 +304,7 @@ public class ShipmentRepository {
             Map<LocalDate, Integer> bagsByDay  = new TreeMap<>();
             Map<LocalDate, Integer> lotsByDay  = new TreeMap<>();
 
-            for (LotEntry entry : loadAllUtc(folderPath, airports)) {
+            for (LotEntry entry : loadAllUtcCached(folderPath, airports)) {
                 bagsByDay.merge(entry.utcDate, entry.lot.getQuantity(), Integer::sum);
                 lotsByDay.merge(entry.utcDate, 1, Integer::sum);
             }
