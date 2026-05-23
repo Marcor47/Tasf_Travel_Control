@@ -88,7 +88,7 @@ export function useSimulation() {
       const response = await fetch(`${API_BASE}/api/simulation/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode, blockSeconds: 25 }),
+        body: JSON.stringify({ mode, blockSeconds: 20 }),
       });
       if (response.ok) {
         const data = await response.json();

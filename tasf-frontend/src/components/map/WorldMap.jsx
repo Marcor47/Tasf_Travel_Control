@@ -14,72 +14,80 @@ function injectAnimation() {
   style.textContent = `
     @keyframes dashMove {
       from { stroke-dashoffset: 24; }
-      to   { stroke-dashoffset: 0;  }
+      to   { stroke-dashoffset: 0; }
     }
     .route-active {
       animation: dashMove 1.2s linear infinite;
     }
-    .route-landed {
+    .route-fading {
       animation: none;
-      opacity: 0.25;
+      opacity: 0.2;
+      transition: opacity 1s;
     }
   `;
   document.head.appendChild(style);
 }
 
-const LANDED_TTL_MS = 6000; // cuánto tiempo se muestra una línea landed antes de borrarse
+// Cuánto tiempo (ms real) se muestra una ruta landed antes de borrarse
+const LANDED_TTL_MS = 5000;
 
 export default function WorldMap({ airports = [], routes = [], onAirportClick, running = false }) {
   useEffect(() => { injectAnimation(); }, []);
 
-  // Tick cada 500ms para forzar re-render y que las líneas landed desaparezcan
-  const [tick, setTick] = useState(0);
+  // landedRoutes: mapa de key -> { from, to, bags, addedAt }
+  // Se gestiona localmente en el frontend con timestamp real
+  const landedRoutes = useRef({});
+
+  // Tick cada 500ms para re-render y limpiar rutas expiradas
+  const [, setTick] = useState(0);
   useEffect(() => {
-    if (!running) return;
+    if (!running) {
+      landedRoutes.current = {};
+      return;
+    }
     const id = setInterval(() => setTick(t => t + 1), 500);
     return () => clearInterval(id);
   }, [running]);
 
-  const landedTimestamps = useRef({});
+  const now = Date.now();
 
-  // Registrar cuándo cada ruta aterrizó
+  // Procesar rutas entrantes del backend
   if (running && routes.length > 0) {
     routes.forEach(r => {
       const key = `${r.from}-${r.to}`;
-      if (r.status === "landed") {
-        if (!landedTimestamps.current[key]) {
-          landedTimestamps.current[key] = Date.now();
+      if (r.status === "just_landed") {
+        // Solo registrar si no está ya registrado (no reiniciar el timer)
+        if (!landedRoutes.current[key]) {
+          landedRoutes.current[key] = {
+            from: r.from, to: r.to, bags: r.bags,
+            addedAt: now
+          };
         }
       } else if (r.status === "departed") {
-        // Si volvió a salir (ruta recurrente), limpiar el timestamp anterior
-        delete landedTimestamps.current[key];
+        // Si este vuelo volvió a salir, limpiar su landed anterior
+        delete landedRoutes.current[key];
       }
     });
   }
 
-  // Limpiar entradas expiradas del ref para no acumular memoria
-  const now = Date.now();
-  Object.keys(landedTimestamps.current).forEach(key => {
-    if (now - landedTimestamps.current[key] > LANDED_TTL_MS + 1000) {
-      delete landedTimestamps.current[key];
+  // Limpiar rutas landed expiradas
+  Object.keys(landedRoutes.current).forEach(key => {
+    if (now - landedRoutes.current[key].addedAt > LANDED_TTL_MS) {
+      delete landedRoutes.current[key];
     }
-  });
-
-  // Construir rutas visibles
-  const visibleRoutes = (!running || routes.length === 0) ? [] : routes.filter(r => {
-    if (r.status === "landed") {
-      const key = `${r.from}-${r.to}`;
-      const ts = landedTimestamps.current[key];
-      // Mostrar solo si aterrizó hace menos de LANDED_TTL_MS
-      return ts !== undefined && (now - ts) < LANDED_TTL_MS;
-    }
-    return true; // departed siempre visible
   });
 
   const shownAirports = airports.length > 0 ? airports : [];
   const airportMap = Object.fromEntries(
     shownAirports.map(a => [a.code, [a.lng, a.lat]])
   );
+
+  // Rutas activas (departed) del backend
+  const activeRoutes = (!running || routes.length === 0) ? [] :
+    routes.filter(r => r.status === "departed");
+
+  // Rutas landed locales (aún dentro del TTL)
+  const fadingRoutes = Object.values(landedRoutes.current);
 
   return (
     <div className="w-full h-full bg-[#031525] rounded border border-teal/20">
@@ -89,31 +97,46 @@ export default function WorldMap({ airports = [], routes = [], onAirportClick, r
       <ComposableMap
         projection="geoMercator"
         projectionConfig={{ scale: 120, center: [20, 10] }}
-        style={{ width:"100%", height:"calc(100% - 28px)" }}>
+        style={{ width: "100%", height: "calc(100% - 28px)" }}>
 
         <Geographies geography={GEO_URL}>
           {({ geographies }) =>
             geographies.map(geo => (
               <Geography key={geo.rsmKey} geography={geo}
-                fill="#0a2540" stroke="#1C7293" strokeWidth={0.3}/>
+                fill="#0a2540" stroke="#1C7293" strokeWidth={0.3} />
             ))
           }
         </Geographies>
 
-        {/* Rutas animadas */}
-        {visibleRoutes.map((r, i) => {
+        {/* Rutas que acaban de aterrizar — desvanecidas */}
+        {fadingRoutes.map((r, i) => {
           const from = airportMap[r.from];
           const to   = airportMap[r.to];
           if (!from || !to) return null;
-          const isLanded = r.status === "landed";
           return (
-            <Line key={`${r.from}-${r.to}-${i}`}
+            <Line key={`fading-${r.from}-${r.to}-${i}`}
               from={from} to={to}
-              stroke={isLanded ? "#2DD4BF" : "#F4A261"}
-              strokeWidth={isLanded ? 0.8 : 1.4}
+              stroke="#2DD4BF"
+              strokeWidth={0.8}
               strokeLinecap="round"
               strokeDasharray="8 4"
-              className={isLanded ? "route-landed" : "route-active"}/>
+              className="route-fading" />
+          );
+        })}
+
+        {/* Rutas activas — animadas */}
+        {activeRoutes.map((r, i) => {
+          const from = airportMap[r.from];
+          const to   = airportMap[r.to];
+          if (!from || !to) return null;
+          return (
+            <Line key={`active-${r.from}-${r.to}-${i}`}
+              from={from} to={to}
+              stroke="#F4A261"
+              strokeWidth={1.4}
+              strokeLinecap="round"
+              strokeDasharray="8 4"
+              className="route-active" />
           );
         })}
 
@@ -132,10 +155,12 @@ export default function WorldMap({ airports = [], routes = [], onAirportClick, r
                 fill={fill}
                 stroke="#fff"
                 strokeWidth={0.8}
-                style={{ cursor:"pointer" }}/>
+                style={{ cursor: "pointer" }} />
               <text textAnchor="middle" y={-8}
-                style={{ fontSize:7, fill:"#9DBDCC",
-                         fontFamily:"sans-serif", pointerEvents:"none" }}>
+                style={{
+                  fontSize: 7, fill: "#9DBDCC",
+                  fontFamily: "sans-serif", pointerEvents: "none"
+                }}>
                 {a.code}
               </text>
             </Marker>

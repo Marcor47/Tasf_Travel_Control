@@ -32,11 +32,11 @@ public class SimulationService {
 
     // BASE_UTC del ShipmentRepository — ambos deben coincidir
     private static final LocalDateTime BASE_UTC            = LocalDateTime.of(2026, 1, 1, 0, 0);
-    private static final int            BLOCK_HOURS         = 3;
+    private static final int            BLOCK_HOURS         = 1;
     // Tiempo real por bloque: ALNS tarda ~30s, así que damos 60s y usamos
     // los 30s restantes para animar el bloque en pantalla
-    private static final int            BLOCK_REAL_SECONDS  = 45;
-    private static final int            ALNS_TIME_BUDGET_SEC = 20;
+    private static final int            BLOCK_REAL_SECONDS  = 30;
+    private static final int            ALNS_TIME_BUDGET_SEC = 15;
     private static final int            ALNS_MAX_ITERATIONS  = 0;
     // Intervalo de broadcast en ms durante la animación del bloque
     private static final int            BROADCAST_INTERVAL_MS = 500;
@@ -145,13 +145,15 @@ public class SimulationService {
                         .sorted(Comparator.comparingInt(BaggageLot::getRegistrationHour))
                         .collect(Collectors.toList());
 
-                // Notificar inicio de bloque (sin rutas todavía)
+                // Notificar inicio de bloque CONSERVANDO las rutas del estado anterior
+                // para que el mapa no quede vacío durante el cálculo de ALNS
                 List<AirportState> staticAirports = airportStaticList(airports, solution, cbStart);
+                List<RouteState>   prevRoutes     = state.routes(); // rutas del bloque anterior
                 state = new SimulationState(
                         true, request.mode(),
                         fmtClock(blockStart), blockNo,
                         fmtClock(blockStart), fmtClock(blockEnd),
-                        staticAirports, List.of(), List.of(),
+                        staticAirports, prevRoutes, List.of(),
                         buildKpis(allLots, solution, staticAirports, delivered, replanifications, 0),
                         false, "Planificando bloque " + blockNo
                                + " (" + blockLots.size() + " lotes)...");
@@ -365,25 +367,32 @@ public class SimulationService {
     }
 
     private List<RouteState> recentRoutes(List<SimEvent> events, int minute) {
+        // Vuelos que ya aterrizaron en algún momento hasta ahora
         Set<String> landedIds = events.stream()
                 .filter(e -> "landed".equals(e.type()) && e.minute() <= minute)
                 .map(SimEvent::flightId)
                 .collect(Collectors.toSet());
 
+        // Solo mandamos vuelos ACTIVOS (departed pero no landed aún)
+        // Limitamos a las top 60 rutas por cantidad de maletas para no saturar el mapa
         List<RouteState> active = events.stream()
                 .filter(e -> "departed".equals(e.type()) && e.minute() <= minute)
                 .filter(e -> !landedIds.contains(e.flightId()))
                 .map(e -> new RouteState(e.from(), e.to(), e.bags(), "departed"))
+                .sorted(Comparator.comparingInt(RouteState::bags).reversed())
+                .limit(60)
                 .collect(Collectors.toList());
 
-        List<RouteState> recentLanded = events.stream()
+        // "just_landed": vuelos que aterrizaron en los últimos 2 minutos simulados
+        // El frontend los convierte a "landed" localmente y los borra con su timer
+        List<RouteState> justLanded = events.stream()
                 .filter(e -> "landed".equals(e.type()))
-                .filter(e -> e.minute() <= minute && e.minute() >= minute - 180)
-                .map(e -> new RouteState(e.from(), e.to(), e.bags(), "landed"))
+                .filter(e -> e.minute() <= minute && e.minute() >= minute - 2)
+                .map(e -> new RouteState(e.from(), e.to(), e.bags(), "just_landed"))
                 .collect(Collectors.toList());
 
         List<RouteState> result = new ArrayList<>(active);
-        result.addAll(recentLanded);
+        result.addAll(justLanded);
         return result;
     }
 
