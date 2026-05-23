@@ -12,7 +12,7 @@ export default function Dashboard({ mode, simulation }) {
     <div className="relative flex gap-2 p-2 h-[calc(100vh-72px)]">
       {/* Panel izquierdo */}
       <div className="w-64 flex-shrink-0 overflow-y-auto">
-        <SLAMonitor kpis={kpis} events={simulation?.events ?? []}/>
+        <SLAMonitor kpis={kpis} events={simulation?.events ?? []} running={simulation?.running ?? false}/>
       </div>
 
       {/* Mapa central */}
