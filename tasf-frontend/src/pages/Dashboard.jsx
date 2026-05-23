@@ -21,6 +21,7 @@ export default function Dashboard({ mode, simulation }) {
           airports={simulation?.airports ?? []}
           routes={simulation?.routes ?? []}
           running={simulation?.running ?? false}
+          message={simulation?.message ?? ""}
         />
         {/* Botón para demo del colapso */}
         {mode === "colapso" && (

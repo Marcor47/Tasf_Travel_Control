@@ -39,7 +39,7 @@ public class SimulationService {
     private static final int            ALNS_TIME_BUDGET_SEC = 15;
     private static final int            ALNS_MAX_ITERATIONS  = 0;
     // Intervalo de broadcast en ms durante la animación del bloque
-    private static final int            BROADCAST_INTERVAL_MS = 500;
+    private static final int            BROADCAST_INTERVAL_MS = 800;
 
     private final List<SseEmitter> emitters   = new CopyOnWriteArrayList<>();
     private final ExecutorService  executor   = Executors.newSingleThreadExecutor();
@@ -130,6 +130,10 @@ public class SimulationService {
             int             replanifications = 0;
             boolean         collapsed       = false;
 
+            // Precalcular eventos de todos los lotes UNA sola vez
+            // (se actualiza cada vez que ALNS produce una nueva solución)
+            List<SimEvent> allEvents = new ArrayList<>();
+
             for (int blockStart = simulationStart, blockNo = 1;
                  isActive(runId) && blockStart < simulationEnd && !collapsed;
                  blockStart += blockMinutes, blockNo++) {
@@ -170,10 +174,12 @@ public class SimulationService {
 
                 if (!isActive(runId)) return;
 
-                // Construir eventos del bloque (todos los lotes, no solo los del bloque)
-                // FIX: pasamos allLots completo para que vuelos de bloques anteriores
-                // que aún están en tránsito también aparezcan en el mapa
-                List<SimEvent> events = buildEvents(solution, allLots, blockStart, blockEnd);
+                // Reconstruir eventos solo si ALNS procesó lotes nuevos
+                // (si no hubo lotes en el bloque, reusar los eventos anteriores)
+                if (!blockLots.isEmpty()) {
+                    allEvents = buildEvents(solution, allLots, blockStart, blockEnd);
+                }
+                List<SimEvent> events = allEvents;
 
                 long realStart      = System.currentTimeMillis();
                 long realDurationMs = Math.max(1,
@@ -380,7 +386,7 @@ public class SimulationService {
                 .filter(e -> !landedIds.contains(e.flightId()))
                 .map(e -> new RouteState(e.from(), e.to(), e.bags(), "departed"))
                 .sorted(Comparator.comparingInt(RouteState::bags).reversed())
-                .limit(60)
+                .limit(40)
                 .collect(Collectors.toList());
 
         // "just_landed": vuelos que aterrizaron en los últimos 2 minutos simulados
@@ -411,9 +417,9 @@ public class SimulationService {
     }
 
     private int daysForMode(String mode) {
-        if ("periodo".equals(mode)) return 5;
-        if ("colapso".equals(mode)) return 0;
-        return 1;
+        if ("periodo".equals(mode)) return 3;   // 3 días = ~72 bloques
+        if ("colapso".equals(mode)) return 5;   // 5 días para llegar al colapso
+        return 1;                                // dia-a-dia = 24 bloques de 1h
     }
 
     private String normalizeMode(String mode) {
