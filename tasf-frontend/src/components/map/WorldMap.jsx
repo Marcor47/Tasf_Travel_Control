@@ -3,6 +3,7 @@ import {
   ComposableMap, Geographies, Geography,
   Marker, Line
 } from "react-simple-maps";
+import { STATIC_AIRPORTS } from "../../data/staticAirports";
 
 const GEO_URL =
   "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json";
@@ -73,7 +74,9 @@ export default function WorldMap({
     }
   });
 
-  const shownAirports = airports.length > 0 ? airports : [];
+  // Si no hay datos del backend aún, mostrar los aeropuertos estáticos
+  // para que el mapa no quede vacío antes de iniciar la simulación
+  const shownAirports = airports.length > 0 ? airports : STATIC_AIRPORTS;
   const airportMap    = Object.fromEntries(
     shownAirports.map(a => [a.code, [a.lng, a.lat]])
   );

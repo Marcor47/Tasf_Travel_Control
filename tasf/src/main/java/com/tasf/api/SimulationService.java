@@ -23,6 +23,7 @@ import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -41,10 +42,12 @@ public class SimulationService {
     // Intervalo de broadcast en ms durante la animación del bloque
     private static final int            BROADCAST_INTERVAL_MS = 800;
 
-    private final List<SseEmitter> emitters   = new CopyOnWriteArrayList<>();
-    private final ExecutorService  executor   = Executors.newSingleThreadExecutor();
-    private final AtomicBoolean    running    = new AtomicBoolean(false);
-    private final AtomicInteger    generation = new AtomicInteger(0);
+    private final List<SseEmitter> emitters      = new CopyOnWriteArrayList<>();
+    private final ExecutorService  executor      = Executors.newSingleThreadExecutor();
+    // Executor separado para calcular el siguiente bloque en paralelo (lookahead)
+    private final ExecutorService  lookahead     = Executors.newSingleThreadExecutor();
+    private final AtomicBoolean    running       = new AtomicBoolean(false);
+    private final AtomicInteger    generation    = new AtomicInteger(0);
 
     private volatile SimulationState state = SimulationState.initial();
 
@@ -129,10 +132,23 @@ public class SimulationService {
             int             delivered       = 0;
             int             replanifications = 0;
             boolean         collapsed       = false;
+            List<SimEvent>  allEvents       = new ArrayList<>();
 
-            // Precalcular eventos de todos los lotes UNA sola vez
-            // (se actualiza cada vez que ALNS produce una nueva solución)
-            List<SimEvent> allEvents = new ArrayList<>();
+            // ── LOOKAHEAD: calcular el primer bloque antes de entrar al loop ──
+            // Para cada bloque siguiente, ALNS corre en paralelo mientras
+            // se anima el bloque actual, eliminando el tiempo muerto de recálculo
+            int firstBlockEnd = Math.min(simulationStart + blockMinutes, simulationEnd);
+            final int fbStart = simulationStart;
+            final int fbEnd   = firstBlockEnd;
+            List<BaggageLot> firstBlockLots = allLots.stream()
+                    .filter(l -> l.getRegistrationHour() >= fbStart
+                              && l.getRegistrationHour() <  fbEnd)
+                    .sorted(Comparator.comparingInt(BaggageLot::getRegistrationHour))
+                    .collect(Collectors.toList());
+
+            // Future para el resultado del bloque precalculado
+            java.util.concurrent.Future<WorkingSolution> nextSolutionFuture =
+                    submitALNS(lookahead, context, firstBlockLots, 1, solution);
 
             for (int blockStart = simulationStart, blockNo = 1;
                  isActive(runId) && blockStart < simulationEnd && !collapsed;
@@ -142,58 +158,79 @@ public class SimulationService {
                 final int cbStart = blockStart;
                 final int cbEnd   = blockEnd;
 
-                // Lotes cuyo registro cae en este bloque
+                // Lotes de este bloque
+                // En modo colapso triplicamos maletas para forzar saturación
+                final boolean collapseMode = "colapso".equals(request.mode());
                 List<BaggageLot> blockLots = allLots.stream()
                         .filter(lot -> lot.getRegistrationHour() >= cbStart
                                     && lot.getRegistrationHour() <  cbEnd)
+                        .map(lot -> !collapseMode ? lot
+                                : new BaggageLot(lot.getId(), lot.getOrigin(),
+                                                  lot.getDestination(),
+                                                  lot.getQuantity() * 3,
+                                                  lot.getRegistrationHour(),
+                                                  lot.getDueHour(),
+                                                  lot.isReplanningPriority()))
                         .sorted(Comparator.comparingInt(BaggageLot::getRegistrationHour))
                         .collect(Collectors.toList());
 
-                // Notificar inicio de bloque CONSERVANDO las rutas del estado anterior
-                // para que el mapa no quede vacío durante el cálculo de ALNS
+                // Notificar inicio de bloque — mantener rutas del bloque anterior visibles
                 List<AirportState> staticAirports = airportStaticList(airports, solution, cbStart);
-                List<RouteState>   prevRoutes     = state.routes(); // rutas del bloque anterior
+                List<RouteState>   prevRoutes     = state.routes();
                 state = new SimulationState(
                         true, request.mode(),
                         fmtClock(blockStart), blockNo,
                         fmtClock(blockStart), fmtClock(blockEnd),
                         staticAirports, prevRoutes, List.of(),
                         buildKpis(allLots, solution, staticAirports, delivered, replanifications, 0),
-                        false, "Planificando bloque " + blockNo
-                               + " (" + blockLots.size() + " lotes)...");
+                        false, blockLots.isEmpty()
+                               ? "Simulación activa"
+                               : "Planificando bloque " + blockNo
+                                 + " (" + blockLots.size() + " lotes)...");
                 broadcast(state);
 
-                // ALNS para este bloque
-                if (!blockLots.isEmpty()) {
-                    Map<String, List<RoutePlan>> candidates =
-                            new ALNSPlanner(context, blockNo).buildCandidateMap(blockLots);
-                    solution = new ALNSPlanner(context, blockNo)
-                            .solveWithCandidates(blockLots, ALNS_TIME_BUDGET_SEC,
-                                    ALNS_MAX_ITERATIONS, null, candidates, List.of(), solution);
+                // Recoger resultado ALNS del lookahead (esperar solo si aún no terminó)
+                try {
+                    if (!blockLots.isEmpty()) {
+                        solution = nextSolutionFuture.get();
+                        allEvents = buildEvents(solution, allLots, blockStart, blockEnd);
+                    }
+                } catch (Exception e) {
+                    System.err.println("Error en ALNS lookahead bloque " + blockNo + ": " + e.getMessage());
                 }
 
                 if (!isActive(runId)) return;
 
-                // Reconstruir eventos solo si ALNS procesó lotes nuevos
-                // (si no hubo lotes en el bloque, reusar los eventos anteriores)
-                if (!blockLots.isEmpty()) {
-                    allEvents = buildEvents(solution, allLots, blockStart, blockEnd);
+                // Preparar el SIGUIENTE bloque en paralelo mientras animamos éste
+                int nextBlockStart = blockStart + blockMinutes;
+                int nextBlockEnd   = Math.min(nextBlockStart + blockMinutes, simulationEnd);
+                final int nbStart  = nextBlockStart;
+                final int nbEnd    = nextBlockEnd;
+                final WorkingSolution solSnap = solution;
+                final int nextBlockNo = blockNo + 1;
+
+                if (nextBlockStart < simulationEnd) {
+                    List<BaggageLot> nextLots = allLots.stream()
+                            .filter(l -> l.getRegistrationHour() >= nbStart
+                                      && l.getRegistrationHour() <  nbEnd)
+                            .sorted(Comparator.comparingInt(BaggageLot::getRegistrationHour))
+                            .collect(Collectors.toList());
+                    nextSolutionFuture = submitALNS(lookahead, context, nextLots, nextBlockNo, solSnap);
                 }
-                List<SimEvent> events = allEvents;
 
-                long realStart      = System.currentTimeMillis();
-                long realDurationMs = Math.max(1,
+                // Animar el bloque actual
+                List<SimEvent> events  = allEvents;
+                long realStart         = System.currentTimeMillis();
+                long realDurationMs    = Math.max(1,
                         request.blockSecondsOrDefault(BLOCK_REAL_SECONDS)) * 1000L;
-                int  nextEvent      = 0;
+                int  nextEvent         = 0;
 
-                // Animar el bloque en tiempo real
                 while (isActive(runId)) {
                     long elapsedMs    = System.currentTimeMillis() - realStart;
                     int  simulatedNow = blockStart + (int) Math.min(
                             (long)(blockEnd - blockStart),
                             (elapsedMs * (long)(blockEnd - blockStart)) / realDurationMs);
 
-                    // Procesar eventos que ya ocurrieron
                     List<SimEvent> emitted = new ArrayList<>();
                     while (nextEvent < events.size()
                            && events.get(nextEvent).minute() <= simulatedNow) {
@@ -204,15 +241,11 @@ public class SimulationService {
                         }
                     }
 
-                    int activeFlights = countActiveFlights(events, simulatedNow);
-
-                    // FIX Bug 1: pasar simulatedNow (minutos absolutos desde BASE_UTC)
-                    // directamente a warehouseLoadAt, que también usa BASE_UTC
+                    int                activeFlights = countActiveFlights(events, simulatedNow);
                     List<AirportState> airportStates = airportStates(airports, solution, simulatedNow);
-                    Kpis kpis = buildKpis(allLots, solution, airportStates,
-                                          delivered, replanifications, activeFlights);
-                    collapsed = airportStates.stream()
-                                             .anyMatch(a -> a.current() > a.capacity());
+                    Kpis               kpis          = buildKpis(allLots, solution, airportStates,
+                                                                  delivered, replanifications, activeFlights);
+                    collapsed = airportStates.stream().anyMatch(a -> a.current() > a.capacity());
 
                     state = new SimulationState(
                             true, request.mode(),
@@ -221,7 +254,7 @@ public class SimulationService {
                             airportStates,
                             recentRoutes(events, simulatedNow),
                             emitted, kpis, collapsed,
-                            collapsed ? "Capacidad de almacén excedida" : "Simulación activa");
+                            collapsed ? "⚠ Capacidad de almacén excedida" : "Simulación activa");
                     broadcast(state);
 
                     if (simulatedNow >= blockEnd) break;
@@ -242,6 +275,31 @@ public class SimulationService {
             state = state.withRunning(false).withMessage("Error: " + e.getMessage());
             broadcast(state);
         }
+    }
+
+    // ── Lookahead ALNS helper ────────────────────────────────────────────────
+
+    private java.util.concurrent.Future<WorkingSolution> submitALNS(
+            ExecutorService pool,
+            PlanningContext context,
+            List<BaggageLot> blockLots,
+            int blockNo,
+            WorkingSolution currentSolution) {
+
+        final WorkingSolution snap = currentSolution;
+        return pool.submit(() -> {
+            if (blockLots.isEmpty()) return snap;
+            try {
+                Map<String, List<RoutePlan>> candidates =
+                        new ALNSPlanner(context, blockNo).buildCandidateMap(blockLots);
+                return new ALNSPlanner(context, blockNo)
+                        .solveWithCandidates(blockLots, ALNS_TIME_BUDGET_SEC,
+                                ALNS_MAX_ITERATIONS, null, candidates, List.of(), snap);
+            } catch (Exception e) {
+                System.err.println("ALNS error bloque " + blockNo + ": " + e.getMessage());
+                return snap;
+            }
+        });
     }
 
     // ── Helpers de estado ────────────────────────────────────────────────────
