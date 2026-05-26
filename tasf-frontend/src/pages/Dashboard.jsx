@@ -12,12 +12,17 @@ export default function Dashboard({ mode, simulation }) {
     <div className="relative flex gap-2 p-2 h-[calc(100vh-72px)]">
       {/* Panel izquierdo */}
       <div className="w-64 flex-shrink-0 overflow-y-auto">
-        <SLAMonitor kpis={kpis} events={simulation?.events ?? []}/>
+        <SLAMonitor kpis={kpis} events={simulation?.events ?? []} running={simulation?.running ?? false}/>
       </div>
 
       {/* Mapa central */}
       <div className="flex-1 relative">
-        <WorldMap airports={simulation?.airports ?? []} routes={simulation?.routes ?? []}/>
+        <WorldMap
+          airports={simulation?.airports ?? []}
+          routes={simulation?.routes ?? []}
+          running={simulation?.running ?? false}
+          message={simulation?.message ?? ""}
+        />
         {/* Botón para demo del colapso */}
         {mode === "colapso" && (
           <button

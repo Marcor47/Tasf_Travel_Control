@@ -5,6 +5,7 @@ import Dashboard     from "./pages/Dashboard";
 import RegisterLot   from "./pages/RegisterLot";
 import LiveMonitor   from "./pages/LiveMonitor";
 import ReportView    from "./pages/ReportView";
+import HistoryView   from "./pages/HistoryView";
 import { useSimulation } from "./hooks/useSimulation";
 
 function AppContent() {
@@ -15,6 +16,7 @@ function AppContent() {
   const mode = pathname === "/colapso" ? "colapso"
              : pathname === "/periodo" ? "periodo"
              : "diadia";
+
   const handleToggle = () => running ? stop() : start(mode);
 
   return (
@@ -26,16 +28,24 @@ function AppContent() {
 
       <main className="flex-1 overflow-hidden">
         <Routes>
-          <Route path="/"          element={<Dashboard mode="diadia" simulation={simulation}/>}/>
-          <Route path="/periodo"   element={<Dashboard mode="periodo" simulation={simulation}/>}/>
-          <Route path="/colapso"   element={<Dashboard mode="colapso" simulation={simulation}/>}/>
-          <Route path="/registro"  element={<RegisterLot/>}/>
-          <Route path="/monitoreo" element={<LiveMonitor simulation={simulation}/>}/>
-          <Route path="/reportes"  element={<ReportView/>}/>
-          <Route path="/historial" element={
-            <div className="p-8 text-gray-400 text-center">
-              Historial — próximamente
-            </div>}/>
+          <Route path="/"
+            element={<Dashboard mode="diadia"  simulation={simulation}/>}/>
+          <Route path="/periodo"
+            element={<Dashboard mode="periodo" simulation={simulation}/>}/>
+          <Route path="/colapso"
+            element={<Dashboard mode="colapso" simulation={simulation}/>}/>
+          <Route path="/registro"
+            element={<RegisterLot/>}/>
+          <Route path="/monitoreo"
+            element={<LiveMonitor simulation={simulation}/>}/>
+          <Route path="/reportes"
+            element={<ReportView simulation={simulation}/>}/>
+          <Route path="/historial"
+            element={
+              <HistoryView
+                events={simulation?.events ?? []}
+                running={simulation?.running ?? false}/>
+            }/>
         </Routes>
       </main>
 
