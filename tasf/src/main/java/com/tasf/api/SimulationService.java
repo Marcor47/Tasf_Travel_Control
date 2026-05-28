@@ -397,7 +397,7 @@ public class SimulationService {
             }
         }
         return grouped.values().stream()
-                .map(EventAccumulator::toEvent)
+                .map(acc -> acc.toEvent(fmtClock(acc.minute)))
                 .sorted(Comparator.comparingInt(SimEvent::minute)
                                   .thenComparing(SimEvent::type))
                 .collect(Collectors.toList());
@@ -518,8 +518,8 @@ public class SimulationService {
             this.flightId = flightId;
             this.finalDestination = finalDestination;
         }
-        SimEvent toEvent() {
-            return new SimEvent(minute, type, from, to, flightId, bags, finalDestination);
+        SimEvent toEvent(String clock) {
+            return new SimEvent(minute, type, from, to, flightId, bags, finalDestination, clock);
         }
     }
 
@@ -559,7 +559,8 @@ public class SimulationService {
                                 int capacity, int current) {}
     public record RouteState(String from, String to, int bags, String status) {}
     public record SimEvent(int minute, String type, String from, String to,
-                           String flightId, int bags, boolean finalDestination) {}
+                           String flightId, int bags, boolean finalDestination,
+                           String clock) {}
     public record Kpis(int activeFlights, int saturationPercent,
                        int occupancyPercent, double avgDeliveryDays,
                        int replanifications, int deliveredOnTime,
