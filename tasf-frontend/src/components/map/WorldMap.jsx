@@ -5,8 +5,7 @@ import {
 } from "react-simple-maps";
 import { STATIC_AIRPORTS } from "../../data/staticAirports";
 
-const GEO_URL =
-  "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json";
+const GEO_URL = "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json";
 
 function injectAnimation() {
   if (document.getElementById("route-anim-style")) return;
@@ -18,15 +17,11 @@ function injectAnimation() {
       to   { stroke-dashoffset: 0; }
     }
     @keyframes fadeOut {
-      from { opacity: 0.3; }
+      from { opacity: 0.35; }
       to   { opacity: 0; }
     }
-    .route-active {
-      animation: dashMove 1.4s linear infinite;
-    }
-    .route-fading {
-      animation: fadeOut 5s forwards;
-    }
+    .route-active { animation: dashMove 1.4s linear infinite; }
+    .route-fading { animation: fadeOut 5s forwards; }
   `;
   document.head.appendChild(style);
 }
@@ -35,90 +30,120 @@ const LANDED_TTL_MS = 5000;
 
 export default function WorldMap({
   airports = [], routes = [], onAirportClick,
-  running = false, message = ""
+  running = false, message = "",
+  activeFlightsCount = 0  // número real del backend
 }) {
   useEffect(() => { injectAnimation(); }, []);
 
-  const landedRoutes    = useRef({});
-  const [, setTick]     = useState(0);
+  // Estado del limitador: "limited" (40 líneas) o "all" (todas)
+  const [lineMode, setLineMode] = useState("limited");
+
+  const landedRoutes = useRef({});
+  const [, setTick]  = useState(0);
 
   useEffect(() => {
-    if (!running) {
-      landedRoutes.current = {};
-      return;
-    }
+    if (!running) { landedRoutes.current = {}; return; }
     const id = setInterval(() => setTick(t => t + 1), 800);
     return () => clearInterval(id);
   }, [running]);
 
   const now = Date.now();
 
-  // Procesar rutas del backend
   if (running && routes.length > 0) {
     routes.forEach(r => {
       const key = `${r.from}-${r.to}`;
       if (r.status === "just_landed") {
-        if (!landedRoutes.current[key]) {
+        if (!landedRoutes.current[key])
           landedRoutes.current[key] = { from: r.from, to: r.to, addedAt: now };
-        }
       } else if (r.status === "departed") {
         delete landedRoutes.current[key];
       }
     });
   }
 
-  // Limpiar expiradas
   Object.keys(landedRoutes.current).forEach(key => {
-    if (now - landedRoutes.current[key].addedAt > LANDED_TTL_MS + 500) {
+    if (now - landedRoutes.current[key].addedAt > LANDED_TTL_MS + 500)
       delete landedRoutes.current[key];
-    }
   });
 
-  // Si no hay datos del backend aún, mostrar los aeropuertos estáticos
-  // para que el mapa no quede vacío antes de iniciar la simulación
   const shownAirports = airports.length > 0 ? airports : STATIC_AIRPORTS;
   const airportMap    = Object.fromEntries(
     shownAirports.map(a => [a.code, [a.lng, a.lat]])
   );
 
-  const activeRoutes = (!running || routes.length === 0) ? []
+  // Rutas activas: solo las que tienen equipaje (ya filtradas por el backend)
+  const allActive = (!running || routes.length === 0)
+    ? []
     : routes.filter(r => r.status === "departed");
+
+  // Aplicar límite según el modo del selector
+  const activeRoutes = lineMode === "limited"
+    ? allActive.slice(0, 40)
+    : allActive;
 
   const fadingRoutes = Object.values(landedRoutes.current)
     .filter(r => (now - r.addedAt) < LANDED_TTL_MS);
 
-  // ¿Está en fase de cálculo ALNS? (el mensaje lo indica)
   const isCalculating = running && message.startsWith("Planificando");
 
   return (
     <div className="w-full h-full bg-[#031525] rounded border border-teal/20 relative">
-      <div className="flex items-center justify-between px-2 pt-2 pb-1">
-        <p className="text-teal text-[10px] font-bold uppercase tracking-wide">
+
+      {/* Header con info y selector */}
+      <div className="flex items-center justify-between px-2 pt-2 pb-1 gap-2">
+        <p className="text-teal text-[10px] font-bold uppercase tracking-wide flex-shrink-0">
           Monitoreo de Rutas y Posición GPS Real
         </p>
-        {/* Indicador de estado visible durante cálculo */}
-        {isCalculating && (
-          <span className="text-[10px] text-yellow-400 animate-pulse font-medium">
-            ⚙ {message}
-          </span>
-        )}
-        {running && !isCalculating && activeRoutes.length > 0 && (
-          <span className="text-[10px] text-green-400">
-            ✈ {activeRoutes.length} vuelos activos
-          </span>
+
+        {/* Estado del mapa */}
+        <div className="flex items-center gap-2 flex-1 justify-center">
+          {isCalculating && (
+            <span className="text-[10px] text-yellow-400 animate-pulse">
+              ⚙ {message}
+            </span>
+          )}
+          {running && !isCalculating && (
+            <span className="text-[10px] text-gray-400">
+              {/* Punto 1 fix: mostrar total real del backend, no el array limitado */}
+              ✈ <span className="text-white font-bold">{activeFlightsCount}</span> vuelos
+              activos
+              {lineMode === "limited" && allActive.length > 40 && (
+                <span className="text-gray-600 ml-1">
+                  (mostrando {Math.min(40, allActive.length)} en mapa)
+                </span>
+              )}
+            </span>
+          )}
+        </div>
+
+        {/* Selector de líneas — Punto 3 */}
+        {running && (
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <span className="text-gray-600 text-[10px]">Líneas:</span>
+            <button
+              onClick={() => setLineMode(m => m === "limited" ? "all" : "limited")}
+              className={`text-[10px] px-2 py-0.5 rounded transition font-medium
+                ${lineMode === "limited"
+                  ? "bg-teal/20 text-teal border border-teal/40"
+                  : "bg-orange-900/40 text-orange-400 border border-orange-700/40"}`}>
+              {lineMode === "limited"
+                ? `≤40 rutas`
+                : `todas (${allActive.length})`}
+            </button>
+          </div>
         )}
       </div>
 
       <ComposableMap
         projection="geoMercator"
         projectionConfig={{ scale: 120, center: [20, 10] }}
-        style={{ width: "100%", height: "calc(100% - 32px)" }}>
+        style={{ width: "100%", height: "calc(100% - 34px)" }}>
 
         <Geographies geography={GEO_URL}>
           {({ geographies }) =>
             geographies.map(geo => (
               <Geography key={geo.rsmKey} geography={geo}
-                fill="#0a2540" stroke="#1C7293" strokeWidth={0.3} />
+                fill="#0a2540" stroke="#1C7293" strokeWidth={0.3}/>
             ))
           }
         </Geographies>
@@ -131,15 +156,13 @@ export default function WorldMap({
           return (
             <Line key={`fading-${r.from}-${r.to}-${i}`}
               from={from} to={to}
-              stroke="#2DD4BF"
-              strokeWidth={0.7}
-              strokeLinecap="round"
-              strokeDasharray="6 4"
-              className="route-fading" />
+              stroke="#2DD4BF" strokeWidth={0.7}
+              strokeLinecap="round" strokeDasharray="6 4"
+              className="route-fading"/>
           );
         })}
 
-        {/* Rutas activas animadas */}
+        {/* Rutas activas con equipaje */}
         {activeRoutes.map((r, i) => {
           const from = airportMap[r.from];
           const to   = airportMap[r.to];
@@ -147,11 +170,9 @@ export default function WorldMap({
           return (
             <Line key={`active-${r.from}-${r.to}-${i}`}
               from={from} to={to}
-              stroke="#F4A261"
-              strokeWidth={1.2}
-              strokeLinecap="round"
-              strokeDasharray="8 4"
-              className="route-active" />
+              stroke="#F4A261" strokeWidth={1.2}
+              strokeLinecap="round" strokeDasharray="8 4"
+              className="route-active"/>
           );
         })}
 
@@ -167,10 +188,10 @@ export default function WorldMap({
               coordinates={[a.lng, a.lat]}
               onClick={() => onAirportClick?.(a)}>
               <circle r={r} fill={fill} stroke="#fff" strokeWidth={0.8}
-                style={{ cursor: "pointer" }} />
+                style={{ cursor: "pointer" }}/>
               <text textAnchor="middle" y={-(r + 3)}
-                style={{ fontSize: 7, fill: "#9DBDCC",
-                         fontFamily: "sans-serif", pointerEvents: "none" }}>
+                style={{ fontSize:7, fill:"#9DBDCC",
+                         fontFamily:"sans-serif", pointerEvents:"none" }}>
                 {a.code}
               </text>
             </Marker>
