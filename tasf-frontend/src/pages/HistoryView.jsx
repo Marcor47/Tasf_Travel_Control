@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 
 const MAX_HISTORY = 300;
 
@@ -53,51 +53,9 @@ function matchFilter(filter, e) {
   return true;
 }
 
-export default function HistoryView({ events = [], running = false }) {
-  const [history, setHistory] = useState([]);
+export default function HistoryView({ history = [], running = false }) {
   const [filter,  setFilter]  = useState("all");
   const [search,  setSearch]  = useState("");
-  const prevEventsRef         = useRef([]);
-
-  useEffect(() => {
-    if (!events || events.length === 0) return;
-
-    // Comparar por contenido real, no por longitud — robusto ante arrays
-    // que lleguen con la misma longitud pero distintos elementos.
-    // finalDestination incluido para no perder la segunda fila "landed"
-    // que genera un mismo vuelo con maletas de destinos distintos.
-    const prev   = prevEventsRef.current;
-    const newEvs = events.filter(e =>
-      !prev.some(p =>
-        p.minute           === e.minute            &&
-        p.flightId         === e.flightId          &&
-        p.type             === e.type              &&
-        p.finalDestination === e.finalDestination
-      )
-    );
-    if (newEvs.length === 0) return;
-    prevEventsRef.current = events;
-
-    setHistory(h => {
-      const combined = [...newEvs.slice().reverse(), ...h];
-      const seen = new Set();
-      return combined
-        .filter(e => {
-          const k = `${e.minute}-${e.flightId}-${e.type}-${e.finalDestination}`;
-          if (seen.has(k)) return false;
-          seen.add(k);
-          return true;
-        })
-        .slice(0, MAX_HISTORY);
-    });
-  }, [events]);
-
-  useEffect(() => {
-    if (running) {
-      setHistory([]);
-      prevEventsRef.current = [];
-    }
-  }, [running]);
 
   const filtered = history.filter(e => {
     if (!matchFilter(filter, e)) return false;

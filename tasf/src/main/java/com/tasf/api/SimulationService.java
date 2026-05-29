@@ -182,11 +182,12 @@ public class SimulationService {
                         fmtClock(blockStart), blockNo,
                         fmtClock(blockStart), fmtClock(blockEnd),
                         staticAirports, prevRoutes, List.of(),
-                        buildKpis(allLots, solution, staticAirports, delivered, replanifications, 0),
+                        // SE AÑADE blockStart AL FINAL 👇
+                        buildKpis(allLots, solution, staticAirports, delivered, replanifications, 0, blockStart),
                         false, blockLots.isEmpty()
-                               ? "Simulación activa"
-                               : "Planificando bloque " + blockNo
-                                 + " (" + blockLots.size() + " lotes)...");
+                            ? "Simulación activa"
+                            : "Planificando bloque " + blockNo
+                                + " (" + blockLots.size() + " lotes)...");
                 broadcast(state);
 
                 // Recoger resultado ALNS del lookahead (esperar solo si aún no terminó)
@@ -243,8 +244,9 @@ public class SimulationService {
 
                     int                activeFlights = countActiveFlights(events, simulatedNow);
                     List<AirportState> airportStates = airportStates(airports, solution, simulatedNow);
+                    // SE AÑADE simulatedNow AL FINAL 👇
                     Kpis               kpis          = buildKpis(allLots, solution, airportStates,
-                                                                  delivered, replanifications, activeFlights);
+                                                                delivered, replanifications, activeFlights, simulatedNow);
                     collapsed = airportStates.stream().anyMatch(a -> a.current() > a.capacity());
 
                     state = new SimulationState(
@@ -339,14 +341,23 @@ public class SimulationService {
             List<AirportState> airports,
             int delivered,
             int replanifications,
-            int activeFlights) {
+            int activeFlights,
+            int simulatedNow) { // <-- NUEVO PARÁMETRO
 
-        int totalBags = lots.stream().mapToInt(BaggageLot::getQuantity).sum();
-        int routed    = lots.stream()
+        // 1. Filtrar solo las maletas que YA entraron al sistema hasta este minuto
+        List<BaggageLot> currentLots = lots.stream()
+                .filter(lot -> lot.getRegistrationHour() <= simulatedNow)
+                .collect(Collectors.toList());
+
+        // 2. Usar 'currentLots' en vez de 'lots' para los cálculos
+        int totalBags = currentLots.stream().mapToInt(BaggageLot::getQuantity).sum();
+        int routed    = currentLots.stream()
                 .filter(lot -> solution.getPlan(lot.getId()) != null)
                 .mapToInt(BaggageLot::getQuantity).sum();
+        
         int atRisk        = Math.max(0, totalBags - routed);
-        int outOfDeadline = (int) lots.stream()
+        
+        int outOfDeadline = (int) currentLots.stream()
                 .filter(lot -> {
                     RoutePlan p = solution.getPlan(lot.getId());
                     return p != null && p.getTardinessHours() > 0;
@@ -361,7 +372,7 @@ public class SimulationService {
         int occupancyPct = capacity == 0 ? 0
                 : (int) Math.round(current * 100.0 / capacity);
 
-        double avgDeliveryDays = lots.stream()
+        double avgDeliveryDays = currentLots.stream()
                 .map(lot -> solution.getPlan(lot.getId()))
                 .filter(Objects::nonNull)
                 .mapToDouble(p -> p.getTotalTravelHours() / 1440.0)
