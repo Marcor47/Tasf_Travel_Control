@@ -23,16 +23,22 @@ export default function Dashboard({ mode, simulation, onStop }) {
     }
   }, [simulation?.running, simulation?.collapsed]);
 
-  const simulatedNow = simulation?.simulatedMinute   // si agregaste el campo
-  ?? 0;
+  // BUG FIX 4: simulatedMinute ahora viene del backend en SimulationState
+  const simulatedNow = simulation?.simulatedMinute ?? 0;
   return (
     <div className="relative flex gap-2 p-2 h-[calc(100vh-72px)]">
 
       {/* Panel izquierdo */}
       <div className="w-64 flex-shrink-0 overflow-y-auto">
+        {/*
+          BUG FIX 3: simulation.events solo contiene los eventos NUEVOS del
+          tick SSE actual (vacío entre ticks sin eventos). Cuando no llegaban
+          eventos nuevos, las tablas del SLAMonitor quedaban vacías al navegar
+          entre vistas. simulation.history acumula TODOS los eventos correctamente.
+        */}
         <SLAMonitor
           kpis={kpis}
-          events={simulation?.events ?? []}
+          events={simulation?.history ?? []}
           running={simulation?.running ?? false}
           simulatedNow={simulatedNow}
         />

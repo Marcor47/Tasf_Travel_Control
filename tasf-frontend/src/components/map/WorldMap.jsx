@@ -29,54 +29,69 @@ function injectAnimation() {
 const LANDED_TTL_MS = 5000;
 
 export default function WorldMap({
-  airports = [], routes = [], onAirportClick,
-  running = false, message = "",
-  activeFlightsCount = 0  // número real del backend
+  airports = [], 
+  routes = [], 
+  onAirportClick,
+  running = false, 
+  message = ""
+  // Eliminada la prop activeFlightsCount por ser redundante y causar el error del "0"
 }) {
   useEffect(() => { injectAnimation(); }, []);
 
-  // Estado del limitador: "limited" (40 líneas) o "all" (todas)
   const [lineMode, setLineMode] = useState("limited");
-
   const landedRoutes = useRef({});
   const [, setTick]  = useState(0);
 
+  // 1. Calculamos las rutas activas reales directamente de los datos
+  const allActive = (!running || routes.length === 0)
+    ? []
+    : routes.filter(r => r.status === "departed");
+
+  // 2. Manejamos la lógica de rutas aterrizadas en un useEffect (Práctica correcta en React)
   useEffect(() => {
-    if (!running) { landedRoutes.current = {}; return; }
+    if (!running) { 
+      landedRoutes.current = {}; 
+      return; 
+    }
+
+    const now = Date.now();
+
+    // Agregar o remover rutas del registro de aterrizajes
+    if (routes.length > 0) {
+      routes.forEach(r => {
+        const key = `${r.from}-${r.to}`;
+        if (r.status === "just_landed") {
+          if (!landedRoutes.current[key]) {
+            landedRoutes.current[key] = { from: r.from, to: r.to, addedAt: now };
+          }
+        } else if (r.status === "departed") {
+          delete landedRoutes.current[key];
+        }
+      });
+    }
+
+    // Limpiar rutas expiradas
+    Object.keys(landedRoutes.current).forEach(key => {
+      if (now - landedRoutes.current[key].addedAt > LANDED_TTL_MS + 500) {
+        delete landedRoutes.current[key];
+      }
+    });
+  }, [routes, running]);
+
+  // 3. Timer independiente solo para forzar el re-render de la animación de fadeOut
+  useEffect(() => {
+    if (!running) return;
     const id = setInterval(() => setTick(t => t + 1), 800);
     return () => clearInterval(id);
   }, [running]);
 
   const now = Date.now();
 
-  if (running && routes.length > 0) {
-    routes.forEach(r => {
-      const key = `${r.from}-${r.to}`;
-      if (r.status === "just_landed") {
-        if (!landedRoutes.current[key])
-          landedRoutes.current[key] = { from: r.from, to: r.to, addedAt: now };
-      } else if (r.status === "departed") {
-        delete landedRoutes.current[key];
-      }
-    });
-  }
-
-  Object.keys(landedRoutes.current).forEach(key => {
-    if (now - landedRoutes.current[key].addedAt > LANDED_TTL_MS + 500)
-      delete landedRoutes.current[key];
-  });
-
   const shownAirports = airports.length > 0 ? airports : STATIC_AIRPORTS;
-  const airportMap    = Object.fromEntries(
+  const airportMap = Object.fromEntries(
     shownAirports.map(a => [a.code, [a.lng, a.lat]])
   );
 
-  // Rutas activas: solo las que tienen equipaje (ya filtradas por el backend)
-  const allActive = (!running || routes.length === 0)
-    ? []
-    : routes.filter(r => r.status === "departed");
-
-  // Aplicar límite según el modo del selector
   const activeRoutes = lineMode === "limited"
     ? allActive.slice(0, 40)
     : allActive;
@@ -104,19 +119,18 @@ export default function WorldMap({
           )}
           {running && !isCalculating && (
             <span className="text-[10px] text-gray-400">
-              {/* Punto 1 fix: mostrar total real del backend, no el array limitado */}
-              ✈ <span className="text-white font-bold">{activeFlightsCount}</span> vuelos
-              activos
+              {/* Corrección del indicador: Ahora usamos allActive.length */}
+              ✈ <span className="text-white font-bold">{allActive.length}</span> vuelos activos
               {lineMode === "limited" && allActive.length > 40 && (
                 <span className="text-gray-600 ml-1">
-                  (mostrando {Math.min(40, allActive.length)} en mapa)
+                  (mostrando 40 en mapa)
                 </span>
               )}
             </span>
           )}
         </div>
 
-        {/* Selector de líneas — Punto 3 */}
+        {/* Selector de líneas */}
         {running && (
           <div className="flex items-center gap-1 flex-shrink-0">
             <span className="text-gray-600 text-[10px]">Líneas:</span>

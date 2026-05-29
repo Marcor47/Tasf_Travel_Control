@@ -182,12 +182,12 @@ public class SimulationService {
                         fmtClock(blockStart), blockNo,
                         fmtClock(blockStart), fmtClock(blockEnd),
                         staticAirports, prevRoutes, List.of(),
-                        // SE AÑADE blockStart AL FINAL 👇
                         buildKpis(allLots, solution, staticAirports, delivered, replanifications, 0, blockStart),
                         false, blockLots.isEmpty()
                             ? "Simulación activa"
                             : "Planificando bloque " + blockNo
-                                + " (" + blockLots.size() + " lotes)...");
+                                + " (" + blockLots.size() + " lotes)...",
+                        blockStart); // simulatedMinute
                 broadcast(state);
 
                 // Recoger resultado ALNS del lookahead (esperar solo si aún no terminó)
@@ -224,7 +224,19 @@ public class SimulationService {
                 long realStart         = System.currentTimeMillis();
                 long realDurationMs    = Math.max(1,
                         request.blockSecondsOrDefault(BLOCK_REAL_SECONDS)) * 1000L;
-                int  nextEvent         = 0;
+
+                // BUG FIX 1: nextEvent debe arrancar desde el primer evento del bloque actual,
+                // no desde 0. allEvents contiene eventos de TODOS los bloques (para que vuelos
+                // de bloques anteriores sigan visibles en el mapa), pero resetear a 0 en cada
+                // bloque causaba que los eventos ya procesados volvieran a sumar en 'delivered',
+                // inflando el contador artificialmente (e.g. 3000 bags entregadas pasaban a
+                // 6000 al comenzar el bloque siguiente).
+                final int fBlockStart = blockStart;
+                int nextEvent = 0;
+                while (nextEvent < events.size()
+                       && events.get(nextEvent).minute() < fBlockStart) {
+                    nextEvent++;
+                }
 
                 while (isActive(runId)) {
                     long elapsedMs    = System.currentTimeMillis() - realStart;
@@ -256,7 +268,8 @@ public class SimulationService {
                             airportStates,
                             recentRoutes(events, simulatedNow),
                             emitted, kpis, collapsed,
-                            collapsed ? "⚠ Capacidad de almacén excedida" : "Simulación activa");
+                            collapsed ? "⚠ Capacidad de almacén excedida" : "Simulación activa",
+                            simulatedNow); // simulatedMinute
                     broadcast(state);
 
                     if (simulatedNow >= blockEnd) break;
@@ -356,12 +369,19 @@ public class SimulationService {
                 .mapToInt(BaggageLot::getQuantity).sum();
         
         int atRisk        = Math.max(0, totalBags - routed);
-        
-        int outOfDeadline = (int) currentLots.stream()
+
+        // BUG FIX 2: usar .mapToInt(quantity).sum() en vez de .count().
+        // .count() devolvía el número de LOTES con tardiness (ej: 5 lotes),
+        // mientras que deliveredOnTime y routedBags son sumas de MALETAS (ej: 5000).
+        // La mezcla de unidades hacía que la fórmula del frontend
+        // inTransit = routedBags - delivered - overdue fuera incorrecta.
+        int outOfDeadline = currentLots.stream()
                 .filter(lot -> {
                     RoutePlan p = solution.getPlan(lot.getId());
                     return p != null && p.getTardinessHours() > 0;
-                }).count();
+                })
+                .mapToInt(BaggageLot::getQuantity)
+                .sum();
 
         int capacity    = airports.stream().mapToInt(AirportState::capacity).sum();
         int current     = airports.stream().mapToInt(AirportState::current).sum();
@@ -545,23 +565,26 @@ public class SimulationService {
             String blockStart, String blockEnd,
             List<AirportState> airports, List<RouteState> routes,
             List<SimEvent> events, Kpis kpis,
-            boolean collapsed, String message) {
+            // BUG FIX 4: el frontend leía simulation?.simulatedMinute pero este campo
+            // no existía en el record → siempre era undefined/0.
+            // slaStatus() necesita este valor para colorear correctamente los eventos.
+            boolean collapsed, String message, int simulatedMinute) {
 
         static SimulationState initial() {
             return new SimulationState(false, "diadia", "Dia --  00:00", 0,
-                    "", "", List.of(), List.of(), List.of(), Kpis.empty(), false, "Listo");
+                    "", "", List.of(), List.of(), List.of(), Kpis.empty(), false, "Listo", 0);
         }
         SimulationState withRunning(boolean v) {
             return new SimulationState(v, mode, clock, block, blockStart, blockEnd,
-                    airports, routes, events, kpis, collapsed, message);
+                    airports, routes, events, kpis, collapsed, message, simulatedMinute);
         }
         SimulationState withMode(String v) {
             return new SimulationState(running, v, clock, block, blockStart, blockEnd,
-                    airports, routes, events, kpis, collapsed, message);
+                    airports, routes, events, kpis, collapsed, message, simulatedMinute);
         }
         SimulationState withMessage(String v) {
             return new SimulationState(running, mode, clock, block, blockStart, blockEnd,
-                    airports, routes, events, kpis, collapsed, v);
+                    airports, routes, events, kpis, collapsed, v, simulatedMinute);
         }
     }
 
