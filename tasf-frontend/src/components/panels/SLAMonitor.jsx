@@ -1,21 +1,11 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 // ── Lógica de 3 estados SLA ──────────────────────────────────────────────────
-// Verde  → entregado (landed en destino final)
-// Amarillo → en tránsito / aún no se entrega
-// Rojo   → pasó el plazo (outOfDeadline / tardiness > 0)
-
-function slaStatus(event, simulatedNow) {
-  // Rojo: el evento tiene tardiness marcado por el backend
+function slaStatus(event) {
   if (event.overDeadline) return "red";
-
-  // Rojo: si tiene dueMinute y ya pasó ese límite y aún no llegó
   if (event.dueMinute && event.minute > event.dueMinute) return "red";
-
-  // Verde: aterrizó en destino final
   if (event.type === "landed" && event.finalDestination) return "green";
 
-  // Amarillo: cualquier estado intermedio (en vuelo, escala, esperando)
   return "yellow";
 }
 
@@ -42,14 +32,15 @@ function StatusBadge({ status }) {
   );
 }
 
-// ── KPIs vacíos ──────────────────────────────────────────────────────────────
 const EMPTY_KPIS = {
   activeFlights: 0, saturationPercent: 0, occupancyPercent: 0,
   avgDeliveryDays: 0, replanifications: 0, deliveredOnTime: 0,
   atRisk: 0, outOfDeadline: 0, totalBags: 0, routedBags: 0,
 };
 
-export default function SLAMonitor({ kpis = {}, events = [], running = false, simulatedNow = 0 }) {
+export default function SLAMonitor({ kpis = {}, events = [], running = false, message = "" }) {
+  const [filterText, setFilterText] = useState("");
+
   const safeKpis = {
     ...EMPTY_KPIS,
     ...Object.fromEntries(
@@ -57,19 +48,36 @@ export default function SLAMonitor({ kpis = {}, events = [], running = false, si
     ),
   };
 
-  // Últimos 5 eventos, más recientes primero
-  const liveEvents = useMemo(
-    () => (events.length ? [...events].reverse().slice(0, 5) : []),
-    [events]
-  );
+  const isPlanning = message.startsWith("Planificando");
 
-  // ── Contadores de maletas con 3 estados ─────────────────────────────────
-  // Verde  = deliveredOnTime
-  // Amarillo = en tránsito (ruteadas pero aún no entregadas)
-  // Rojo   = outOfDeadline
+  // ── Lógica de Filtrado Real para los eventos ──
+  const liveEvents = useMemo(() => {
+    if (!events.length) return [];
+    
+    // Clonamos y revertimos para tener los más recientes primero
+    let result = [...events].reverse();
+
+    // Si el usuario escribió algo en el input, filtramos en tiempo real
+    if (filterText.trim()) {
+      const query = filterText.toLowerCase();
+      result = result.filter(event => 
+        (event.flightId && event.flightId.toLowerCase().includes(query)) ||
+        event.from.toLowerCase().includes(query) ||
+        event.to.toLowerCase().includes(query)
+      );
+    }
+
+    return result.slice(0, 5);
+  }, [events, filterText]);
+
+  // ── Contadores de maletas corregidos ──
   const delivered = safeKpis.deliveredOnTime;
   const overdue   = safeKpis.outOfDeadline;
-  const inTransit = Math.max(0, safeKpis.routedBags - delivered - overdue);
+  
+  // SOLUCCIÓN AL BUG: Si está planificando o no hay vuelos activos, las maletas NO están en tránsito todavía.
+  const inTransit = (isPlanning || safeKpis.activeFlights === 0)
+    ? 0
+    : Math.max(0, safeKpis.routedBags - delivered - overdue);
 
   return (
     <div className="flex flex-col gap-2 text-xs">
@@ -90,15 +98,14 @@ export default function SLAMonitor({ kpis = {}, events = [], running = false, si
           <tbody>
             {liveEvents.length > 0 ? (
               liveEvents.map((event, idx) => {
-                const status = slaStatus(event, simulatedNow);
+                const status = slaStatus(event);
                 return (
-                  <tr key={`${event.minute}-${event.type}-${idx}`}
-                      className="border-b border-white/5">
+                  <tr key={`sla-${event.minute}-${idx}`} className="border-b border-white/5">
                     <td className="py-1 text-gray-300">
                       {event.type === "landed" ? "ARR" : "DEP"}-{idx + 1}
                     </td>
                     <td className="py-1 text-gray-400">
-                      {event.from} → {event.to} ({event.bags})
+                      {event.from} → {event.to} ({event.bags} maletas)
                     </td>
                     <td className="py-1">
                       <StatusBadge status={status} />
@@ -108,8 +115,7 @@ export default function SLAMonitor({ kpis = {}, events = [], running = false, si
               })
             ) : (
               <tr>
-                <td colSpan={3}
-                    className="py-4 text-center text-gray-600 text-[10px]">
+                <td colSpan={3} className="py-4 text-center text-gray-600 text-[10px]">
                   {running ? "Esperando eventos..." : "Inicia la simulación"}
                 </td>
               </tr>
@@ -118,17 +124,19 @@ export default function SLAMonitor({ kpis = {}, events = [], running = false, si
         </table>
       </div>
 
-      {/* ── Detalle del Paquete ─────────────────────────────────────────── */}
-      {/* Muestra filas de todos los eventos aunque no se busque por ID     */}
+      {/* ── Detalle del Paquete (Buscador Operacional) ───────────────────── */}
       <div className="bg-[#031525] border border-teal/20 rounded p-2">
         <p className="text-teal font-bold mb-2 uppercase tracking-wide text-[10px]">
           Detalle del Paquete
         </p>
         <input
-          placeholder="Filtrar por número de paquete o maleta (opcional)"
+          value={filterText}
+          onChange={(e) => setFilterText(e.target.value)}
+          placeholder="Filtrar por vuelo o aeropuerto (e.g. MIA, FLT-1)..."
           className="w-full bg-[#021020] border border-white/10 rounded
                      px-2 py-1 text-xs text-gray-300 mb-2
-                     focus:outline-none focus:border-teal"/>
+                     focus:outline-none focus:border-teal"
+        />
         <table className="w-full">
           <thead>
             <tr className="text-gray-500 border-b border-white/10">
@@ -141,10 +149,9 @@ export default function SLAMonitor({ kpis = {}, events = [], running = false, si
           <tbody>
             {liveEvents.length > 0 ? (
               liveEvents.map((event, idx) => {
-                const status = slaStatus(event, simulatedNow);
+                const status = slaStatus(event);
                 return (
-                  <tr key={`detail-${event.minute}-${idx}`}
-                      className="border-b border-white/5">
+                  <tr key={`detail-${event.minute}-${idx}`} className="border-b border-white/5">
                     <td className="py-1 text-gray-300 font-mono text-[10px]">
                       {event.flightId || `FLT-${idx + 1}`}
                     </td>
@@ -160,9 +167,8 @@ export default function SLAMonitor({ kpis = {}, events = [], running = false, si
               })
             ) : (
               <tr>
-                <td colSpan={4}
-                    className="py-3 text-center text-gray-600 text-[10px]">
-                  {running ? "Esperando datos..." : "Inicia la simulación"}
+                <td colSpan={4} className="py-3 text-center text-gray-600 text-[10px]">
+                  {filterText ? "No se encontraron coincidencias" : "Esperando datos..."}
                 </td>
               </tr>
             )}
@@ -207,7 +213,7 @@ export default function SLAMonitor({ kpis = {}, events = [], running = false, si
             Tiempo de Entrega Promedio
           </p>
           <p className="text-2xl font-bold text-white">
-            {Number(safeKpis.avgDeliveryDays || 0).toFixed(2)} dias
+            {Number(safeKpis.avgDeliveryDays || 0).toFixed(2)} días
           </p>
         </div>
       </div>
