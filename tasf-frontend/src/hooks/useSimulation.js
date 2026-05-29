@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8080";
+const MAX_HISTORY = 300;
 
 const emptyState = {
   running: false,
@@ -30,6 +31,8 @@ const emptyState = {
 
 export function useSimulation() {
   const [state, setState] = useState(emptyState);
+  const [history, setHistory] = useState([]);
+  const prevEventsRef = useRef([]);
   const sourceRef = useRef(null);
   const reconnectTimer = useRef(null);
 
@@ -83,8 +86,45 @@ export function useSimulation() {
     };
   }, [connectSSE]);
 
+  // Manejo del historial (movido desde HistoryView para que persista)
+  useEffect(() => {
+    const events = state.events;
+    if (!events || events.length === 0) return;
+
+    // Comparar por contenido real, no por longitud — robusto ante arrays
+    // que lleguen con la misma longitud pero distintos elementos.
+    // finalDestination incluido para no perder la segunda fila "landed"
+    // que genera un mismo vuelo con maletas de destinos distintos.
+    const prev   = prevEventsRef.current;
+    const newEvs = events.filter(e =>
+      !prev.some(p =>
+        p.minute           === e.minute           &&
+        p.flightId         === e.flightId         &&
+        p.type             === e.type             &&
+        p.finalDestination === e.finalDestination
+      )
+    );
+    if (newEvs.length === 0) return;
+    prevEventsRef.current = events;
+
+    setHistory(h => {
+      const combined = [...newEvs.slice().reverse(), ...h];
+      const seen = new Set();
+      return combined
+        .filter(e => {
+          const k = `${e.minute}-${e.flightId}-${e.type}-${e.finalDestination}`;
+          if (seen.has(k)) return false;
+          seen.add(k);
+          return true;
+        })
+        .slice(0, MAX_HISTORY);
+    });
+  }, [state.events]);
+
   const start = useCallback(async mode => {
     try {
+      setHistory([]);
+      prevEventsRef.current = [];
       const response = await fetch(`${API_BASE}/api/simulation/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -113,5 +153,5 @@ export function useSimulation() {
     }
   }, []);
 
-  return { ...state, start, stop };
+  return { ...state, history, start, stop };
 }

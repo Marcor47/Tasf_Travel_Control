@@ -23,6 +23,8 @@ export default function Dashboard({ mode, simulation, onStop }) {
     }
   }, [simulation?.running, simulation?.collapsed]);
 
+  const simulatedNow = simulation?.simulatedMinute   // si agregaste el campo
+  ?? 0;
   return (
     <div className="relative flex gap-2 p-2 h-[calc(100vh-72px)]">
 
@@ -31,7 +33,9 @@ export default function Dashboard({ mode, simulation, onStop }) {
         <SLAMonitor
           kpis={kpis}
           events={simulation?.events ?? []}
-          running={simulation?.running ?? false}/>
+          running={simulation?.running ?? false}
+          simulatedNow={simulatedNow}
+        />
       </div>
 
       {/* Mapa central */}

@@ -1,35 +1,36 @@
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 
 const MAX_HISTORY = 300;
 
-// Los vuelos son siempre directos (sin escalas).
-// La "conexión" es responsabilidad del envío, no del vuelo.
+// Vuelos siempre directos. finalDestination indica si las maletas
+// de esta fila llegan aquí a su destino final (true) o necesitan
+// un vuelo adicional desde este aeropuerto (false).
 //
-// Estados posibles de un evento de vuelo:
-// - departed → el vuelo salió y está en el aire
-// - landed   → el vuelo llegó a su destino de tramo
-//
-// El campo finalDestination solo se usa como indicador visual (★)
-// para señalar que ese vuelo trajo lotes a su destino final de envío,
-// pero no define un estado distinto del vuelo en sí.
+// Un mismo vuelo puede generar DOS filas "landed" si transporta
+// maletas con destinos finales distintos — ambas son válidas:
+//   · landed + finalDestination  → esas maletas se entregan aquí
+//   · landed + !finalDestination → esas maletas toman otro vuelo
 
-function eventLabel(type) {
+function eventLabel(type, finalDestination) {
   if (type === "departed") return {
     text: "En Vuelo",
     sub:  "Vuelo en tránsito",
     bg:   "bg-yellow-700",
-    dot:  "bg-yellow-400",
+  };
+  if (type === "landed" && finalDestination) return {
+    text: "Entregado",
+    sub:  "Maletas en su destino final",
+    bg:   "bg-green-700",
   };
   return {
-    text: "Aterrizó",
-    sub:  "Vuelo completó su tramo",
-    bg:   "bg-green-700",
-    dot:  "bg-green-400",
+    text: "Transbordo",
+    sub:  "Maletas conectan con otro vuelo",
+    bg:   "bg-blue-700",
   };
 }
 
-function StatusBadge({ type }) {
-  const { text, bg } = eventLabel(type);
+function StatusBadge({ type, finalDestination }) {
+  const { text, bg } = eventLabel(type, finalDestination);
   return (
     <span className={`px-2 py-0.5 rounded text-[10px] text-white ${bg}`}>
       {text}
@@ -38,52 +39,23 @@ function StatusBadge({ type }) {
 }
 
 const FILTERS = [
-  { key: "all",      label: "Todos"    },
-  { key: "departed", label: "En Vuelo" },
-  { key: "landed",   label: "Aterrizó" },
+  { key: "all",        label: "Todos"      },
+  { key: "departed",   label: "En Vuelo"   },
+  { key: "transbordo", label: "Transbordo" },
+  { key: "entregado",  label: "Entregado"  },
 ];
 
 function matchFilter(filter, e) {
-  if (filter === "all")      return true;
-  if (filter === "departed") return e.type === "departed";
-  if (filter === "landed")   return e.type === "landed";
+  if (filter === "all")        return true;
+  if (filter === "departed")   return e.type === "departed";
+  if (filter === "transbordo") return e.type === "landed" && !e.finalDestination;
+  if (filter === "entregado")  return e.type === "landed" &&  e.finalDestination;
   return true;
 }
 
-export default function HistoryView({ events = [], running = false }) {
-  const [history, setHistory] = useState([]);
+export default function HistoryView({ history = [], running = false }) {
   const [filter,  setFilter]  = useState("all");
   const [search,  setSearch]  = useState("");
-  const prevLen               = useRef(0);
-
-  useEffect(() => {
-    if (!events || events.length === 0) return;
-    if (events.length === prevLen.current) return;
-    prevLen.current = events.length;
-
-    setHistory(h => {
-      const combined = [...events.slice().reverse(), ...h];
-      const seen = new Set();
-      return combined
-        .filter(e => {
-          // finalDestination en la clave evita colapsar las dos filas
-          // "landed" que puede generar un mismo vuelo cuando transporta
-          // lotes con destinos finales distintos
-          const k = `${e.minute}-${e.flightId}-${e.type}-${e.finalDestination}`;
-          if (seen.has(k)) return false;
-          seen.add(k);
-          return true;
-        })
-        .slice(0, MAX_HISTORY);
-    });
-  }, [events]);
-
-  useEffect(() => {
-    if (running) {
-      setHistory([]);
-      prevLen.current = 0;
-    }
-  }, [running]);
 
   const filtered = history.filter(e => {
     if (!matchFilter(filter, e)) return false;
@@ -98,9 +70,18 @@ export default function HistoryView({ events = [], running = false }) {
     return true;
   });
 
+  // "En Vuelo" cuenta vuelos (unidad = vuelo).
+  // "Transbordo" y "Entregado" suman maletas (unidad = maleta):
+  // al operador le interesa saber cuántos vuelos están en el aire,
+  // pero cuántas maletas están pendientes o ya entregadas.
   const counts = {
-    enVuelo:     history.filter(e => e.type === "departed").length,
-    aterrizados: history.filter(e => e.type === "landed").length,
+    enVuelo:    history.filter(e => e.type === "departed").length,
+    transbordo: history
+      .filter(e => e.type === "landed" && !e.finalDestination)
+      .reduce((sum, e) => sum + (e.bags || 0), 0),
+    entregado: history
+      .filter(e => e.type === "landed" && e.finalDestination)
+      .reduce((sum, e) => sum + (e.bags || 0), 0),
   };
 
   return (
@@ -111,9 +92,10 @@ export default function HistoryView({ events = [], running = false }) {
           Historial de Vuelos con Equipaje
         </h2>
         <p className="text-gray-500 text-[10px] mt-0.5">
-          Cada fila es un evento de un vuelo directo (salida o llegada).
-          El ★ indica que ese vuelo entregó lotes en su destino final de envío.
-          Últimos {MAX_HISTORY} eventos de la sesión.
+          Cada fila es un evento de vuelo directo (salida o llegada).
+          Un mismo vuelo puede generar dos filas al aterrizar: una por las
+          maletas que llegan a su destino final y otra por las que continúan
+          en otro vuelo. Últimos {MAX_HISTORY} eventos de la sesión.
         </p>
       </div>
 
@@ -121,7 +103,7 @@ export default function HistoryView({ events = [], running = false }) {
         <input
           value={search}
           onChange={e => setSearch(e.target.value)}
-          placeholder="Buscar por origen, destino o vuelo..."
+          placeholder="Buscar por vuelo, origen o destino..."
           className="bg-[#031525] border border-teal/20 rounded px-3 py-1.5
                      text-xs text-gray-300 focus:outline-none focus:border-teal w-56"
         />
@@ -177,7 +159,8 @@ export default function HistoryView({ events = [], running = false }) {
                 <tr
                   key={`${e.minute}-${e.flightId}-${e.type}-${e.finalDestination}-${i}`}
                   className={`border-b border-white/5 hover:bg-white/5 transition
-                    ${e.type === "landed" ? "bg-green-900/10" : ""}`}
+                    ${e.type === "landed" &&  e.finalDestination ? "bg-green-900/10" : ""}
+                    ${e.type === "landed" && !e.finalDestination ? "bg-blue-900/10"  : ""}`}
                 >
                   <td className="px-3 py-1.5 text-gray-600">{i + 1}</td>
 
@@ -189,12 +172,6 @@ export default function HistoryView({ events = [], running = false }) {
                     <span className="text-teal font-medium">{e.from}</span>
                     <span className="text-gray-600 mx-1">→</span>
                     <span className="text-gray-200">{e.to}</span>
-                    {e.type === "landed" && e.finalDestination && (
-                      <span
-                        className="text-green-500 ml-1 text-[10px]"
-                        title="Este vuelo entregó lotes en su destino final de envío"
-                      >★</span>
-                    )}
                   </td>
 
                   <td className="px-3 py-1.5 text-gray-400 text-right tabular-nums">
@@ -202,11 +179,11 @@ export default function HistoryView({ events = [], running = false }) {
                   </td>
 
                   <td className="px-3 py-1.5">
-                    <StatusBadge type={e.type} />
+                    <StatusBadge type={e.type} finalDestination={e.finalDestination} />
                   </td>
 
                   <td className="px-3 py-1.5 text-gray-500 font-mono text-[10px]">
-                    {e.clock || `min ${e.minute}`}
+                    {e.clock || "—"}
                   </td>
                 </tr>
               ))}
@@ -216,12 +193,11 @@ export default function HistoryView({ events = [], running = false }) {
       </div>
 
       {history.length > 0 && (
-        <div className="mt-2 grid grid-cols-2 gap-2">
+        <div className="mt-2 grid grid-cols-3 gap-2">
           {[
-            ["En Vuelo",    counts.enVuelo,     "text-yellow-400",
-             "Vuelos actualmente en el aire"],
-            ["Aterrizados", counts.aterrizados, "text-green-400",
-             "Vuelos que completaron su tramo"],
+            ["En Vuelo",   counts.enVuelo,    "text-yellow-400", "vuelos en el aire"],
+            ["Transbordo", counts.transbordo, "text-blue-400",   "maletas conectando con otro vuelo"],
+            ["Entregado",  counts.entregado,  "text-green-400",  "maletas en destino final"],
           ].map(([label, val, color, sub]) => (
             <div
               key={label}
@@ -229,7 +205,7 @@ export default function HistoryView({ events = [], running = false }) {
             >
               <p className={`text-xl font-bold ${color}`}>{val}</p>
               <p className="text-gray-400 text-[10px] uppercase">{label}</p>
-              <p className="text-gray-600 text-[9px] mt-0.5">{sub}</p>
+              <p className="text-gray-500 text-[10px] mt-0.5">{sub}</p>
             </div>
           ))}
         </div>

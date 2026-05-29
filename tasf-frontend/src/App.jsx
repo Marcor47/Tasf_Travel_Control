@@ -11,7 +11,7 @@ import { useSimulation } from "./hooks/useSimulation";
 
 function AppContent() {
   const simulation              = useSimulation();
-  const { running, clock, kpis, start, stop } = simulation;
+  const { running, clock, kpis, start, stop, history } = simulation;
   const { pathname }            = useLocation();
   const navigate                = useNavigate();
 
@@ -90,8 +90,8 @@ function AppContent() {
           <Route path="/historial"
             element={
               <HistoryView
-                events={simulation?.events ?? []}
-                running={simulation?.running ?? false}/>
+                history={history}
+                running={running}/>
             }/>
         </Routes>
       </main>
