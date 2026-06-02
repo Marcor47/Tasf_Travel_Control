@@ -15,6 +15,7 @@ function AppContent() {
     running, clock, kpis,
     start, stop, history,
     availableDates, selectedDate, setSelectedDate,
+    selectedNumDays, setSelectedNumDays,
   } = simulation;
 
   const { pathname } = useLocation();
@@ -36,10 +37,10 @@ function AppContent() {
       stop();
     } else {
       const targetPath = modeFromPath === "colapso" ? "/colapso"
-                       : modeFromPath === "periodo"  ? "/periodo"
-                       : "/";
+                      : modeFromPath === "periodo"  ? "/periodo"
+                      : "/";
       navigate(targetPath);
-      start(modeFromPath, selectedDate);
+      start(modeFromPath, selectedDate, selectedNumDays);
     }
   };
 
@@ -56,16 +57,19 @@ function AppContent() {
     availableDates,
     selectedDate,
     onDateChange: setSelectedDate,
+    selectedNumDays,
+    onNumDaysChange: setSelectedNumDays,
   };
 
   return (
     <div className="flex flex-col min-h-screen">
       <Navbar
-        running={running}
-        onToggle={handleToggle}
-        onModeClick={handleModeClick}
-        clock={clock}
-        mode={modeFromPath}/>
+      running={running}
+      onToggle={handleToggle}
+      onModeClick={handleModeClick}
+      clock={clock}
+      mode={modeFromPath}
+      message={simulation?.message ?? ""}/>
 
       <main className="flex-1 overflow-hidden">
         <Routes>
