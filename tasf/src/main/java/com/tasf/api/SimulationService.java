@@ -42,12 +42,17 @@ public class SimulationService {
     // Intervalo de broadcast en ms durante la animación del bloque
     private static final int            BROADCAST_INTERVAL_MS = 800;
 
-    private final List<SseEmitter> emitters      = new CopyOnWriteArrayList<>();
-    private final ExecutorService  executor      = Executors.newSingleThreadExecutor();
-    // Executor separado para calcular el siguiente bloque en paralelo (lookahead)
-    private final ExecutorService  lookahead     = Executors.newSingleThreadExecutor();
-    private final AtomicBoolean    running       = new AtomicBoolean(false);
-    private final AtomicInteger    generation    = new AtomicInteger(0);
+    private final List<SseEmitter> emitters   = new CopyOnWriteArrayList<>();
+    private final ExecutorService  executor   = Executors.newSingleThreadExecutor();
+    private final ExecutorService  lookahead  = Executors.newSingleThreadExecutor();
+    private final AtomicBoolean    running    = new AtomicBoolean(false);
+    private final AtomicInteger    generation = new AtomicInteger(0);
+
+    // Repositorios compartidos entre getAvailableDates() y runSimulation()
+    private final AirportRepository  repoAirports  = new AirportRepository();
+    private final FlightRepository   repoFlights   = new FlightRepository();
+    private final ShipmentRepository repoShipments = new ShipmentRepository();
+    private volatile Map<String, Airport> cachedAirports = null;
 
     private volatile SimulationState state = SimulationState.initial();
 
@@ -55,7 +60,7 @@ public class SimulationService {
 
     public synchronized SimulationState start(StartRequest request) {
         StartRequest safeRequest = request == null
-                ? new StartRequest("diadia", null) : request;
+                ? new StartRequest("diadia", null, null) : request;
         stop();
         int    runId = generation.incrementAndGet();
         String mode  = normalizeMode(safeRequest.mode());
@@ -63,7 +68,8 @@ public class SimulationService {
         state = SimulationState.initial()
                 .withMode(mode).withRunning(true).withMessage("Cargando datos...");
         broadcast(state);
-        executor.submit(() -> runSimulation(new StartRequest(mode, safeRequest.blockSeconds()), runId));
+        executor.submit(() -> runSimulation(
+                new StartRequest(mode, safeRequest.blockSeconds(), safeRequest.startDate()), runId));
         return state;
     }
 
@@ -87,35 +93,58 @@ public class SimulationService {
         return emitter;
     }
 
+    private Map<String, Airport> loadAirports() throws IOException {
+        if (cachedAirports == null) {
+            synchronized (this) {
+                if (cachedAirports == null) {
+                    cachedAirports = repoAirports.loadAirports("data/aeropuertos.txt");
+                }
+            }
+        }
+        return cachedAirports;
+    }
+
+    public List<String> getAvailableDates() {
+        try {
+            Map<String, Airport> airports = loadAirports();
+            return repoShipments.getAvailableDates("data/envios/", airports)
+                    .stream().map(LocalDate::toString).collect(Collectors.toList());
+        } catch (Exception e) {
+            System.err.println("Error cargando fechas disponibles: " + e.getMessage());
+            return List.of();
+        }
+    }
+
     // ── Simulación ───────────────────────────────────────────────────────────
 
     private void runSimulation(StartRequest request, int runId) {
         try {
             // 1. Cargar datos
-            AirportRepository  airportRepo  = new AirportRepository();
-            FlightRepository   flightRepo   = new FlightRepository();
-            ShipmentRepository shipmentRepo = new ShipmentRepository();
-
-            Map<String, Airport> airports = airportRepo.loadAirports("data/aeropuertos.txt");
-            List<FlightInstance> flights  = flightRepo.loadFlights("data/planes_vuelo.txt", airports);
+            Map<String, Airport> airports = loadAirports();
+            List<FlightInstance> flights  = repoFlights.loadFlights("data/planes_vuelo.txt", airports);
             PlanningContext      context  = new PlanningContext(airports, flights,
                                                                 ScenarioConfig.defaultWeek4());
 
-            // 2. Encontrar ventana de días en el dataset real
+            // 2. Encontrar ventana de días
             int             daysToLoad = daysForMode(request.mode());
-            List<LocalDate> days       = shipmentRepo.findConsecutiveDaysWithK(
-                    "data/envios/", airports, 10000, daysToLoad);
+            List<LocalDate> days;
 
-            if (days == null || days.isEmpty()) {
-                running.set(false);
-                state = state.withRunning(false).withMessage("No hay días disponibles.");
-                broadcast(state);
-                return;
+            if (request.startDate() != null && !request.startDate().isBlank()) {
+                try {
+                    LocalDate startDate = LocalDate.parse(request.startDate());
+                    days = repoShipments.getDaysFrom("data/envios/", airports, startDate, daysToLoad);
+                } catch (Exception e) {
+                    System.err.println("Fecha inválida '" + request.startDate() + "' — usando primera disponible.");
+                    days = repoShipments.findConsecutiveDaysWithK("data/envios/", airports, 10000, daysToLoad);
+                }
+            } else {
+                days = repoShipments.findConsecutiveDaysWithK("data/envios/", airports, 10000, daysToLoad);
             }
 
             // 3. Cargar lotes del período
-            List<BaggageLot> allLots = shipmentRepo.loadShipmentsForDays(
-                    "data/envios/", airports, days);
+            List<BaggageLot> allLots = repoShipments.loadShipmentsForDays("data/envios/", airports, days);
+
+
 
             // 4. Calcular offset absoluto de los días encontrados
             //    Los lotes tienen registrationHour en minutos desde BASE_UTC=2026-01-01
@@ -506,9 +535,9 @@ public class SimulationService {
     }
 
     private int daysForMode(String mode) {
-        if ("periodo".equals(mode)) return 3;   // 3 días = ~72 bloques
-        if ("colapso".equals(mode)) return 5;   // 5 días para llegar al colapso
-        return 1;                                // dia-a-dia = 24 bloques de 1h
+        if ("periodo".equals(mode)) return 5;   // era 3; ahora 5 días
+        if ("colapso".equals(mode)) return 0;   // 0 = todos los días desde la fecha elegida
+        return 1;                                // diadia = 1 día
     }
 
     private String normalizeMode(String mode) {
@@ -554,7 +583,7 @@ public class SimulationService {
         }
     }
 
-    public record StartRequest(String mode, Integer blockSeconds) {
+    public record StartRequest(String mode, Integer blockSeconds, String startDate) {
         int blockSecondsOrDefault(int fallback) {
             return blockSeconds == null || blockSeconds <= 0 ? fallback : blockSeconds;
         }

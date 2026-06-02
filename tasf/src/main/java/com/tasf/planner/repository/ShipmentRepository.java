@@ -8,6 +8,7 @@ import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * Carga lotes de equipaje con registro en UTC.
@@ -387,6 +388,49 @@ public class ShipmentRepository {
                     lowerBound);
             return null;
         }
+
+
+    public List<LocalDate> getAvailableDates(String folderPath,
+                                            Map<String, Airport> airports) throws IOException {
+        return loadAllUtcCached(folderPath, airports).stream()
+                .map(e -> e.utcDate)
+                .distinct()
+                .sorted()
+                .collect(Collectors.toList());
+    }
+
+    public List<LocalDate> getDaysFrom(String folderPath,
+                                        Map<String, Airport> airports,
+                                        LocalDate startDate,
+                                        int numDays) throws IOException {
+        List<LocalDate> all = getAvailableDates(folderPath, airports);
+        if (all.isEmpty()) return List.of();
+
+        // Primer índice con fecha >= startDate
+        int startIdx = all.size();
+        for (int i = 0; i < all.size(); i++) {
+            if (!all.get(i).isBefore(startDate)) { startIdx = i; break; }
+        }
+        if (startIdx == all.size()) {
+            System.out.println("⚠ Fecha " + startDate + " posterior al dataset — usando primera fecha disponible.");
+            startIdx = 0;
+        }
+
+        // Recoger días consecutivos (numDays=0 → todos)
+        List<LocalDate> result = new ArrayList<>();
+        for (int i = startIdx; i < all.size(); i++) {
+            if (i > startIdx && !all.get(i - 1).plusDays(1).equals(all.get(i))) break;
+            result.add(all.get(i));
+            if (numDays > 0 && result.size() >= numDays) break;
+        }
+
+        System.out.printf("getDaysFrom(%s, numDays=%d): %d días (%s → %s)%n",
+                startDate, numDays, result.size(),
+                result.isEmpty() ? "—" : result.get(0),
+                result.isEmpty() ? "—" : result.get(result.size() - 1));
+        return result;
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
 
     private int getGmt(Map<String, Airport> airports, String code) {
