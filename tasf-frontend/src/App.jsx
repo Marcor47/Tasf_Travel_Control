@@ -10,18 +10,21 @@ import HistoryView   from "./pages/HistoryView";
 import { useSimulation } from "./hooks/useSimulation";
 
 function AppContent() {
-  const simulation              = useSimulation();
-  const { running, clock, kpis, start, stop, history } = simulation;
-  const { pathname }            = useLocation();
-  const navigate                = useNavigate();
+  const simulation = useSimulation();
+  const {
+    running, clock, kpis,
+    start, stop, history,
+    availableDates, selectedDate, setSelectedDate,
+  } = simulation;
 
-  // Punto 4: modo sincronizado con el path actual
+  const { pathname } = useLocation();
+  const navigate     = useNavigate();
+
   const modeFromPath = pathname === "/colapso" ? "colapso"
                      : pathname === "/periodo"  ? "periodo"
                      : "diadia";
 
-  // Si la simulación está corriendo en un modo distinto al path actual,
-  // detenerla automáticamente al cambiar de ruta
+  // Detener simulación si cambia de modo mientras corre
   useEffect(() => {
     if (running && simulation?.mode && simulation.mode !== modeFromPath) {
       stop();
@@ -32,24 +35,27 @@ function AppContent() {
     if (running) {
       stop();
     } else {
-      // Navegar al path del modo antes de iniciar
       const targetPath = modeFromPath === "colapso" ? "/colapso"
                        : modeFromPath === "periodo"  ? "/periodo"
                        : "/";
       navigate(targetPath);
-      start(modeFromPath);
+      start(modeFromPath, selectedDate);
     }
   };
 
   const handleModeClick = (mode) => {
-    // Al hacer click en Día-a-Día / Período / Colapso en el navbar,
-    // detener simulación actual si estaba corriendo en otro modo
-    if (running && simulation?.mode !== mode) {
-      stop();
-    }
+    if (running && simulation?.mode !== mode) stop();
     navigate(mode === "colapso" ? "/colapso"
            : mode === "periodo" ? "/periodo"
            : "/");
+  };
+
+  const dashboardProps = {
+    simulation,
+    onStop: stop,
+    availableDates,
+    selectedDate,
+    onDateChange: setSelectedDate,
   };
 
   return (
@@ -63,36 +69,13 @@ function AppContent() {
 
       <main className="flex-1 overflow-hidden">
         <Routes>
-          <Route path="/"
-            element={
-              <Dashboard
-                mode="diadia"
-                simulation={simulation}
-                onStop={stop}/>
-            }/>
-          <Route path="/periodo"
-            element={
-              <Dashboard
-                mode="periodo"
-                simulation={simulation}
-                onStop={stop}/>
-            }/>
-          <Route path="/colapso"
-            element={
-              <Dashboard
-                mode="colapso"
-                simulation={simulation}
-                onStop={stop}/>
-            }/>
-          <Route path="/registro"   element={<RegisterLot/>}/>
-          <Route path="/monitoreo"  element={<LiveMonitor  simulation={simulation}/>}/>
-          <Route path="/reportes"   element={<ReportView   simulation={simulation}/>}/>
-          <Route path="/historial"
-            element={
-              <HistoryView
-                history={history}
-                running={running}/>
-            }/>
+          <Route path="/"         element={<Dashboard mode="diadia"   {...dashboardProps}/>}/>
+          <Route path="/periodo"  element={<Dashboard mode="periodo"  {...dashboardProps}/>}/>
+          <Route path="/colapso"  element={<Dashboard mode="colapso"  {...dashboardProps}/>}/>
+          <Route path="/registro"  element={<RegisterLot/>}/>
+          <Route path="/monitoreo" element={<LiveMonitor  simulation={simulation}/>}/>
+          <Route path="/reportes"  element={<ReportView   simulation={simulation}/>}/>
+          <Route path="/historial" element={<HistoryView  history={history} running={running}/>}/>
         </Routes>
       </main>
 

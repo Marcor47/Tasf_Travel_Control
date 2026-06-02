@@ -30,15 +30,17 @@ const emptyState = {
 };
 
 export function useSimulation() {
-  const [state, setState] = useState(emptyState);
-  const [history, setHistory] = useState([]);
-  const prevEventsRef = useRef([]);
-  const sourceRef = useRef(null);
-  const reconnectTimer = useRef(null);
+  const [state, setState]               = useState(emptyState);
+  const [history, setHistory]           = useState([]);
+  const [availableDates, setAvailableDates] = useState([]);
+  const [selectedDate, setSelectedDate] = useState("");
 
-  // Función para conectar SSE con reconexión automática
+  const prevEventsRef    = useRef([]);
+  const sourceRef        = useRef(null);
+  const reconnectTimer   = useRef(null);
+
+  // Conectar SSE con reconexión automática
   const connectSSE = useCallback(() => {
-    // Cerrar conexión previa si existe
     if (sourceRef.current) {
       sourceRef.current.close();
       sourceRef.current = null;
@@ -60,21 +62,25 @@ export function useSimulation() {
     source.onerror = () => {
       source.close();
       sourceRef.current = null;
-      // Reconectar en 3 segundos si el SSE se corta
-      reconnectTimer.current = setTimeout(() => {
-        connectSSE();
-      }, 3000);
+      reconnectTimer.current = setTimeout(connectSSE, 3000);
     };
   }, []);
 
+  // Inicialización: estado + fechas disponibles + SSE
   useEffect(() => {
-    // Cargar estado inicial
     fetch(`${API_BASE}/api/simulation/state`)
       .then(r => (r.ok ? r.json() : emptyState))
       .then(data => setState(prev => ({ ...prev, ...data })))
       .catch(() => {});
 
-    // Conectar SSE
+    fetch(`${API_BASE}/api/simulation/availableDates`)
+      .then(r => (r.ok ? r.json() : []))
+      .then(dates => {
+        setAvailableDates(dates);
+        if (dates.length > 0) setSelectedDate(dates[0]);
+      })
+      .catch(() => {});
+
     connectSSE();
 
     return () => {
@@ -86,15 +92,11 @@ export function useSimulation() {
     };
   }, [connectSSE]);
 
-  // Manejo del historial (movido desde HistoryView para que persista)
+  // Acumular historial de eventos
   useEffect(() => {
     const events = state.events;
     if (!events || events.length === 0) return;
 
-    // Comparar por contenido real, no por longitud — robusto ante arrays
-    // que lleguen con la misma longitud pero distintos elementos.
-    // finalDestination incluido para no perder la segunda fila "landed"
-    // que genera un mismo vuelo con maletas de destinos distintos.
     const prev   = prevEventsRef.current;
     const newEvs = events.filter(e =>
       !prev.some(p =>
@@ -121,14 +123,18 @@ export function useSimulation() {
     });
   }, [state.events]);
 
-  const start = useCallback(async mode => {
+  const start = useCallback(async (mode, startDate) => {
     try {
       setHistory([]);
       prevEventsRef.current = [];
       const response = await fetch(`${API_BASE}/api/simulation/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode, blockSeconds: 20 }),
+        body: JSON.stringify({
+          mode,
+          blockSeconds: 30,
+          startDate: startDate || null,
+        }),
       });
       if (response.ok) {
         const data = await response.json();
@@ -153,5 +159,13 @@ export function useSimulation() {
     }
   }, []);
 
-  return { ...state, history, start, stop };
+  return {
+    ...state,
+    history,
+    availableDates,
+    selectedDate,
+    setSelectedDate,
+    start,
+    stop,
+  };
 }
