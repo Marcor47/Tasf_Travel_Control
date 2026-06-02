@@ -179,6 +179,32 @@ public class ShipmentRepository {
         return result;
     }
 
+    public List<LocalDate> findDaysFrom(String folderPath,
+                                        Map<String, Airport> airports,
+                                        LocalDate startDate,
+                                        int days) throws IOException {
+        Map<LocalDate, Integer> bagsByDay = new TreeMap<>();
+        for (LotEntry entry : loadAllUtcCached(folderPath, airports)) {
+            bagsByDay.merge(entry.utcDate, entry.lot.getQuantity(), Integer::sum);
+        }
+        if (bagsByDay.isEmpty()) return List.of();
+
+        if (days > 0) {
+            List<LocalDate> window = new ArrayList<>();
+            for (int i = 0; i < days; i++) {
+                LocalDate day = startDate.plusDays(i);
+                if (bagsByDay.containsKey(day)) {
+                    window.add(day);
+                }
+            }
+            return window;
+        }
+
+        return bagsByDay.keySet().stream()
+                .filter(day -> !day.isBefore(startDate))
+                .collect(java.util.stream.Collectors.toList());
+    }
+
     // ── método original — se conserva para compatibilidad ───────────────────
 
     /**

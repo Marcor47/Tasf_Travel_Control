@@ -22,22 +22,40 @@ function injectAnimation() {
     }
     .route-active { animation: dashMove 1.4s linear infinite; }
     .route-fading { animation: fadeOut 5s forwards; }
+    .route-plane { filter: drop-shadow(0 0 5px rgba(244, 162, 97, 0.85)); }
   `;
   document.head.appendChild(style);
 }
 
 const LANDED_TTL_MS = 5000;
 
+function clamp01(value) {
+  return Math.max(0, Math.min(1, value));
+}
+
+function planePosition(from, to, route, simulatedMinute) {
+  const departure = route.departureMinute ?? simulatedMinute;
+  const arrival = route.arrivalMinute ?? departure + 1;
+  const progress = clamp01((simulatedMinute - departure) / Math.max(1, arrival - departure));
+  const lng = from[0] + (to[0] - from[0]) * progress;
+  const lat = from[1] + (to[1] - from[1]) * progress;
+  const angle = Math.atan2(to[1] - from[1], to[0] - from[0]) * 180 / Math.PI;
+  return { coordinates: [lng, lat], angle };
+}
+
 export default function WorldMap({
   airports = [], 
   routes = [], 
   onAirportClick,
   running = false, 
-  message = ""
+  message = "",
+  simulatedMinute = 0
   // Eliminada la prop activeFlightsCount por ser redundante y causar el error del "0"
 }) {
   useEffect(() => { injectAnimation(); }, []);
 
+  const [showLines, setShowLines] = useState(true);
+  const [showPlanes, setShowPlanes] = useState(true);
   const [lineMode, setLineMode] = useState("limited");
   const landedRoutes = useRef({});
   const [, setTick]  = useState(0);
@@ -92,11 +110,13 @@ export default function WorldMap({
     shownAirports.map(a => [a.code, [a.lng, a.lat]])
   );
 
-  const activeRoutes = lineMode === "limited"
+  const visibleRoutes = lineMode === "limited"
     ? allActive.slice(0, 40)
     : allActive;
 
-  const fadingRoutes = Object.values(landedRoutes.current)
+  const activeRoutes = showLines || showPlanes ? visibleRoutes : [];
+
+  const fadingRoutes = !showLines ? [] : Object.values(landedRoutes.current)
     .filter(r => (now - r.addedAt) < LANDED_TTL_MS);
 
   const isCalculating = running && message.startsWith("Planificando");
@@ -121,7 +141,7 @@ export default function WorldMap({
             <span className="text-[10px] text-gray-400">
               {/* Corrección del indicador: Ahora usamos allActive.length */}
               ✈ <span className="text-white font-bold">{allActive.length}</span> vuelos activos
-              {lineMode === "limited" && allActive.length > 40 && (
+              {(showLines || showPlanes) && lineMode === "limited" && allActive.length > 40 && (
                 <span className="text-gray-600 ml-1">
                   (mostrando 40 en mapa)
                 </span>
@@ -133,17 +153,36 @@ export default function WorldMap({
         {/* Selector de líneas */}
         {running && (
           <div className="flex items-center gap-1 flex-shrink-0">
-            <span className="text-gray-600 text-[10px]">Líneas:</span>
+            <span className="text-gray-600 text-[10px]">Lineas:</span>
             <button
-              onClick={() => setLineMode(m => m === "limited" ? "all" : "limited")}
+              onClick={() => setShowLines(v => !v)}
               className={`text-[10px] px-2 py-0.5 rounded transition font-medium
-                ${lineMode === "limited"
+                ${showLines
                   ? "bg-teal/20 text-teal border border-teal/40"
-                  : "bg-orange-900/40 text-orange-400 border border-orange-700/40"}`}>
-              {lineMode === "limited"
+                  : "bg-gray-900/70 text-gray-500 border border-white/10"}`}>
+              {showLines ? "ON" : "OFF"}
+            </button>
+            <span className="text-gray-600 text-[10px] ml-1">Aviones:</span>
+            <button
+              onClick={() => setShowPlanes(v => !v)}
+              className={`text-[10px] px-2 py-0.5 rounded transition font-medium
+                ${showPlanes
+                  ? "bg-teal/20 text-teal border border-teal/40"
+                  : "bg-gray-900/70 text-gray-500 border border-white/10"}`}>
+              {showPlanes ? "ON" : "OFF"}
+            </button>
+            {(showLines || showPlanes) && (
+              <button
+                onClick={() => setLineMode(m => m === "limited" ? "all" : "limited")}
+                className={`text-[10px] px-2 py-0.5 rounded transition font-medium
+                  ${lineMode === "limited"
+                    ? "bg-teal/10 text-teal border border-teal/30"
+                    : "bg-orange-900/40 text-orange-400 border border-orange-700/40"}`}>
+                {lineMode === "limited"
                 ? `≤40 rutas`
                 : `todas (${allActive.length})`}
-            </button>
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -177,7 +216,7 @@ export default function WorldMap({
         })}
 
         {/* Rutas activas con equipaje */}
-        {activeRoutes.map((r, i) => {
+        {showLines && activeRoutes.map((r, i) => {
           const from = airportMap[r.from];
           const to   = airportMap[r.to];
           if (!from || !to) return null;
@@ -187,6 +226,27 @@ export default function WorldMap({
               stroke="#F4A261" strokeWidth={1.2}
               strokeLinecap="round" strokeDasharray="8 4"
               className="route-active"/>
+          );
+        })}
+
+        {/* Aviones activos interpolados sobre cada ruta visible */}
+        {showPlanes && activeRoutes.map((r, i) => {
+          const from = airportMap[r.from];
+          const to   = airportMap[r.to];
+          if (!from || !to) return null;
+          const plane = planePosition(from, to, r, simulatedMinute);
+          return (
+            <Marker
+              key={`plane-${r.flightId || `${r.from}-${r.to}`}-${i}`}
+              coordinates={plane.coordinates}>
+              <g transform={`rotate(${plane.angle})`} className="route-plane">
+                <path
+                  d="M 8 0 L -6 -4 L -3 0 L -6 4 Z"
+                  fill="#F4A261"
+                  stroke="#FFE7C2"
+                  strokeWidth={0.8}/>
+              </g>
+            </Marker>
           );
         })}
 

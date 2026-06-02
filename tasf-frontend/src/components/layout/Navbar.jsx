@@ -1,5 +1,5 @@
 import { useNavigate, useLocation } from "react-router-dom";
-import { User, Clock, BarChart2, Bell, Settings, Play, Pause } from "lucide-react";
+import { User, Clock, BarChart2, Bell, Settings, Play, Pause, CalendarDays, Hash } from "lucide-react";
 
 const modeMap = {
   "diadia":  { label:"Dia-a-Dia", path:"/"        },
@@ -14,9 +14,23 @@ const menu = [
   { label:"Monitoreo", path:"/monitoreo", icon:<Bell size={14}/>     },
 ];
 
-export default function Navbar({ running, onToggle, onModeClick, clock, mode }) {
+export default function Navbar({
+  running,
+  onToggle,
+  onModeClick,
+  clock,
+  mode,
+  simulationInput,
+  onSimulationInputChange,
+}) {
   const nav          = useNavigate();
   const { pathname } = useLocation();
+  const startDate = simulationInput?.startDate || "2026-01-02";
+  const days = simulationInput?.days || 5;
+
+  const updateInput = patch => {
+    onSimulationInputChange?.({ startDate, days, ...patch });
+  };
 
   return (
     <nav className="flex items-center justify-between px-4 py-2
@@ -49,6 +63,37 @@ export default function Navbar({ running, onToggle, onModeClick, clock, mode }) 
             </button>
           );
         })}
+      </div>
+
+      <div className="flex items-center gap-2 text-xs text-gray-400">
+        <label className="flex items-center gap-1">
+          <CalendarDays size={13} className="text-teal"/>
+          <input
+            type="date"
+            value={startDate}
+            disabled={running}
+            onChange={e => updateInput({ startDate: e.target.value })}
+            className="bg-[#021020] border border-teal/20 rounded px-2 py-1
+                       text-gray-200 disabled:opacity-60"/>
+        </label>
+        {mode === "periodo" && (
+          <label className="flex items-center gap-1">
+            <Hash size={13} className="text-teal"/>
+            <input
+              type="number"
+              min="1"
+              max="30"
+              value={days}
+              disabled={running}
+              onChange={e => updateInput({ days: Math.max(1, Number(e.target.value || 1)) })}
+              className="w-14 bg-[#021020] border border-teal/20 rounded px-2 py-1
+                         text-gray-200 disabled:opacity-60"/>
+            <span className="text-gray-500">dias</span>
+          </label>
+        )}
+        {mode === "colapso" && (
+          <span className="text-gray-500">hasta colapso</span>
+        )}
       </div>
 
       {/* Menú secundario */}

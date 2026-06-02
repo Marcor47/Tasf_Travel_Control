@@ -14,6 +14,7 @@ const emptyState = {
   routes: [],
   events: [],
   collapsed: false,
+  simulatedMinute: 0,
   message: "Listo",
   kpis: {
     activeFlights: 0,
@@ -121,14 +122,24 @@ export function useSimulation() {
     });
   }, [state.events]);
 
-  const start = useCallback(async mode => {
+  const start = useCallback(async (mode, options = {}) => {
     try {
       setHistory([]);
       prevEventsRef.current = [];
+      const days = mode === "diadia"
+        ? 1
+        : mode === "colapso"
+          ? 0
+          : Number(options.days || 5);
       const response = await fetch(`${API_BASE}/api/simulation/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode, blockSeconds: 20 }),
+        body: JSON.stringify({
+          mode,
+          blockSeconds: 20,
+          startDate: options.startDate || "2026-01-02",
+          days,
+        }),
       });
       if (response.ok) {
         const data = await response.json();

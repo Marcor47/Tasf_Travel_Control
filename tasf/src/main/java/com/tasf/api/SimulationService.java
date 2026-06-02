@@ -55,15 +55,20 @@ public class SimulationService {
 
     public synchronized SimulationState start(StartRequest request) {
         StartRequest safeRequest = request == null
-                ? new StartRequest("diadia", null) : request;
+                ? new StartRequest("diadia", null, null, null) : request;
         stop();
         int    runId = generation.incrementAndGet();
         String mode  = normalizeMode(safeRequest.mode());
+        StartRequest normalizedRequest = new StartRequest(
+                mode,
+                safeRequest.blockSeconds(),
+                safeRequest.startDate(),
+                safeRequest.days());
         running.set(true);
         state = SimulationState.initial()
                 .withMode(mode).withRunning(true).withMessage("Cargando datos...");
         broadcast(state);
-        executor.submit(() -> runSimulation(new StartRequest(mode, safeRequest.blockSeconds()), runId));
+        executor.submit(() -> runSimulation(normalizedRequest, runId));
         return state;
     }
 
@@ -102,9 +107,13 @@ public class SimulationService {
                                                                 ScenarioConfig.defaultWeek4());
 
             // 2. Encontrar ventana de días en el dataset real
-            int             daysToLoad = daysForMode(request.mode());
-            List<LocalDate> days       = shipmentRepo.findConsecutiveDaysWithK(
-                    "data/envios/", airports, 10000, daysToLoad);
+            int             daysToLoad = request.daysOrDefault(daysForMode(request.mode()));
+            LocalDate       startDate  = request.parsedStartDate();
+            List<LocalDate> days       = startDate == null
+                    ? shipmentRepo.findConsecutiveDaysWithK(
+                            "data/envios/", airports, 10000, daysToLoad)
+                    : shipmentRepo.findDaysFrom(
+                            "data/envios/", airports, startDate, daysToLoad);
 
             if (days == null || days.isEmpty()) {
                 running.set(false);
@@ -120,8 +129,13 @@ public class SimulationService {
             // 4. Calcular offset absoluto de los días encontrados
             //    Los lotes tienen registrationHour en minutos desde BASE_UTC=2026-01-01
             //    El primer día puede ser 2028-08-19 → offset muy grande
-            int simulationStart = absoluteMinute(days.get(0).atStartOfDay());
-            int simulationEnd   = simulationStart + days.size() * 1440;
+            LocalDate simulationDate = startDate == null ? days.get(0) : startDate;
+            int simulationStart = absoluteMinute(simulationDate.atStartOfDay());
+            int simulationDays  = daysToLoad > 0 ? daysToLoad : Math.max(1, (int) days.stream()
+                    .mapToLong(day -> Duration.between(
+                            simulationDate.atStartOfDay(), day.atStartOfDay()).toDays())
+                    .max().orElse(0L) + 1);
+            int simulationEnd   = simulationStart + simulationDays * 1440;
             int blockMinutes    = BLOCK_HOURS * 60;
 
             System.out.printf("Simulación: %s → %s | start=%d end=%d | lotes=%d%n",
@@ -470,10 +484,22 @@ public class SimulationService {
 
         // Solo mandamos vuelos ACTIVOS (departed pero no landed aún)
         // Limitamos a las top 60 rutas por cantidad de maletas para no saturar el mapa
+        Map<String, SimEvent> landingByFlight = events.stream()
+                .filter(e -> "landed".equals(e.type()))
+                .collect(Collectors.toMap(
+                        SimEvent::flightId,
+                        e -> e,
+                        (a, b) -> a.minute() >= b.minute() ? a : b));
+
         List<RouteState> active = events.stream()
                 .filter(e -> "departed".equals(e.type()) && e.minute() <= minute)
                 .filter(e -> !landedIds.contains(e.flightId()))
-                .map(e -> new RouteState(e.from(), e.to(), e.bags(), "departed"))
+                .map(e -> {
+                    SimEvent landing = landingByFlight.get(e.flightId());
+                    int arrivalMinute = landing == null ? e.minute() + 60 : landing.minute();
+                    return new RouteState(e.from(), e.to(), e.bags(), "departed",
+                            e.flightId(), e.minute(), arrivalMinute);
+                })
                 .sorted(Comparator.comparingInt(RouteState::bags).reversed())
                 .limit(40)
                 .collect(Collectors.toList());
@@ -483,7 +509,8 @@ public class SimulationService {
         List<RouteState> justLanded = events.stream()
                 .filter(e -> "landed".equals(e.type()))
                 .filter(e -> e.minute() <= minute && e.minute() >= minute - 2)
-                .map(e -> new RouteState(e.from(), e.to(), e.bags(), "just_landed"))
+                .map(e -> new RouteState(e.from(), e.to(), e.bags(), "just_landed",
+                        e.flightId(), e.minute(), e.minute()))
                 .collect(Collectors.toList());
 
         List<RouteState> result = new ArrayList<>(active);
@@ -554,9 +581,17 @@ public class SimulationService {
         }
     }
 
-    public record StartRequest(String mode, Integer blockSeconds) {
+    public record StartRequest(String mode, Integer blockSeconds,
+                               String startDate, Integer days) {
         int blockSecondsOrDefault(int fallback) {
             return blockSeconds == null || blockSeconds <= 0 ? fallback : blockSeconds;
+        }
+        int daysOrDefault(int fallback) {
+            return days == null || days < 0 ? fallback : days;
+        }
+        LocalDate parsedStartDate() {
+            if (startDate == null || startDate.isBlank()) return null;
+            return LocalDate.parse(startDate);
         }
     }
 
@@ -591,7 +626,8 @@ public class SimulationService {
     public record AirportState(String code, String name,
                                 double lat, double lng,
                                 int capacity, int current) {}
-    public record RouteState(String from, String to, int bags, String status) {}
+    public record RouteState(String from, String to, int bags, String status,
+                             String flightId, int departureMinute, int arrivalMinute) {}
     public record SimEvent(int minute, String type, String from, String to,
                            String flightId, int bags, boolean finalDestination,
                            String clock) {}

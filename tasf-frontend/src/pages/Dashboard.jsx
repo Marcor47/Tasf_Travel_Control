@@ -50,7 +50,8 @@ export default function Dashboard({ mode, simulation, onStop }) {
           airports={simulation?.airports ?? []}
           routes={simulation?.routes ?? []}
           running={simulation?.running ?? false}
-          message={simulation?.message ?? ""}/>
+          message={simulation?.message ?? ""}
+          simulatedMinute={simulatedNow}/>
 
         {/* Modal de colapso — se abre solo cuando collapsed=true */}
         {showCollapse && (

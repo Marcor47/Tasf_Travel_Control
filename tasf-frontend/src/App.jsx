@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, useLocation, useNavigate } from "react-router-dom";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import Navbar        from "./components/layout/Navbar";
 import StatusBar     from "./components/layout/StatusBar";
 import Dashboard     from "./pages/Dashboard";
@@ -14,6 +14,10 @@ function AppContent() {
   const { running, clock, kpis, start, stop, history } = simulation;
   const { pathname }            = useLocation();
   const navigate                = useNavigate();
+  const [simulationInput, setSimulationInput] = useState({
+    startDate: "2026-01-02",
+    days: 5,
+  });
 
   // Punto 4: modo sincronizado con el path actual
   const modeFromPath = pathname === "/colapso" ? "colapso"
@@ -37,7 +41,7 @@ function AppContent() {
                        : modeFromPath === "periodo"  ? "/periodo"
                        : "/";
       navigate(targetPath);
-      start(modeFromPath);
+      start(modeFromPath, simulationInput);
     }
   };
 
@@ -59,7 +63,9 @@ function AppContent() {
         onToggle={handleToggle}
         onModeClick={handleModeClick}
         clock={clock}
-        mode={modeFromPath}/>
+        mode={modeFromPath}
+        simulationInput={simulationInput}
+        onSimulationInputChange={setSimulationInput}/>
 
       <main className="flex-1 overflow-hidden">
         <Routes>
