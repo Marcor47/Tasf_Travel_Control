@@ -48,10 +48,9 @@ public class ShipmentRepository {
     private String               cachedFolder    = null;
     private Map<String, Airport> cachedAirports  = null;
 
-    private List<LotEntry> loadAllUtcCached(String folderPath,
-                                             Map<String, Airport> airports)
+    private synchronized List<LotEntry> loadAllUtcCached(String folderPath,
+                                                        Map<String, Airport> airports)
             throws IOException {
-        // Usar caché si ya se cargó la misma carpeta
         if (cachedEntries != null
                 && folderPath.equals(cachedFolder)
                 && airports == cachedAirports) {

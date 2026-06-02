@@ -60,7 +60,7 @@ public class SimulationService {
 
     public synchronized SimulationState start(StartRequest request) {
         StartRequest safeRequest = request == null
-                ? new StartRequest("diadia", null, null) : request;
+                ? new StartRequest("diadia", null, null, null) : request;
         stop();
         int    runId = generation.incrementAndGet();
         String mode  = normalizeMode(safeRequest.mode());
@@ -69,7 +69,8 @@ public class SimulationService {
                 .withMode(mode).withRunning(true).withMessage("Cargando datos...");
         broadcast(state);
         executor.submit(() -> runSimulation(
-                new StartRequest(mode, safeRequest.blockSeconds(), safeRequest.startDate()), runId));
+                new StartRequest(mode, safeRequest.blockSeconds(),
+                                safeRequest.startDate(), safeRequest.numDays()), runId));
         return state;
     }
 
@@ -126,7 +127,7 @@ public class SimulationService {
                                                                 ScenarioConfig.defaultWeek4());
 
             // 2. Encontrar ventana de días
-            int             daysToLoad = daysForMode(request.mode());
+            int daysToLoad = daysForMode(request.mode(), request.numDaysOrDefault(5));
             List<LocalDate> days;
 
             if (request.startDate() != null && !request.startDate().isBlank()) {
@@ -422,8 +423,11 @@ public class SimulationService {
                 : (int) Math.round(current * 100.0 / capacity);
 
         double avgDeliveryDays = currentLots.stream()
+                .filter(lot -> {
+                    RoutePlan p = solution.getPlan(lot.getId());
+                    return p != null && p.arrivalHour() <= simulatedNow;
+                })
                 .map(lot -> solution.getPlan(lot.getId()))
-                .filter(Objects::nonNull)
                 .mapToDouble(p -> p.getTotalTravelHours() / 1440.0)
                 .average().orElse(0.0);
 
@@ -534,10 +538,10 @@ public class SimulationService {
         }
     }
 
-    private int daysForMode(String mode) {
-        if ("periodo".equals(mode)) return 5;   // era 3; ahora 5 días
-        if ("colapso".equals(mode)) return 0;   // 0 = todos los días desde la fecha elegida
-        return 1;                                // diadia = 1 día
+    private int daysForMode(String mode, int numDays) {
+        if ("periodo".equals(mode)) return numDays;
+        if ("colapso".equals(mode)) return 0;
+        return 1;
     }
 
     private String normalizeMode(String mode) {
@@ -583,9 +587,12 @@ public class SimulationService {
         }
     }
 
-    public record StartRequest(String mode, Integer blockSeconds, String startDate) {
+    public record StartRequest(String mode, Integer blockSeconds, String startDate, Integer numDays) {
         int blockSecondsOrDefault(int fallback) {
             return blockSeconds == null || blockSeconds <= 0 ? fallback : blockSeconds;
+        }
+        int numDaysOrDefault(int fallback) {
+            return numDays == null || numDays <= 0 ? fallback : numDays;
         }
     }
 

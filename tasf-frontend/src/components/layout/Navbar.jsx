@@ -1,3 +1,4 @@
+import { useState, useEffect, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { User, Clock, BarChart2, Bell, Settings, Play, Pause } from "lucide-react";
 
@@ -14,9 +15,40 @@ const menu = [
   { label:"Monitoreo", path:"/monitoreo", icon:<Bell size={14}/>     },
 ];
 
-export default function Navbar({ running, onToggle, onModeClick, clock, mode }) {
+export default function Navbar({ running, onToggle, onModeClick, clock, mode, message }) {
   const nav          = useNavigate();
   const { pathname } = useLocation();
+
+  // Segundos locales — solo activos en diadia
+  const [seconds, setSeconds] = useState(0);
+  const prevClock = useRef(clock);
+
+  // Resetear segundos cada vez que el backend avanza un minuto
+  useEffect(() => {
+    if (prevClock.current !== clock) {
+      prevClock.current = clock;
+      setSeconds(0);
+    }
+  }, [clock]);
+
+  // Tick cada segundo — solo cuando diadia está corriendo Y el reloj es real
+  useEffect(() => {
+    const clockIsReal   = clock && !clock.startsWith("Dia --");
+    const isAnimating   = !message.startsWith("Planificando")
+                      && !message.startsWith("Cargando");
+    if (mode !== "diadia" || !running || !clockIsReal || !isAnimating) {
+      setSeconds(0);
+      return;
+    }
+    const interval = setInterval(() => {
+      setSeconds(s => (s + 1) % 60);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [mode, running, clock, message]);
+
+  const clockDisplay = mode === "diadia"
+    ? `${clock}:${String(seconds).padStart(2, "0")}`
+    : clock;
 
   return (
     <nav className="flex items-center justify-between px-4 py-2
@@ -26,22 +58,18 @@ export default function Navbar({ running, onToggle, onModeClick, clock, mode }) 
         TASFTRAVELCONTROL
       </span>
 
-      {/* Modos — Punto 4: llama onModeClick para sincronizar */}
+      {/* Modos */}
       <div className="flex gap-1 items-center">
         <span className="text-gray-500 mr-2 text-xs">Modo:</span>
         {Object.entries(modeMap).map(([key, m]) => {
-          const isActive = pathname === m.path;
+          const isActive      = pathname === m.path;
           const isRunningHere = running && mode === key;
           return (
             <button key={key}
               onClick={() => onModeClick ? onModeClick(key) : nav(m.path)}
-              className={`px-3 py-1 rounded text-xs font-medium transition
-                relative
-                ${isActive
-                  ? "bg-teal text-white"
-                  : "text-gray-400 hover:text-white"}`}>
+              className={`px-3 py-1 rounded text-xs font-medium transition relative
+                ${isActive ? "bg-teal text-white" : "text-gray-400 hover:text-white"}`}>
               {m.label}
-              {/* Punto verde si la simulación está activa en este modo */}
               {isRunningHere && (
                 <span className="absolute -top-0.5 -right-0.5 w-2 h-2
                                  bg-green-400 rounded-full animate-pulse"/>
@@ -56,8 +84,7 @@ export default function Navbar({ running, onToggle, onModeClick, clock, mode }) 
         {menu.map(m => (
           <button key={m.path}
             onClick={() => nav(m.path)}
-            className={`flex items-center gap-1 hover:text-white
-                        transition text-xs
+            className={`flex items-center gap-1 hover:text-white transition text-xs
                         ${pathname === m.path ? "text-teal" : ""}`}>
             {m.icon} {m.label}
           </button>
@@ -66,16 +93,13 @@ export default function Navbar({ running, onToggle, onModeClick, clock, mode }) 
 
       {/* Reloj + Start/Pause */}
       <div className="flex items-center gap-3">
-        <span className="text-gray-400 text-xs font-mono">{clock}</span>
+        <span className="text-gray-400 text-xs font-mono">{clockDisplay}</span>
         <button onClick={onToggle}
-          className={`text-white text-xs px-3 py-1 rounded
-                      flex items-center gap-1 transition
-                      ${running
+          className={`text-white text-xs px-3 py-1 rounded flex items-center gap-1
+                      transition ${running
                         ? "bg-red-700 hover:bg-red-600"
                         : "bg-teal hover:bg-teal/80"}`}>
-          {running
-            ? <><Pause size={12}/> PAUSE</>
-            : <><Play  size={12}/> START</>}
+          {running ? <><Pause size={12}/> PAUSE</> : <><Play size={12}/> START</>}
         </button>
         <Settings size={16}
           className="text-gray-500 cursor-pointer hover:text-white transition"/>

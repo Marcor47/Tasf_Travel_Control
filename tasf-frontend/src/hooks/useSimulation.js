@@ -34,6 +34,8 @@ export function useSimulation() {
   const [history, setHistory]           = useState([]);
   const [availableDates, setAvailableDates] = useState([]);
   const [selectedDate, setSelectedDate] = useState("");
+  const [selectedNumDays, setSelectedNumDays] = useState(5);
+
 
   const prevEventsRef    = useRef([]);
   const sourceRef        = useRef(null);
@@ -123,27 +125,30 @@ export function useSimulation() {
     });
   }, [state.events]);
 
-  const start = useCallback(async (mode, startDate) => {
-    try {
-      setHistory([]);
-      prevEventsRef.current = [];
-      const response = await fetch(`${API_BASE}/api/simulation/start`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mode,
-          blockSeconds: 30,
-          startDate: startDate || null,
-        }),
-      });
-      if (response.ok) {
-        const data = await response.json();
-        setState(data);
-      }
-    } catch (e) {
-      console.error("Error al iniciar simulación:", e);
+const start = useCallback(async (mode, startDate, numDays) => {
+  try {
+    setHistory([]);
+    prevEventsRef.current = [];
+    setState(prev => ({ ...prev, clock: "Dia --  00:00" })); // ← línea nueva
+    const blockSeconds = mode === "diadia" ? 3600 : 30;
+    const response = await fetch(`${API_BASE}/api/simulation/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mode,
+        blockSeconds,
+        startDate: startDate || null,
+        numDays:   numDays   || null,
+      }),
+    });
+    if (response.ok) {
+      const data = await response.json();
+      setState(data);
     }
-  }, []);
+  } catch (e) {
+    console.error("Error al iniciar simulación:", e);
+  }
+}, []);
 
   const stop = useCallback(async () => {
     try {
@@ -165,6 +170,8 @@ export function useSimulation() {
     availableDates,
     selectedDate,
     setSelectedDate,
+    selectedNumDays,
+    setSelectedNumDays,
     start,
     stop,
   };

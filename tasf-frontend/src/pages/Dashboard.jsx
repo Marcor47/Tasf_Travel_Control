@@ -4,21 +4,36 @@ import WarehouseCapacity from "../components/panels/WarehouseCapacity";
 import WorldMap          from "../components/map/WorldMap";
 import CollapseAlert     from "../components/modals/CollapseAlert";
 
-const MODE_LABELS = {
-  diadia:  { selector: "Día a simular",  suffix: "(1 día)"                 },
-  periodo: { selector: "Día de inicio",  suffix: "(5 días consecutivos)"   },
-  colapso: { selector: "Día de inicio",  suffix: "(hasta colapso)"         },
+const MODE_CONFIG = {
+  diadia:  {
+    selector:  "Día a simular",
+    suffix:    "(1 día — tiempo real)",
+    showDays:  false,
+  },
+  periodo: {
+    selector:  "Día de inicio",
+    suffix:    null,          // el suffix lo genera el selector de días
+    showDays:  true,
+  },
+  colapso: {
+    selector:  "Día de inicio",
+    suffix:    "(hasta colapso)",
+    showDays:  false,
+  },
 };
+
+const NUM_DAYS_OPTIONS = [2, 3, 4, 5];
 
 export default function Dashboard({
   mode, simulation, onStop,
   availableDates = [], selectedDate = "", onDateChange,
+  selectedNumDays = 5, onNumDaysChange,
 }) {
   const [showCollapse, setShowCollapse] = useState(false);
   const kpis         = simulation?.kpis ?? {};
   const running      = simulation?.running ?? false;
   const simulatedNow = simulation?.simulatedMinute ?? 0;
-  const labels       = MODE_LABELS[mode] ?? MODE_LABELS.diadia;
+  const cfg          = MODE_CONFIG[mode] ?? MODE_CONFIG.diadia;
 
   useEffect(() => {
     if (simulation?.collapsed) setShowCollapse(true);
@@ -31,11 +46,11 @@ export default function Dashboard({
   return (
     <div className="flex flex-col gap-2 p-2 h-[calc(100vh-72px)]">
 
-      {/* ── Selector de fecha ─────────────────────────────────────────────── */}
+      {/* ── Selector de fecha (y días para periodo) ───────────────────────── */}
       <div className="flex items-center gap-3 bg-[#031525] border border-teal/20
                       rounded px-3 py-2 flex-shrink-0">
         <span className="text-teal text-xs font-bold uppercase whitespace-nowrap">
-          {labels.selector}
+          {cfg.selector}
         </span>
 
         {availableDates.length === 0 ? (
@@ -55,7 +70,31 @@ export default function Dashboard({
           </select>
         )}
 
-        <span className="text-gray-500 text-xs">{labels.suffix}</span>
+        {/* Selector de cantidad de días — solo en modo periodo */}
+        {cfg.showDays && (
+          <>
+            <span className="text-gray-500 text-xs">durante</span>
+            <select
+              value={selectedNumDays}
+              onChange={e => onNumDaysChange?.(Number(e.target.value))}
+              disabled={running}
+              className="bg-[#021020] border border-white/10 rounded px-2 py-1
+                         text-xs text-gray-300 focus:outline-none focus:border-teal
+                         disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {NUM_DAYS_OPTIONS.map(n => (
+                <option key={n} value={n}>{n} días</option>
+              ))}
+            </select>
+            <span className="text-gray-500 text-xs">
+              (~{selectedNumDays * 12} min simulación)
+            </span>
+          </>
+        )}
+
+        {cfg.suffix && (
+          <span className="text-gray-500 text-xs">{cfg.suffix}</span>
+        )}
 
         {running && (
           <span className="ml-auto text-green-400 text-xs animate-pulse">
@@ -93,7 +132,6 @@ export default function Dashboard({
               kpis={kpis}/>
           )}
 
-          {/* Info bloque actual */}
           <div className="absolute left-3 bottom-3 bg-[#021020]/90
                           border border-teal/20 rounded p-2 text-xs
                           text-gray-300 max-w-md">
