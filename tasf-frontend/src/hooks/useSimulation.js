@@ -164,6 +164,22 @@ const start = useCallback(async (mode, startDate, numDays) => {
     }
   }, []);
 
+  const cancelFlight = useCallback(async (flightId) => {
+    try {
+      const response = await fetch(`${API_BASE}/api/simulation/cancelFlight`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ flightId }),
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setState(data);
+      }
+    } catch (e) {
+      console.error("Error al cancelar vuelo:", e);
+    }
+  }, []);
+
   return {
     ...state,
     history,
@@ -174,5 +190,6 @@ const start = useCallback(async (mode, startDate, numDays) => {
     setSelectedNumDays,
     start,
     stop,
+    cancelFlight, // ← nuevo
   };
 }

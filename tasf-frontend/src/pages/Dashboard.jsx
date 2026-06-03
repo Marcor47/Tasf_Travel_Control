@@ -3,6 +3,7 @@ import SLAMonitor        from "../components/panels/SLAMonitor";
 import WarehouseCapacity from "../components/panels/WarehouseCapacity";
 import WorldMap          from "../components/map/WorldMap";
 import CollapseAlert     from "../components/modals/CollapseAlert";
+import FlightCancelPanel from "../components/panels/FlightCancelPanel";
 
 const MODE_CONFIG = {
   diadia:  {
@@ -28,7 +29,10 @@ export default function Dashboard({
   mode, simulation, onStop,
   availableDates = [], selectedDate = "", onDateChange,
   selectedNumDays = 5, onNumDaysChange,
+  cancelFlight,  // ← como prop
 }) {
+  // eliminar esta línea:
+  // const cancelFlight = simulation?.cancelFlight;
   const [showCollapse, setShowCollapse] = useState(false);
   const kpis         = simulation?.kpis ?? {};
   const running      = simulation?.running ?? false;
@@ -130,6 +134,14 @@ export default function Dashboard({
               onStop={onStop}
               message={simulation?.message}
               kpis={kpis}/>
+          )}
+
+          {/* Panel cancelación — solo en diadia */}
+          {mode === "diadia" && simulation?.running && (
+            <FlightCancelPanel
+              flights={simulation?.upcomingFlights ?? []}
+              onCancel={cancelFlight}
+            />
           )}
 
           <div className="absolute left-3 bottom-3 bg-[#021020]/90
