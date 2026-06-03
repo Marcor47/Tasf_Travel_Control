@@ -20,6 +20,7 @@ import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -47,6 +48,9 @@ public class SimulationService {
     private final ExecutorService  lookahead  = Executors.newSingleThreadExecutor();
     private final AtomicBoolean    running    = new AtomicBoolean(false);
     private final AtomicInteger    generation = new AtomicInteger(0);
+
+    private final ConcurrentLinkedQueue<String> pendingCancellations
+        = new ConcurrentLinkedQueue<>();
 
     // Repositorios compartidos entre getAvailableDates() y runSimulation()
     private final AirportRepository  repoAirports  = new AirportRepository();
@@ -92,6 +96,12 @@ public class SimulationService {
         emitter.onError(   e -> emitters.remove(emitter));
         send(emitter, state);
         return emitter;
+    }
+
+    public SimulationState cancelFlight(String flightId) {
+        if (!running.get()) return state;
+        pendingCancellations.add(flightId);
+        return state;
     }
 
     private Map<String, Airport> loadAirports() throws IOException {
@@ -208,16 +218,16 @@ public class SimulationService {
                 List<AirportState> staticAirports = airportStaticList(airports, solution, cbStart);
                 List<RouteState>   prevRoutes     = state.routes();
                 state = new SimulationState(
-                        true, request.mode(),
-                        fmtClock(blockStart), blockNo,
-                        fmtClock(blockStart), fmtClock(blockEnd),
-                        staticAirports, prevRoutes, List.of(),
-                        buildKpis(allLots, solution, staticAirports, delivered, replanifications, 0, blockStart),
-                        false, blockLots.isEmpty()
-                            ? "Simulación activa"
-                            : "Planificando bloque " + blockNo
-                                + " (" + blockLots.size() + " lotes)...",
-                        blockStart); // simulatedMinute
+                true, request.mode(),
+                fmtClock(blockStart), blockNo,
+                fmtClock(blockStart), fmtClock(blockEnd),
+                staticAirports, prevRoutes, List.of(),
+                buildKpis(allLots, solution, staticAirports, delivered, replanifications, 0, blockStart),
+                false, blockLots.isEmpty()
+                    ? "Simulación activa"
+                    : "Planificando bloque " + blockNo + " (" + blockLots.size() + " lotes)...",
+                blockStart,
+                List.of()); // ← nuevo
                 broadcast(state);
 
                 // Recoger resultado ALNS del lookahead (esperar solo si aún no terminó)
@@ -255,16 +265,10 @@ public class SimulationService {
                 long realDurationMs    = Math.max(1,
                         request.blockSecondsOrDefault(BLOCK_REAL_SECONDS)) * 1000L;
 
-                // BUG FIX 1: nextEvent debe arrancar desde el primer evento del bloque actual,
-                // no desde 0. allEvents contiene eventos de TODOS los bloques (para que vuelos
-                // de bloques anteriores sigan visibles en el mapa), pero resetear a 0 en cada
-                // bloque causaba que los eventos ya procesados volvieran a sumar en 'delivered',
-                // inflando el contador artificialmente (e.g. 3000 bags entregadas pasaban a
-                // 6000 al comenzar el bloque siguiente).
                 final int fBlockStart = blockStart;
                 int nextEvent = 0;
                 while (nextEvent < events.size()
-                       && events.get(nextEvent).minute() < fBlockStart) {
+                    && events.get(nextEvent).minute() < fBlockStart) {
                     nextEvent++;
                 }
 
@@ -274,9 +278,24 @@ public class SimulationService {
                             (long)(blockEnd - blockStart),
                             (elapsedMs * (long)(blockEnd - blockStart)) / realDurationMs);
 
+                    // ── Procesar cancelaciones pendientes ────────────────────────────
+                    String cancelId = pendingCancellations.poll();
+                    if (cancelId != null) {
+                        solution = processCancellation(cancelId, context, blockLots, solution);
+                        allEvents = buildEvents(solution, allLots, blockStart, blockEnd);
+                        events    = allEvents;
+                        replanifications++;
+                        // Reposicionar nextEvent al minuto simulado actual
+                        nextEvent = 0;
+                        while (nextEvent < events.size()
+                            && events.get(nextEvent).minute() <= simulatedNow) {
+                            nextEvent++;
+                        }
+                    }
+
                     List<SimEvent> emitted = new ArrayList<>();
                     while (nextEvent < events.size()
-                           && events.get(nextEvent).minute() <= simulatedNow) {
+                        && events.get(nextEvent).minute() <= simulatedNow) {
                         SimEvent ev = events.get(nextEvent++);
                         emitted.add(ev);
                         if ("landed".equals(ev.type()) && ev.finalDestination()) {
@@ -286,10 +305,14 @@ public class SimulationService {
 
                     int                activeFlights = countActiveFlights(events, simulatedNow);
                     List<AirportState> airportStates = airportStates(airports, solution, simulatedNow);
-                    // SE AÑADE simulatedNow AL FINAL 👇
                     Kpis               kpis          = buildKpis(allLots, solution, airportStates,
-                                                                delivered, replanifications, activeFlights, simulatedNow);
+                                                                delivered, replanifications,
+                                                                activeFlights, simulatedNow);
                     collapsed = airportStates.stream().anyMatch(a -> a.current() > a.capacity());
+
+                    List<UpcomingFlight> upcoming = "diadia".equals(request.mode())
+                            ? buildUpcomingFlights(context, solution, simulatedNow)
+                            : List.of();
 
                     state = new SimulationState(
                             true, request.mode(),
@@ -299,7 +322,8 @@ public class SimulationService {
                             recentRoutes(events, simulatedNow),
                             emitted, kpis, collapsed,
                             collapsed ? "⚠ Capacidad de almacén excedida" : "Simulación activa",
-                            simulatedNow); // simulatedMinute
+                            simulatedNow,
+                            upcoming); // ← nuevo
                     broadcast(state);
 
                     if (simulatedNow >= blockEnd) break;
@@ -434,6 +458,66 @@ public class SimulationService {
         return new Kpis(activeFlights, peakPct, occupancyPct, avgDeliveryDays,
                 replanifications, delivered, atRisk, outOfDeadline, totalBags, routed);
     }
+
+    private WorkingSolution processCancellation(
+            String flightId,
+            PlanningContext context,
+            List<BaggageLot> blockLots,
+            WorkingSolution solution) {
+
+        // 1. Marcar vuelo como cancelado
+        context.getFlights().stream()
+                .filter(f -> f.getId().equals(flightId))
+                .findFirst()
+                .ifPresent(f -> f.setCancelled(true));
+
+        // 2. Lotes afectados en este bloque
+        List<BaggageLot> affected = blockLots.stream()
+                .filter(lot -> {
+                    RoutePlan plan = solution.getPlan(lot.getId());
+                    return plan != null && plan.touchesFlight(flightId);
+                })
+                .collect(Collectors.toList());
+
+        if (affected.isEmpty()) {
+            System.out.printf("Vuelo %s cancelado — sin lotes afectados.%n", flightId);
+            return solution;
+        }
+
+        System.out.printf("Vuelo %s cancelado — replanificando %d lotes.%n",
+                flightId, affected.size());
+
+        // 3. Quitar lotes afectados de la solución
+        affected.forEach(solution::remove);
+
+        // 4. Re-run ALNS con cancelledFlightId
+        ALNSPlanner planner = new ALNSPlanner(context, System.currentTimeMillis());
+        Map<String, List<RoutePlan>> candidates = planner.buildCandidateMap(affected);
+        return planner.solveWithCandidates(
+                affected, ALNS_TIME_BUDGET_SEC, 0,
+                flightId, candidates, List.of(), solution);
+    }
+
+    private List<UpcomingFlight> buildUpcomingFlights(
+            PlanningContext context, WorkingSolution solution, int simulatedNow) {
+        int minuteOfDay = simulatedNow % 1440;
+        int dayStart    = (simulatedNow / 1440) * 1440;
+
+        return context.getFlights().stream()
+                .filter(f -> !f.isCancelled() && f.getDepartureHour() > minuteOfDay)
+                .sorted(Comparator.comparingInt(FlightInstance::getDepartureHour))
+                .limit(15)
+                .map(f -> {
+                    int depAbs   = dayStart + f.getDepartureHour();
+                    int assigned = f.getCapacity() - solution.residualFor(f.getId());
+                    return new UpcomingFlight(
+                            f.getId(), f.getOrigin(), f.getDestination(),
+                            depAbs, fmtClock(depAbs),
+                            f.getCapacity(), Math.max(0, assigned));
+                })
+                .collect(Collectors.toList());
+    }
+
 
     // ── Eventos ──────────────────────────────────────────────────────────────
 
@@ -601,26 +685,28 @@ public class SimulationService {
             String blockStart, String blockEnd,
             List<AirportState> airports, List<RouteState> routes,
             List<SimEvent> events, Kpis kpis,
-            // BUG FIX 4: el frontend leía simulation?.simulatedMinute pero este campo
-            // no existía en el record → siempre era undefined/0.
-            // slaStatus() necesita este valor para colorear correctamente los eventos.
-            boolean collapsed, String message, int simulatedMinute) {
+            boolean collapsed, String message, int simulatedMinute,
+            List<UpcomingFlight> upcomingFlights) {
 
         static SimulationState initial() {
             return new SimulationState(false, "diadia", "Dia --  00:00", 0,
-                    "", "", List.of(), List.of(), List.of(), Kpis.empty(), false, "Listo", 0);
+                    "", "", List.of(), List.of(), List.of(), Kpis.empty(),
+                    false, "Listo", 0, List.of());
         }
         SimulationState withRunning(boolean v) {
             return new SimulationState(v, mode, clock, block, blockStart, blockEnd,
-                    airports, routes, events, kpis, collapsed, message, simulatedMinute);
+                    airports, routes, events, kpis, collapsed, message,
+                    simulatedMinute, upcomingFlights);
         }
         SimulationState withMode(String v) {
             return new SimulationState(running, v, clock, block, blockStart, blockEnd,
-                    airports, routes, events, kpis, collapsed, message, simulatedMinute);
+                    airports, routes, events, kpis, collapsed, message,
+                    simulatedMinute, upcomingFlights);
         }
         SimulationState withMessage(String v) {
             return new SimulationState(running, mode, clock, block, blockStart, blockEnd,
-                    airports, routes, events, kpis, collapsed, v, simulatedMinute);
+                    airports, routes, events, kpis, collapsed, v,
+                    simulatedMinute, upcomingFlights);
         }
     }
 
@@ -638,4 +724,10 @@ public class SimulationService {
                        int totalBags, int routedBags) {
         static Kpis empty() { return new Kpis(0,0,0,0,0,0,0,0,0,0); }
     }
+
+    public record CancelRequest(String flightId) {}
+
+    public record UpcomingFlight(String flightId, String origin, String destination,
+                                int departureMinute, String departureClock,
+                                int capacity, int assigned) {}
 }
