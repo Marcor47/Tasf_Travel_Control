@@ -437,6 +437,41 @@ public class SimulationService {
                 .mapToInt(BaggageLot::getQuantity)
                 .sum();
 
+        // Semáforo SLA: solo lotes aún en tránsito (no entregados todavía).
+        // Un lote está entregado cuando su arrivalHour ya pasó (arrivalHour <= simulatedNow).
+        // elapsed = simulatedNow - registrationHour
+        // slaLimit = dueHour - registrationHour  (1440 min mismo / 2880 distinto continente)
+
+        // CRÍTICO: en tránsito, sin tardanza, pero ya superó el 50% del plazo
+        int slaCritical = currentLots.stream()
+                .filter(lot -> {
+                    RoutePlan p = solution.getPlan(lot.getId());
+                    if (p == null || p.getTardinessHours() > 0) return false;
+                    if (p.arrivalHour() <= simulatedNow) return false; // ya entregado
+                    int elapsed  = simulatedNow - lot.getRegistrationHour();
+                    int slaLimit = lot.getDueHour() - lot.getRegistrationHour();
+                    if (slaLimit <= 0) return false;
+                    double pct = (double) elapsed / slaLimit;
+                    return pct > 0.5 && pct <= 1.0;
+                })
+                .mapToInt(BaggageLot::getQuantity)
+                .sum();
+
+        // VERDE: en tránsito, sin tardanza, dentro del primer 50% del plazo
+        int slaOnTrack = currentLots.stream()
+                .filter(lot -> {
+                    RoutePlan p = solution.getPlan(lot.getId());
+                    if (p == null || p.getTardinessHours() > 0) return false;
+                    if (p.arrivalHour() <= simulatedNow) return false; // ya entregado
+                    int elapsed  = simulatedNow - lot.getRegistrationHour();
+                    int slaLimit = lot.getDueHour() - lot.getRegistrationHour();
+                    if (slaLimit <= 0) return false;
+                    double pct = (double) elapsed / slaLimit;
+                    return pct <= 0.5;
+                })
+                .mapToInt(BaggageLot::getQuantity)
+                .sum();
+
         int capacity    = airports.stream().mapToInt(AirportState::capacity).sum();
         int current     = airports.stream().mapToInt(AirportState::current).sum();
         int peakPct     = airports.stream()
@@ -456,7 +491,8 @@ public class SimulationService {
                 .average().orElse(0.0);
 
         return new Kpis(activeFlights, peakPct, occupancyPct, avgDeliveryDays,
-                replanifications, delivered, atRisk, outOfDeadline, totalBags, routed);
+                replanifications, delivered, atRisk, outOfDeadline, totalBags, routed,
+                slaOnTrack, slaCritical);
     }
 
     private WorkingSolution processCancellation(
@@ -532,6 +568,12 @@ public class SimulationService {
             RoutePlan plan = solution.getPlan(lot.getId());
             if (plan == null) continue;
             List<RouteSegment> segments = plan.getSegments();
+
+            // SLA: mismo continente = 24h (1440 min), distinto = 48h (2880 min)
+            // El dueHour ya fue calculado en ShipmentRepository con esa misma lógica,
+            // así que simplemente derivamos el límite del propio lote.
+            int slaLimitMinutes = lot.getDueHour() - lot.getRegistrationHour();
+
             for (int i = 0; i < segments.size(); i++) {
                 RouteSegment seg       = segments.get(i);
                 boolean      finalDest = i == segments.size() - 1;
@@ -539,9 +581,11 @@ public class SimulationService {
                 // FIX Bug 3: incluir eventos aunque estén fuera del bloque actual
                 // para que vuelos iniciados en bloques anteriores sigan visibles
                 addEvent(grouped, seg, seg.getDepartureHour(), "departed",
-                         false, lot.getQuantity());
+                         false, lot.getQuantity(),
+                         lot.getRegistrationHour(), slaLimitMinutes);
                 addEvent(grouped, seg, seg.getArrivalHour(), "landed",
-                         finalDest, lot.getQuantity());
+                         finalDest, lot.getQuantity(),
+                         lot.getRegistrationHour(), slaLimitMinutes);
             }
         }
         return grouped.values().stream()
@@ -557,12 +601,17 @@ public class SimulationService {
             int minute,
             String type,
             boolean finalDestination,
-            int bags) {
+            int bags,
+            int registrationMinute,
+            int slaLimitMinutes) {
         // Sin filtro de blockStart/blockEnd — queremos todos los eventos de la solución
-        String key = minute + "|" + type + "|" + seg.getFlightId() + "|" + finalDestination;
+        // La key incluye registrationMinute para no fusionar lotes con distinto SLA
+        String key = minute + "|" + type + "|" + seg.getFlightId()
+                + "|" + finalDestination + "|" + registrationMinute;
         grouped.computeIfAbsent(key, k -> new EventAccumulator(
                 minute, type, seg.getOrigin(), seg.getDestination(),
-                seg.getFlightId(), finalDestination))
+                seg.getFlightId(), finalDestination,
+                registrationMinute, slaLimitMinutes))
                .bags += bags;
     }
 
@@ -657,17 +706,23 @@ public class SimulationService {
     private static class EventAccumulator {
         final int minute; final String type, from, to, flightId;
         final boolean finalDestination;
+        final int registrationMinute;
+        final int slaLimitMinutes;
         int bags;
 
         EventAccumulator(int minute, String type, String from, String to,
-                         String flightId, boolean finalDestination) {
+                         String flightId, boolean finalDestination,
+                         int registrationMinute, int slaLimitMinutes) {
             this.minute = minute; this.type = type;
             this.from   = from;   this.to   = to;
             this.flightId = flightId;
             this.finalDestination = finalDestination;
+            this.registrationMinute = registrationMinute;
+            this.slaLimitMinutes    = slaLimitMinutes;
         }
         SimEvent toEvent(String clock) {
-            return new SimEvent(minute, type, from, to, flightId, bags, finalDestination, clock);
+            return new SimEvent(minute, type, from, to, flightId, bags,
+                    finalDestination, clock, registrationMinute, slaLimitMinutes);
         }
     }
 
@@ -716,13 +771,15 @@ public class SimulationService {
     public record RouteState(String from, String to, int bags, String status) {}
     public record SimEvent(int minute, String type, String from, String to,
                            String flightId, int bags, boolean finalDestination,
-                           String clock) {}
+                           String clock,
+                           int registrationMinute, int slaLimitMinutes) {}
     public record Kpis(int activeFlights, int saturationPercent,
                        int occupancyPercent, double avgDeliveryDays,
                        int replanifications, int deliveredOnTime,
                        int atRisk, int outOfDeadline,
-                       int totalBags, int routedBags) {
-        static Kpis empty() { return new Kpis(0,0,0,0,0,0,0,0,0,0); }
+                       int totalBags, int routedBags,
+                       int slaOnTrack, int slaCritical) {
+        static Kpis empty() { return new Kpis(0,0,0,0,0,0,0,0,0,0,0,0); }
     }
 
     public record CancelRequest(String flightId) {}
