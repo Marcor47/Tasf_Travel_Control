@@ -1,3 +1,4 @@
+
 name: Deploy Fullstack App
  
 on:
@@ -25,10 +26,6 @@ jobs:
         run: mvn clean package -DskipTests
         working-directory: ./tasf
  
-      # Debug: ver qué archivos generó Maven
-      - name: Ver archivos generados
-        run: ls -la tasf/target/ | grep -E "\.jar|\.war"
- 
       # 3. Compilar Frontend (React)
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -41,7 +38,7 @@ jobs:
           npm run build
         working-directory: ./tasf-frontend
  
-      # 4. Enviar Backend (.jar) al servidor
+      # 4. Copiar Backend a la carpeta home (no necesita sudo)
       - name: Copiar Backend al servidor
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -50,10 +47,10 @@ jobs:
           password: ${{ secrets.SSH_PASSWORD }}
           port: ${{ secrets.SSH_PORT }}
           source: "tasf/target/*.jar"
-          target: "/opt/tasf/"
+          target: "~/deploy-temp/backend/"
           strip_components: 2
  
-      # 5. Enviar Frontend al servidor
+      # 5. Copiar Frontend a la carpeta home (no necesita sudo)
       - name: Copiar Frontend al servidor
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -62,11 +59,11 @@ jobs:
           password: ${{ secrets.SSH_PASSWORD }}
           port: ${{ secrets.SSH_PORT }}
           source: "tasf-frontend/build/*"
-          target: "/var/www/html/"
+          target: "~/deploy-temp/frontend/"
           strip_components: 2
  
-      # 6. Configurar Nginx y reiniciar servicios
-      - name: Configurar Nginx y reiniciar servicios
+      # 6. Mover archivos, configurar Nginx y arrancar el backend
+      - name: Desplegar y reiniciar servicios
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SSH_HOST }}
@@ -74,8 +71,15 @@ jobs:
           password: ${{ secrets.SSH_PASSWORD }}
           port: ${{ secrets.SSH_PORT }}
           script: |
+            # Mover backend a /opt/tasf
             sudo mkdir -p /opt/tasf
+            sudo cp ~/deploy-temp/backend/*.jar /opt/tasf/
  
+            # Mover frontend a /var/www/html
+            sudo mkdir -p /var/www/html
+            sudo cp -r ~/deploy-temp/frontend/* /var/www/html/
+ 
+            # Configurar Nginx
             sudo tee /etc/nginx/sites-available/tasf > /dev/null <<'NGINX'
             server {
                 listen 80;
@@ -99,7 +103,12 @@ jobs:
             sudo ln -sf /etc/nginx/sites-available/tasf /etc/nginx/sites-enabled/tasf
             sudo rm -f /etc/nginx/sites-enabled/default
  
+            # Reiniciar backend
             sudo pkill -f "tasf.*\.jar" || true
+            sleep 2
             sudo nohup java -jar /opt/tasf/*.jar > /var/log/tasf.log 2>&1 &
  
+            # Recargar Nginx
             sudo nginx -t && sudo systemctl reload nginx
+ 
+            echo "✅ Deploy completado"
