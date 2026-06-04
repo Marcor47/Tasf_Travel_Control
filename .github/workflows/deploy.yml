@@ -1,95 +1,93 @@
 name: Deploy Fullstack App
-
+ 
 on:
   push:
     branches:
-      - main  # Cambia si tu rama principal se llama diferente (ej: master)
-
+      - main
+ 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
+ 
     steps:
       # 1. Clonar el repositorio
       - name: Checkout código
         uses: actions/checkout@v4
-
+ 
       # 2. Compilar Backend (Spring Boot)
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           java-version: '21'
           distribution: 'temurin'
-
+ 
       - name: Build Backend con Maven
         run: mvn clean package -DskipTests
         working-directory: ./tasf
-
+ 
       # Debug: ver qué archivos generó Maven
       - name: Ver archivos generados
         run: ls -la tasf/target/ | grep -E "\.jar|\.war"
-
+ 
       # 3. Compilar Frontend (React)
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-
+ 
       - name: Build Frontend
         run: |
           npm install --legacy-peer-deps
           npm run build
         working-directory: ./tasf-frontend
-
-      # 4. Enviar Backend al servidor
-      - name: Copiar Backend (.jar) al servidor
+ 
+      # 4. Enviar Backend (.jar) al servidor
+      - name: Copiar Backend al servidor
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          password: ${{ secrets.SSH_PASSWORD }}
           port: ${{ secrets.SSH_PORT }}
           source: "tasf/target/*.jar"
           target: "/opt/tasf/"
           strip_components: 2
-
-      # 5. Enviar Frontend (build) al servidor
+ 
+      # 5. Enviar Frontend al servidor
       - name: Copiar Frontend al servidor
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          password: ${{ secrets.SSH_PASSWORD }}
           port: ${{ secrets.SSH_PORT }}
           source: "tasf-frontend/build/*"
           target: "/var/www/html/"
           strip_components: 2
-
+ 
       # 6. Configurar Nginx y reiniciar servicios
       - name: Configurar Nginx y reiniciar servicios
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          password: ${{ secrets.SSH_PASSWORD }}
           port: ${{ secrets.SSH_PORT }}
           script: |
-            # Crear carpeta para el backend si no existe
             sudo mkdir -p /opt/tasf
-
-            # Crear configuración de Nginx
+ 
             sudo tee /etc/nginx/sites-available/tasf > /dev/null <<'NGINX'
             server {
                 listen 80;
                 server_name _;
-
+ 
                 root /var/www/html;
                 index index.html;
-
+ 
                 location / {
                     try_files $uri $uri/ /index.html;
                 }
-
+ 
                 location /api/ {
                     proxy_pass http://localhost:8080/;
                     proxy_set_header Host $host;
@@ -97,15 +95,11 @@ jobs:
                 }
             }
             NGINX
-
+ 
             sudo ln -sf /etc/nginx/sites-available/tasf /etc/nginx/sites-enabled/tasf
             sudo rm -f /etc/nginx/sites-enabled/default
-
-            # Detener instancia anterior del backend si existe
+ 
             sudo pkill -f "tasf.*\.jar" || true
-
-            # Iniciar el nuevo .jar en background
             sudo nohup java -jar /opt/tasf/*.jar > /var/log/tasf.log 2>&1 &
-
-            # Recargar Nginx
+ 
             sudo nginx -t && sudo systemctl reload nginx
