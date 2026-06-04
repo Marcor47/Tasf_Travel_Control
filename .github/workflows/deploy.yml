@@ -33,7 +33,7 @@ jobs:
 
       - name: Build Frontend
         run: |
-          npm install
+          npm install --legacy-peer-deps
           npm run build
         working-directory: ./tasf-frontend
 
