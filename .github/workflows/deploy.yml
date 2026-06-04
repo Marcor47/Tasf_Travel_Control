@@ -1,0 +1,104 @@
+name: Deploy Fullstack App
+
+on:
+  push:
+    branches:
+      - main  # Cambia si tu rama principal se llama diferente (ej: master)
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Clonar el repositorio
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      # 2. Compilar Backend (Spring Boot → .war)
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Build Backend con Maven
+        run: mvn clean package -DskipTests
+        working-directory: ./tasf
+
+      # 3. Compilar Frontend (React)
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build Frontend
+        run: |
+          npm install
+          npm run build
+        working-directory: ./tasf-frontend
+
+      # 4. Enviar Backend (.war) al servidor
+      - name: Copiar Backend al servidor
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          source: "tasf/target/*.war"
+          target: "/var/lib/tomcat10/webapps/"
+          strip_components: 2
+
+      # 5. Enviar Frontend (build) al servidor
+      - name: Copiar Frontend al servidor
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          source: "tasf-frontend/build/*"
+          target: "/var/www/html/"
+          strip_components: 2
+
+      # 6. Configurar Nginx y reiniciar servicios
+      - name: Configurar Nginx y reiniciar servicios
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          script: |
+            # Crear configuración de Nginx para el frontend + proxy al backend
+            sudo tee /etc/nginx/sites-available/tasf > /dev/null <<'NGINX'
+            server {
+                listen 80;
+                server_name _;
+
+                # Servir el frontend React
+                root /var/www/html;
+                index index.html;
+
+                location / {
+                    try_files $uri $uri/ /index.html;
+                }
+
+                # Redirigir llamadas al backend (Tomcat)
+                location /api/ {
+                    proxy_pass http://localhost:8080/;
+                    proxy_set_header Host $host;
+                    proxy_set_header X-Real-IP $remote_addr;
+                }
+            }
+            NGINX
+
+            # Activar el sitio
+            sudo ln -sf /etc/nginx/sites-available/tasf /etc/nginx/sites-enabled/tasf
+
+            # Desactivar el sitio default si existe
+            sudo rm -f /etc/nginx/sites-enabled/default
+
+            # Reiniciar servicios
+            sudo systemctl restart tomcat10
+            sudo nginx -t && sudo systemctl reload nginx
