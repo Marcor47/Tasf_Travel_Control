@@ -117,8 +117,7 @@ public class SimulationService {
 
     public List<String> getAvailableDates() {
         try {
-            Map<String, Airport> airports = loadAirports();
-            return repoShipments.getAvailableDates("data/envios/", airports)
+            return repoShipments.getAvailableDatesLightweight("data/envios/")
                     .stream().map(LocalDate::toString).collect(Collectors.toList());
         } catch (Exception e) {
             System.err.println("Error cargando fechas disponibles: " + e.getMessage());

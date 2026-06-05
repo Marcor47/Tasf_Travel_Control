@@ -434,6 +434,47 @@ public class ShipmentRepository {
         return result;
     }
 
+    /**
+     * Obtiene fechas disponibles leyendo solo nombres de archivo,
+     * sin cargar ningún lote en memoria. Mucho más eficiente.
+     */
+    public List<LocalDate> getAvailableDatesLightweight(String folderPath) {
+        Set<LocalDate> dates = new TreeSet<>();
+        File folder = new File(folderPath);
+        File[] files = folder.listFiles();
+        if (files == null) return List.of();
+
+        for (File file : files) {
+            if (!file.getName().contains("_envios_")) continue;
+            // formato: algo_envios_ICAO.txt
+            // las fechas están dentro del archivo, pero el archivo
+            // representa un aeropuerto origen — leer solo primera línea
+            try (BufferedReader br = new BufferedReader(new FileReader(file))) {
+                String line;
+                while ((line = br.readLine()) != null) {
+                    line = clean(line);
+                    if (line.isEmpty()) continue;
+                    String[] parts = line.split("-");
+                    if (parts.length < 2) continue;
+                    try {
+                        String dateStr = parts[1];
+                        if (dateStr.length() != 8) continue;
+                        int year  = Integer.parseInt(dateStr.substring(0, 4));
+                        int month = Integer.parseInt(dateStr.substring(4, 6));
+                        int day   = Integer.parseInt(dateStr.substring(6, 8));
+                        dates.add(LocalDate.of(year, month, day));
+                    } catch (Exception ignored) {}
+                }
+            } catch (Exception e) {
+                System.out.println("⚠ Error leyendo fechas de: " + file.getName());
+            }
+        }
+
+        List<LocalDate> result = new ArrayList<>(dates);
+        System.out.println("Fechas disponibles (lightweight): " + result.size());
+        return result;
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────────
 
     private int getGmt(Map<String, Airport> airports, String code) {
