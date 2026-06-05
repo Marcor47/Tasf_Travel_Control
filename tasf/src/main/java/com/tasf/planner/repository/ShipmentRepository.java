@@ -228,8 +228,17 @@ public class ShipmentRepository {
         // Ordenar archivos para procesado determinista
         Arrays.sort(files, Comparator.comparing(File::getName));
 
-        for (File file : files) {
-            if (!file.getName().contains("_envios_")) continue;
+        // Limitar archivos para servidores con poca RAM
+        // Cada archivo ≈ aeropuerto origen; 30 aeropuertos son suficientes
+        // para tener lotes representativos sin saturar el heap
+        List<File> enviosFiles = new ArrayList<>();
+        for (File f : files) {
+            if (f.getName().contains("_envios_")) enviosFiles.add(f);
+        }
+        int maxFiles = Math.min(enviosFiles.size(), 30);
+
+        for (int fi = 0; fi < maxFiles; fi++) {
+            File file = enviosFiles.get(fi);
 
             String origin = extractOrigin(file.getName());
             int gmtOrigin = getGmt(airports, origin);  // en minutos
