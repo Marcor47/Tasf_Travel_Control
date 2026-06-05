@@ -151,10 +151,12 @@ public class SimulationService {
                 days = repoShipments.findConsecutiveDaysWithK("data/envios/", airports, 10000, daysToLoad);
             }
 
-            // 3. Cargar lotes del período
-            List<BaggageLot> allLots = repoShipments.loadShipmentsForDays("data/envios/", airports, days);
-
-
+            if (days == null || days.isEmpty()) {
+                running.set(false);
+                state = state.withRunning(false).withMessage("No hay días disponibles para simular");
+                broadcast(state);
+                return;
+            }
 
             // 4. Calcular offset absoluto de los días encontrados
             //    Los lotes tienen registrationHour en minutos desde BASE_UTC=2026-01-01
@@ -163,15 +165,18 @@ public class SimulationService {
             int simulationEnd   = simulationStart + days.size() * 1440;
             int blockMinutes    = BLOCK_HOURS * 60;
 
-            System.out.printf("Simulación: %s → %s | start=%d end=%d | lotes=%d%n",
+            System.out.printf("Simulación: %s → %s | start=%d end=%d | carga por bloques%n",
                     days.get(0), days.get(days.size() - 1),
-                    simulationStart, simulationEnd, allLots.size());
+                    simulationStart, simulationEnd);
 
             WorkingSolution solution        = new WorkingSolution(context);
             int             delivered       = 0;
             int             replanifications = 0;
             boolean         collapsed       = false;
             List<SimEvent>  allEvents       = new ArrayList<>();
+            List<BaggageLot> allLots         = new ArrayList<>();
+            Set<String>      loadedLotIds    = new HashSet<>();
+            Map<Integer, List<BaggageLot>> blockLotsCache = new HashMap<>();
 
             // ── LOOKAHEAD: calcular el primer bloque antes de entrar al loop ──
             // Para cada bloque siguiente, ALNS corre en paralelo mientras
@@ -179,11 +184,10 @@ public class SimulationService {
             int firstBlockEnd = Math.min(simulationStart + blockMinutes, simulationEnd);
             final int fbStart = simulationStart;
             final int fbEnd   = firstBlockEnd;
-            List<BaggageLot> firstBlockLots = allLots.stream()
-                    .filter(l -> l.getRegistrationHour() >= fbStart
-                              && l.getRegistrationHour() <  fbEnd)
-                    .sorted(Comparator.comparingInt(BaggageLot::getRegistrationHour))
-                    .collect(Collectors.toList());
+            List<BaggageLot> firstBlockLots =
+                    loadBlockLots(airports, fbStart, fbEnd);
+            blockLotsCache.put(fbStart, firstBlockLots);
+            addKnownLots(allLots, loadedLotIds, firstBlockLots);
 
             // Future para el resultado del bloque precalculado
             java.util.concurrent.Future<WorkingSolution> nextSolutionFuture =
@@ -197,21 +201,15 @@ public class SimulationService {
                 final int cbStart = blockStart;
                 final int cbEnd   = blockEnd;
 
-                // Lotes de este bloque
-                // En modo colapso triplicamos maletas para forzar saturación
+                // Lotes de este bloque, cargados por ventana para no retener
+                // todo el dataset en heap.
                 final boolean collapseMode = "colapso".equals(request.mode());
-                List<BaggageLot> blockLots = allLots.stream()
-                        .filter(lot -> lot.getRegistrationHour() >= cbStart
-                                    && lot.getRegistrationHour() <  cbEnd)
-                        .map(lot -> !collapseMode ? lot
-                                : new BaggageLot(lot.getId(), lot.getOrigin(),
-                                                  lot.getDestination(),
-                                                  lot.getQuantity() * 3,
-                                                  lot.getRegistrationHour(),
-                                                  lot.getDueHour(),
-                                                  lot.isReplanningPriority()))
-                        .sorted(Comparator.comparingInt(BaggageLot::getRegistrationHour))
-                        .collect(Collectors.toList());
+                List<BaggageLot> rawBlockLots = blockLotsCache.remove(cbStart);
+                if (rawBlockLots == null) {
+                    rawBlockLots = loadBlockLots(airports, cbStart, cbEnd);
+                }
+                addKnownLots(allLots, loadedLotIds, rawBlockLots);
+                List<BaggageLot> blockLots = applyCollapseMode(rawBlockLots, collapseMode);
 
                 // Notificar inicio de bloque — mantener rutas del bloque anterior visibles
                 List<AirportState> staticAirports = airportStaticList(airports, solution, cbStart);
@@ -250,11 +248,8 @@ public class SimulationService {
                 final int nextBlockNo = blockNo + 1;
 
                 if (nextBlockStart < simulationEnd) {
-                    List<BaggageLot> nextLots = allLots.stream()
-                            .filter(l -> l.getRegistrationHour() >= nbStart
-                                      && l.getRegistrationHour() <  nbEnd)
-                            .sorted(Comparator.comparingInt(BaggageLot::getRegistrationHour))
-                            .collect(Collectors.toList());
+                    List<BaggageLot> nextLots = loadBlockLots(airports, nbStart, nbEnd);
+                    blockLotsCache.put(nbStart, nextLots);
                     nextSolutionFuture = submitALNS(lookahead, context, nextLots, nextBlockNo, solSnap);
                 }
 
@@ -346,6 +341,40 @@ public class SimulationService {
     }
 
     // ── Lookahead ALNS helper ────────────────────────────────────────────────
+
+    private List<BaggageLot> loadBlockLots(
+            Map<String, Airport> airports,
+            int blockStart,
+            int blockEnd) throws IOException {
+        return repoShipments.loadShipmentsForMinuteRange(
+                "data/envios/", airports, blockStart, blockEnd);
+    }
+
+    private void addKnownLots(
+            List<BaggageLot> allLots,
+            Set<String> loadedLotIds,
+            List<BaggageLot> newLots) {
+        for (BaggageLot lot : newLots) {
+            if (loadedLotIds.add(lot.getId())) {
+                allLots.add(lot);
+            }
+        }
+    }
+
+    private List<BaggageLot> applyCollapseMode(
+            List<BaggageLot> lots,
+            boolean collapseMode) {
+        if (!collapseMode) return lots;
+        return lots.stream()
+                .map(lot -> new BaggageLot(lot.getId(), lot.getOrigin(),
+                        lot.getDestination(),
+                        lot.getQuantity() * 3,
+                        lot.getRegistrationHour(),
+                        lot.getDueHour(),
+                        lot.isReplanningPriority()))
+                .sorted(Comparator.comparingInt(BaggageLot::getRegistrationHour))
+                .collect(Collectors.toList());
+    }
 
     private java.util.concurrent.Future<WorkingSolution> submitALNS(
             ExecutorService pool,

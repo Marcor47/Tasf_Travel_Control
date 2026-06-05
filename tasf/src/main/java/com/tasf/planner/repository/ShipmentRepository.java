@@ -43,26 +43,8 @@ public class ShipmentRepository {
 
     // ── clase interna ────────────────────────────────────────────────────────
 
-    // Caché en memoria: evita releer 9.5M de lotes en cada simulación
-    private List<LotEntry>       cachedEntries   = null;
-    private String               cachedFolder    = null;
-    private Map<String, Airport> cachedAirports  = null;
-
-    private synchronized List<LotEntry> loadAllUtcCached(String folderPath,
-                                                        Map<String, Airport> airports)
-            throws IOException {
-        if (cachedEntries != null
-                && folderPath.equals(cachedFolder)
-                && airports == cachedAirports) {
-            System.out.println("Usando caché de lotes (" + cachedEntries.size() + " entradas)");
-            return cachedEntries;
-        }
-        System.out.println("Cargando lotes desde disco (primera vez)...");
-        cachedEntries  = loadAllUtc(folderPath, airports);
-        cachedFolder   = folderPath;
-        cachedAirports = airports;
-        System.out.println("Caché listo: " + cachedEntries.size() + " entradas.");
-        return cachedEntries;
+    private interface LotEntryConsumer {
+        void accept(LotEntry entry) throws IOException;
     }
 
     private static class LotEntry {
@@ -96,10 +78,10 @@ public class ShipmentRepository {
         // contar MALETAS por día UTC (no lotes — cada lote tiene N maletas)
         Map<LocalDate, Integer> bagsByDay  = new TreeMap<>();
         Map<LocalDate, Integer> lotsByDay  = new TreeMap<>();
-        for (LotEntry entry : loadAllUtcCached(folderPath, airports)) {
+        scanAllUtc(folderPath, airports, entry -> {
             bagsByDay.merge(entry.utcDate, entry.lot.getQuantity(), Integer::sum);
             lotsByDay.merge(entry.utcDate, 1, Integer::sum);
-        }
+        });
 
         int lowerBound = (int) (targetK * 0.9);
 
@@ -135,11 +117,11 @@ public class ShipmentRepository {
                                                  int maxLots) throws IOException {
 
         List<LotEntry> dayEntries = new ArrayList<>();
-        for (LotEntry entry : loadAllUtcCached(folderPath, airports)) {
+        scanAllUtc(folderPath, airports, entry -> {
             if (entry.utcDate.equals(targetDay)) {
                 dayEntries.add(entry);
             }
-        }
+        });
 
         // ordenar por hora UTC dentro del día
         dayEntries.sort(Comparator.comparingLong(e -> e.utcMinutes));
@@ -164,11 +146,11 @@ public class ShipmentRepository {
                                                  List<LocalDate> targetDays) throws IOException {
         Set<LocalDate> selectedDays = new HashSet<>(targetDays);
         List<LotEntry> selectedEntries = new ArrayList<>();
-        for (LotEntry entry : loadAllUtcCached(folderPath, airports)) {
+        scanAllUtc(folderPath, airports, entry -> {
             if (selectedDays.contains(entry.utcDate)) {
                 selectedEntries.add(entry);
             }
-        }
+        });
 
         selectedEntries.sort(Comparator.comparingLong(e -> e.utcMinutes));
 
@@ -176,6 +158,29 @@ public class ShipmentRepository {
         for (LotEntry entry : selectedEntries) {
             result.add(entry.lot);
         }
+        return result;
+    }
+
+    public List<BaggageLot> loadShipmentsForMinuteRange(String folderPath,
+                                                        Map<String, Airport> airports,
+                                                        int fromMinute,
+                                                        int toMinute) throws IOException {
+        List<LotEntry> selectedEntries = new ArrayList<>();
+        scanAllUtc(folderPath, airports, entry -> {
+            if (entry.utcMinutes >= fromMinute && entry.utcMinutes < toMinute) {
+                selectedEntries.add(entry);
+            }
+        });
+
+        selectedEntries.sort(Comparator.comparingLong(e -> e.utcMinutes));
+
+        List<BaggageLot> result = new ArrayList<>(selectedEntries.size());
+        for (LotEntry entry : selectedEntries) {
+            result.add(entry.lot);
+        }
+
+        System.out.printf("Rango cargado [%d, %d): %d lotes%n",
+                fromMinute, toMinute, result.size());
         return result;
     }
 
@@ -206,23 +211,24 @@ public class ShipmentRepository {
      * con su timestamp ya convertido a UTC.
      */
     private List<LotEntry> loadAllUtc(String folderPath,
-                                       Map<String, Airport> airports)
+                                      Map<String, Airport> airports)
             throws IOException {
-
         List<LotEntry> all = new ArrayList<>();
+        scanAllUtc(folderPath, airports, all::add);
+        return all;
+    }
 
+    private void scanAllUtc(String folderPath,
+                            Map<String, Airport> airports,
+                            LotEntryConsumer consumer) throws IOException {
         File folder = new File(folderPath);
         File[] files = folder.listFiles();
-        if (files == null) return all;
+        if (files == null) return;
 
         // Ordenar archivos para procesado determinista
         Arrays.sort(files, Comparator.comparing(File::getName));
 
-        // En servidor con poca RAM, limitar archivos cargados
-        // 200 archivos ≈ ~200MB de heap, manejable con 1GB asignado
-        int maxFiles = Math.min(files.length, 200);
-        for (int fi = 0; fi < maxFiles; fi++) {
-            File file = files[fi];
+        for (File file : files) {
             if (!file.getName().contains("_envios_")) continue;
 
             String origin = extractOrigin(file.getName());
@@ -286,7 +292,7 @@ public class ShipmentRepository {
                                 false
                         );
 
-                        all.add(new LotEntry(lot, utcMinutes));
+                        consumer.accept(new LotEntry(lot, utcMinutes));
 
                     } catch (Exception e) {
                         System.out.println("⚠ Error envío: " + line);
@@ -294,8 +300,6 @@ public class ShipmentRepository {
                 }
             }
         }
-
-        return all;
     }
     
     public List<LocalDate> findConsecutiveDaysWithK(
@@ -308,10 +312,10 @@ public class ShipmentRepository {
             Map<LocalDate, Integer> bagsByDay  = new TreeMap<>();
             Map<LocalDate, Integer> lotsByDay  = new TreeMap<>();
 
-            for (LotEntry entry : loadAllUtcCached(folderPath, airports)) {
+            scanAllUtc(folderPath, airports, entry -> {
                 bagsByDay.merge(entry.utcDate, entry.lot.getQuantity(), Integer::sum);
                 lotsByDay.merge(entry.utcDate, 1, Integer::sum);
-            }
+            });
 
             if (bagsByDay.isEmpty()) return null;
 
@@ -395,11 +399,9 @@ public class ShipmentRepository {
 
     public List<LocalDate> getAvailableDates(String folderPath,
                                             Map<String, Airport> airports) throws IOException {
-        return loadAllUtcCached(folderPath, airports).stream()
-                .map(e -> e.utcDate)
-                .distinct()
-                .sorted()
-                .collect(Collectors.toList());
+        Set<LocalDate> dates = new TreeSet<>();
+        scanAllUtc(folderPath, airports, entry -> dates.add(entry.utcDate));
+        return new ArrayList<>(dates);
     }
 
     public List<LocalDate> getDaysFrom(String folderPath,
