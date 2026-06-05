@@ -461,6 +461,6 @@ public class ShipmentRepository {
     }
 
     private String cleanCode(String s) {
-        return clean(s).toUpperCase().replaceAll("[^A-Z0-9]", "");
+        return s.trim().toUpperCase();
     }
 }
