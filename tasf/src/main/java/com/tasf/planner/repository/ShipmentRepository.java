@@ -215,10 +215,14 @@ public class ShipmentRepository {
         File[] files = folder.listFiles();
         if (files == null) return all;
 
-        // ordenar archivos para procesado determinista
+        // Ordenar archivos para procesado determinista
         Arrays.sort(files, Comparator.comparing(File::getName));
 
-        for (File file : files) {
+        // En servidor con poca RAM, limitar archivos cargados
+        // 200 archivos ≈ ~200MB de heap, manejable con 1GB asignado
+        int maxFiles = Math.min(files.length, 200);
+        for (int fi = 0; fi < maxFiles; fi++) {
+            File file = files[fi];
             if (!file.getName().contains("_envios_")) continue;
 
             String origin = extractOrigin(file.getName());
