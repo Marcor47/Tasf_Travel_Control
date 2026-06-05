@@ -406,20 +406,19 @@ public class ShipmentRepository {
                                         Map<String, Airport> airports,
                                         LocalDate startDate,
                                         int numDays) throws IOException {
-        List<LocalDate> all = getAvailableDates(folderPath, airports);
+        // Usar lightweight para no cargar el caché completo
+        List<LocalDate> all = getAvailableDatesLightweight(folderPath);
         if (all.isEmpty()) return List.of();
 
-        // Primer índice con fecha >= startDate
         int startIdx = all.size();
         for (int i = 0; i < all.size(); i++) {
             if (!all.get(i).isBefore(startDate)) { startIdx = i; break; }
         }
         if (startIdx == all.size()) {
-            System.out.println("⚠ Fecha " + startDate + " posterior al dataset — usando primera fecha disponible.");
+            System.out.println("⚠ Fecha " + startDate + " posterior al dataset — usando primera disponible.");
             startIdx = 0;
         }
 
-        // Recoger días consecutivos (numDays=0 → todos)
         List<LocalDate> result = new ArrayList<>();
         for (int i = startIdx; i < all.size(); i++) {
             if (i > startIdx && !all.get(i - 1).plusDays(1).equals(all.get(i))) break;
