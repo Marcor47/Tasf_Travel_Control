@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-const API_BASE = import.meta.env.VITE_API_BASE || "";
+const API_BASE = import.meta.env.VITE_API_BASE || ""; // || "http://localhost:8080";
 const MAX_HISTORY = 300;
 
 const emptyState = {
