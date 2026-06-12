@@ -40,7 +40,9 @@ public class ShipmentRepository {
 
     // Fecha base del sistema: todo tiempo se mide en minutos desde este instante UTC
     private static final LocalDateTime BASE_UTC = LocalDateTime.of(2026, 1, 1, 0, 0);
-
+    private List<LotEntry>       cachedEntries  = null;
+    private String               cachedFolder   = null;
+    private Map<String, Airport> cachedAirports = null;
     // ── clase interna ────────────────────────────────────────────────────────
 
     private interface LotEntryConsumer {
@@ -218,47 +220,47 @@ public class ShipmentRepository {
         return all;
     }
 
-    private void scanAllUtc(String folderPath,
-                            Map<String, Airport> airports,
-                            LotEntryConsumer consumer) throws IOException {
+    private synchronized void scanAllUtc(String folderPath,
+                                        Map<String, Airport> airports,
+                                        LotEntryConsumer consumer) throws IOException {
+        // Usar caché si ya existe para esta carpeta y aeropuertos
+        if (cachedEntries != null
+                && folderPath.equals(cachedFolder)
+                && airports == cachedAirports) {
+            for (LotEntry entry : cachedEntries) consumer.accept(entry);
+            return;
+        }
+
         File folder = new File(folderPath);
         File[] files = folder.listFiles();
         if (files == null) return;
 
-        // Ordenar archivos para procesado determinista
         Arrays.sort(files, Comparator.comparing(File::getName));
 
-        // Limitar archivos para servidores con poca RAM
-        // Cada archivo ≈ aeropuerto origen; 30 aeropuertos son suficientes
-        // para tener lotes representativos sin saturar el heap
         List<File> enviosFiles = new ArrayList<>();
         for (File f : files) {
             if (f.getName().contains("_envios_")) enviosFiles.add(f);
         }
         int maxFiles = Math.min(enviosFiles.size(), 30);
 
+        List<LotEntry> loaded = new ArrayList<>();
+
         for (int fi = 0; fi < maxFiles; fi++) {
             File file = enviosFiles.get(fi);
-
-            String origin = extractOrigin(file.getName());
-            int gmtOrigin = getGmt(airports, origin);  // en minutos
+            String origin    = extractOrigin(file.getName());
+            int    gmtOrigin = getGmt(airports, origin);
 
             try (BufferedReader br = new BufferedReader(new FileReader(file))) {
                 String line;
                 while ((line = br.readLine()) != null) {
-
                     line = clean(line);
                     if (line.isEmpty()) continue;
 
                     String[] parts = line.split("-");
-                    if (parts.length < 7) {
-                        System.out.println("⚠ Línea envío inválida: " + line);
-                        continue;
-                    }
+                    if (parts.length < 7) continue;
 
                     try {
-                        String id = origin + "_" + parts[0];
-
+                        String id      = origin + "_" + parts[0];
                         String dateStr = parts[1];
                         int year  = Integer.parseInt(dateStr.substring(0, 4));
                         int month = Integer.parseInt(dateStr.substring(4, 6));
@@ -266,42 +268,26 @@ public class ShipmentRepository {
                         int hour  = Integer.parseInt(parts[2]);
                         int min   = Integer.parseInt(parts[3]);
 
-                        // timestamp local del aeropuerto origen
-                        LocalDateTime localTs = LocalDateTime.of(year, month, day, hour, min);
-                        long localMinutes = Duration.between(BASE_UTC, localTs).toMinutes();
+                        LocalDateTime localTs      = LocalDateTime.of(year, month, day, hour, min);
+                        long          localMinutes = Duration.between(BASE_UTC, localTs).toMinutes();
+                        long          utcMinutes   = localMinutes - gmtOrigin;
+                        int           regUtc       = (int) utcMinutes;
 
-                        // convertir a UTC: UTC = local - gmtOffset
-                        long utcMinutes = localMinutes - gmtOrigin;
+                        String  destination   = cleanCode(parts[4]);
+                        int     quantity      = Integer.parseInt(
+                                                clean(parts[5]).replaceAll("[^0-9]", ""));
 
-                        int registrationTimeUtc = (int) utcMinutes;
-                        
-
-                        // Formato: id-aaaammdd-hh-mm-dest-###-IdClien
-                        String destination = cleanCode(parts[4]);           // parts[4] = ICAO destino
-                        int quantity       = Integer.parseInt(            // parts[5] = cantidad maletas
-                                clean(parts[5]).replaceAll("[^0-9]", "")); // clean() antes de parseInt
-                        // parts[6] = IdCliente — no se usa en la planificación
-
-                        // Ventana de entrega según continente
-                        // Mismo continente: 24h  |  Distinto continente: 48h
                         Airport originAirport = airports.get(origin);
                         Airport destAirport   = airports.get(destination);
-                        boolean sameContinent = originAirport != null
-                                && destAirport != null
+                        boolean sameContinent = originAirport != null && destAirport != null
                                 && originAirport.getRegion().equals(destAirport.getRegion());
-                        int dueTimeUtc = registrationTimeUtc + (sameContinent ? 24 * 60 : 48 * 60);
+                        int dueTimeUtc = regUtc + (sameContinent ? 24 * 60 : 48 * 60);
 
                         BaggageLot lot = new BaggageLot(
-                                id,
-                                origin,
-                                destination,
-                                quantity,
-                                registrationTimeUtc,
-                                dueTimeUtc,
-                                false
-                        );
+                                id, origin, destination, quantity,
+                                regUtc, dueTimeUtc, false);
 
-                        consumer.accept(new LotEntry(lot, utcMinutes));
+                        loaded.add(new LotEntry(lot, utcMinutes));
 
                     } catch (Exception e) {
                         System.out.println("⚠ Error envío: " + line);
@@ -309,6 +295,13 @@ public class ShipmentRepository {
                 }
             }
         }
+
+        cachedEntries  = loaded;
+        cachedFolder   = folderPath;
+        cachedAirports = airports;
+        System.out.println("Caché cargado: " + loaded.size() + " entradas (30 archivos)");
+
+        for (LotEntry entry : loaded) consumer.accept(entry);
     }
     
     public List<LocalDate> findConsecutiveDaysWithK(

@@ -123,10 +123,11 @@ export default function Dashboard({
         {/* Mapa central */}
         <div className="flex-1 relative">
           <WorldMap
-            airports={simulation?.airports ?? []}
-            routes={simulation?.routes ?? []}
-            running={running}
-            message={simulation?.message ?? ""}/>
+          airports={simulation?.airports ?? []}
+          routes={simulation?.routes ?? []}
+          running={running}
+          message={simulation?.message ?? ""}
+          simulatedMinute={simulatedNow}/>
 
           {showCollapse && (
             <CollapseAlert

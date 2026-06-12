@@ -27,11 +27,11 @@ function AppContent() {
                      : "diadia";
 
   // Detener simulación si cambia de modo mientras corre
-  useEffect(() => {
+  /*useEffect(() => {
     if (running && simulation?.mode && simulation.mode !== modeFromPath) {
       stop();
     }
-  }, [modeFromPath]);
+  }, [modeFromPath]);*/
 
   const handleToggle = () => {
     if (running) {
@@ -46,10 +46,11 @@ function AppContent() {
   };
 
   const handleModeClick = (mode) => {
+    // Solo detener si el usuario hace click en un modo distinto al que corre
     if (running && simulation?.mode !== mode) stop();
     navigate(mode === "colapso" ? "/colapso"
-           : mode === "periodo" ? "/periodo"
-           : "/");
+          : mode === "periodo" ? "/periodo"
+          : "/");
   };
 
   const dashboardProps = {

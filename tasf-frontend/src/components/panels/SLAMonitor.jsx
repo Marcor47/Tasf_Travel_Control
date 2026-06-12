@@ -114,7 +114,9 @@ const EMPTY_KPIS = {
 
 function getPackageId(event) {
   if (event.packageId) return event.packageId;
-  return `PKG-${event.flightId || "XX"}-${event.minute || "00"}`;
+  const from = event.from || "XX";
+  const to = event.to || "XX";
+  return `PKG-${from}${to}-${event.minute || "00"}`;
 }
 
 /** Etiqueta legible del SLA (mismo / distinto continente) */
@@ -139,26 +141,46 @@ export default function SLAMonitor({
 
   const isPlanning = message.startsWith("Planificando");
 
-  // ── Últimos 5 eventos para el monitor de plazos ───────────────────────────
+  // ── Últimos 5 eventos para el monitor de plazos general ───────────────────
   const recentEvents = useMemo(() => {
     if (!events.length) return [];
     return [...events].reverse().slice(0, 5);
   }, [events]);
 
-  // ── Eventos filtrados para el buscador ───────────────────────────────────
-  const filteredEvents = useMemo(() => {
+  // ── Eventos a nivel Maleta para el buscador ───────────────────────────────
+  const bagLevelDetails = useMemo(() => {
     if (!events.length) return [];
-    let result = [...events].reverse();
+    
+    let result = [];
+    // Tomamos los últimos 100 eventos para asegurar rendimiento en frontend
+    const recentToProcess = [...events].reverse().slice(0, 100);
+
+    for (const e of recentToProcess) {
+      const pkgId = getPackageId(e);
+      const numBags = e.bags || 1;
+      
+      // Expandimos el evento creando un registro individual por cada maleta
+      for (let i = 1; i <= numBags; i++) {
+        result.push({
+          ...e,
+          // Genera un ID estilo PKG-LIMMAD-00-001, PKG-LIMMAD-00-002, etc.
+          bagId: `${pkgId}-${i.toString().padStart(3, '0')}`
+        });
+      }
+    }
+
     if (filterText.trim()) {
       const q = filterText.toLowerCase();
-      result = result.filter(e =>
-        getPackageId(e).toLowerCase().includes(q) ||
-        (e.flightId && e.flightId.toLowerCase().includes(q)) ||
-        (e.from && e.from.toLowerCase().includes(q)) ||
-        (e.to   && e.to.toLowerCase().includes(q))
+      result = result.filter(b => 
+        b.bagId.toLowerCase().includes(q) ||
+        (b.flightId && b.flightId.toLowerCase().includes(q)) ||
+        (b.from && b.from.toLowerCase().includes(q)) ||
+        (b.to   && b.to.toLowerCase().includes(q))
       );
     }
-    return result.slice(0, 5);
+
+    // Retornamos las primeras 6 para que la tabla no sea inmensa
+    return result.slice(0, 6);
   }, [events, filterText]);
 
   // ── Contadores globales ───────────────────────────────────────────────────
@@ -168,11 +190,7 @@ export default function SLAMonitor({
     ? 0
     : Math.max(0, safeKpis.routedBags - delivered - overdue);
 
-  // ── Desglose SLA: Verde / Amarillo / Rojo calculado desde events ──────────
-  // El semáforo SLA se construye 100% desde los KPIs del backend,
-  // que calculan los tres estados directamente sobre los BaggageLot
-  // con acceso a registrationHour, dueHour y simulatedNow.
-  // Esto evita cualquier doble conteo por eventos departed+landed o transbordos.
+  // ── Desglose SLA: Verde / Amarillo / Rojo ─────────────────────────────────
   const slaBreakdown = {
     green:  safeKpis.slaOnTrack  ?? 0,
     yellow: safeKpis.slaCritical ?? 0,
@@ -190,7 +208,8 @@ export default function SLAMonitor({
         <table className="w-full">
           <thead>
             <tr className="text-gray-500 border-b border-white/10">
-              <th className="text-left py-1">Vuelo / Ruta</th>
+              <th className="text-left py-1">Paquete / Ruta</th>
+              <th className="text-center py-1">Maletas</th>
               <th className="text-left py-1">Tipo SLA</th>
               <th className="text-left py-1">Estado</th>
             </tr>
@@ -202,10 +221,13 @@ export default function SLAMonitor({
                     className="border-b border-white/5">
                   <td className="py-1.5 text-gray-300">
                     <span className="text-teal font-mono font-bold text-[10px]">
-                      {event.flightId}
+                      {getPackageId(event)}
                     </span>
                     <br/>
                     <span className="text-gray-500">{event.from} → {event.to}</span>
+                  </td>
+                  <td className="py-1.5 text-center text-gray-300 font-bold text-[10px]">
+                    {event.bags || 1}
                   </td>
                   <td className="py-1.5 text-gray-500 text-[10px]">
                     {slaTypeLabel(event.slaLimitMinutes)}
@@ -217,7 +239,7 @@ export default function SLAMonitor({
               ))
             ) : (
               <tr>
-                <td colSpan={3} className="py-4 text-center text-gray-600 text-[10px]">
+                <td colSpan={4} className="py-4 text-center text-gray-600 text-[10px]">
                   {running ? "Esperando eventos..." : "Inicia la simulación"}
                 </td>
               </tr>
@@ -246,15 +268,15 @@ export default function SLAMonitor({
         </div>
       </div>
 
-      {/* ── Buscador de vuelo / paquete ──────────────────────────────────── */}
+      {/* ── Buscador de maleta ───────────────────────────────────────────── */}
       <div className="bg-[#031525] border border-teal/20 rounded p-2">
         <p className="text-teal font-bold mb-2 uppercase tracking-wide text-[10px]">
-          Detalle del Paquete
+          Detalle por Maleta
         </p>
         <input
           value={filterText}
           onChange={e => setFilterText(e.target.value)}
-          placeholder="Busca por vuelo, aeropuerto de origen o destino..."
+          placeholder="Busca ID de paquete o maleta"
           className="w-full bg-[#021020] border border-white/10 rounded
                      px-2 py-1 text-xs text-gray-300 mb-2
                      focus:outline-none focus:border-teal"
@@ -262,32 +284,32 @@ export default function SLAMonitor({
         <table className="w-full">
           <thead>
             <tr className="text-gray-500 border-b border-white/10">
-              <th className="text-left py-1">Vuelo</th>
-              <th className="text-left py-1">Ruta</th>
-              <th className="text-left py-1">Maletas</th>
+              <th className="text-left py-1">ID Maleta</th>
+              <th className="text-left py-1">Vuelo / Ruta</th>
               <th className="text-left py-1">Estado SLA</th>
             </tr>
           </thead>
           <tbody>
-            {filteredEvents.length > 0 ? (
-              filteredEvents.map((event, idx) => (
-                <tr key={`detail-${getPackageId(event)}-${idx}`}
+            {bagLevelDetails.length > 0 ? (
+              bagLevelDetails.map((bag, idx) => (
+                <tr key={`bag-${bag.bagId}-${idx}`}
                     className="border-b border-white/5">
                   <td className="py-1.5 text-teal font-mono font-bold text-[10px]">
-                    {event.flightId || `FLT-${idx + 1}`}
+                    {bag.bagId}
                   </td>
-                  <td className="py-1.5 text-gray-400">
-                    {event.from} → {event.to}
+                  <td className="py-1.5 text-gray-400 text-[10px]">
+                    <span className="text-gray-300">{bag.flightId || `FLT`}</span>
+                    <br />
+                    {bag.from} → {bag.to}
                   </td>
-                  <td className="py-1.5 text-gray-300">{event.bags}</td>
                   <td className="py-1.5">
-                    <SLAStatusBadge event={event} simulatedMinute={simulatedMinute} />
+                    <SLAStatusBadge event={bag} simulatedMinute={simulatedMinute} />
                   </td>
                 </tr>
               ))
             ) : (
               <tr>
-                <td colSpan={4} className="py-3 text-center text-gray-600 text-[10px]">
+                <td colSpan={3} className="py-3 text-center text-gray-600 text-[10px]">
                   {filterText ? "Sin coincidencias" : "Esperando datos..."}
                 </td>
               </tr>

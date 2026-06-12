@@ -79,7 +79,7 @@ export function useSimulation() {
       .then(r => (r.ok ? r.json() : []))
       .then(dates => {
         setAvailableDates(dates);
-        if (dates.length > 0) setSelectedDate(dates[0]);
+        setSelectedDate(prev => prev || (dates.length > 0 ? dates[0] : ""));
       })
       .catch(() => {});
 
