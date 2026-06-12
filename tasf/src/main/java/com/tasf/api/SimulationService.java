@@ -174,6 +174,11 @@ public class SimulationService {
                 int             replanifications = 0;
                 boolean         collapsed        = false;
                 List<SimEvent>  allEvents        = new ArrayList<>();
+                // Vuelos que salieron en un bloque anterior y aún no han aterrizado.
+                // Son SimEvent ligeros (un record), no BaggageLot — costo mínimo.
+                // Se mezclan con los eventos del bloque siguiente para que los aviones
+                // en vuelo sigan visibles en el mapa al cruzar el límite de bloque.
+                List<SimEvent>  carryoverEvents  = new ArrayList<>();
 
                 // Contadores acumulados — reemplazan a allLots en memoria.
                 // En lugar de conservar cada BaggageLot recibido (que en modo
@@ -225,10 +230,18 @@ public class SimulationService {
                     }
 
                     if (!blockLots.isEmpty()) {
-                        // buildEvents solo necesita los lotes del bloque actual:
-                        // los eventos de bloques anteriores ya fueron emitidos y
-                        // no se vuelven a reproducir, así que no hace falta allLots.
-                        allEvents = buildEvents(solution, blockLots, blockStart, blockEnd);
+                        List<SimEvent> blockEvents = buildEvents(solution, blockLots, blockStart, blockEnd);
+                        // Mezclar carryover (vuelos aun en vuelo del bloque anterior)
+                        // con los eventos nuevos del bloque actual, reordenando por minuto.
+                        List<SimEvent> merged = new ArrayList<>(carryoverEvents.size() + blockEvents.size());
+                        merged.addAll(carryoverEvents);
+                        merged.addAll(blockEvents);
+                        merged.sort(Comparator.comparingInt(SimEvent::minute)
+                                              .thenComparing(SimEvent::type));
+                        allEvents = merged;
+                    } else if (!carryoverEvents.isEmpty()) {
+                        // Bloque vacio de lotes pero hay vuelos en transito: solo carryover
+                        allEvents = new ArrayList<>(carryoverEvents);
                     }
 
                     // Lanzar INMEDIATAMENTE el siguiente bloque en background
@@ -288,7 +301,13 @@ public class SimulationService {
                         String cancelId = pendingCancellations.poll();
                         if (cancelId != null) {
                             solution = processCancellation(cancelId, context, blockLots, solution);
-                            allEvents = buildEvents(solution, blockLots, blockStart, blockEnd);
+                            List<SimEvent> rebuildBlock = buildEvents(solution, blockLots, blockStart, blockEnd);
+                            List<SimEvent> rebuildMerged = new ArrayList<>(carryoverEvents.size() + rebuildBlock.size());
+                            rebuildMerged.addAll(carryoverEvents);
+                            rebuildMerged.addAll(rebuildBlock);
+                            rebuildMerged.sort(Comparator.comparingInt(SimEvent::minute)
+                                                         .thenComparing(SimEvent::type));
+                            allEvents = rebuildMerged;
                             events    = allEvents;
                             replanifications++;
                             nextEvent = 0;
@@ -335,6 +354,20 @@ public class SimulationService {
                         if (simulatedNow >= blockEnd) break;
                         sleep(BROADCAST_INTERVAL_MS);
                     }
+
+                    // Al terminar el bloque, calcular carryover: eventos departed cuyo
+                    // vuelo aun no ha aterrizado al final del bloque (blockEnd).
+                    // Estos se inyectaran al inicio del siguiente bloque para que los
+                    // aviones en vuelo sigan visibles sin necesidad de guardar los lotes.
+                    Set<String> landedByBlockEnd = allEvents.stream()
+                            .filter(e -> "landed".equals(e.type()) && e.minute() <= blockEnd)
+                            .map(SimEvent::flightId)
+                            .collect(Collectors.toSet());
+                    carryoverEvents = allEvents.stream()
+                            .filter(e -> "departed".equals(e.type())
+                                    && e.minute() <= blockEnd
+                                    && !landedByBlockEnd.contains(e.flightId()))
+                            .collect(Collectors.toList());
                 }
 
                 if (!isActive(runId)) return;
