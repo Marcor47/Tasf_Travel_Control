@@ -169,13 +169,19 @@ public class SimulationService {
                     days.get(0), days.get(days.size() - 1),
                     simulationStart, simulationEnd);
 
-                WorkingSolution solution        = new WorkingSolution(context);
-                int             delivered       = 0;
+                WorkingSolution solution         = new WorkingSolution(context);
+                int             delivered        = 0;
                 int             replanifications = 0;
-                boolean         collapsed       = false;
-                List<SimEvent>  allEvents       = new ArrayList<>();
-                List<BaggageLot> allLots        = new ArrayList<>();
-                Set<String>      loadedLotIds   = new HashSet<>();
+                boolean         collapsed        = false;
+                List<SimEvent>  allEvents        = new ArrayList<>();
+
+                // Contadores acumulados — reemplazan a allLots en memoria.
+                // En lugar de conservar cada BaggageLot recibido (que en modo
+                // colapso llegaría a ser todo el dataset), solo acumulamos los
+                // valores numéricos que buildKpis necesita para sus métricas.
+                int accumTotalBags     = 0;  // suma de maletas registradas hasta ahora
+                int accumRoutedBags    = 0;  // suma de maletas con plan asignado
+                int accumOutOfDeadline = 0;  // suma de maletas con tardiness > 0
 
                 // Precalcular bloque 1 completamente en background (carga + ALNS)
                 Future<BlockResult> nextFuture = submitBlockWork(
@@ -200,13 +206,29 @@ public class SimulationService {
 
                     solution = blockResult.solution();
                     List<BaggageLot> rawBlockLots = blockResult.lots();
-                    addKnownLots(allLots, loadedLotIds, rawBlockLots);
 
                     final boolean collapseMode = "colapso".equals(request.mode());
                     List<BaggageLot> blockLots = applyCollapseMode(rawBlockLots, collapseMode);
 
+                    // Actualizar contadores acumulados con los lotes de este bloque.
+                    // Usamos blockLots (ya con multiplicador colapso) para totalBags/routed,
+                    // y la solution actualizada para métricas SLA.
+                    for (BaggageLot lot : blockLots) {
+                        accumTotalBags += lot.getQuantity();
+                        RoutePlan p = solution.getPlan(lot.getId());
+                        if (p != null) {
+                            accumRoutedBags += lot.getQuantity();
+                            if (p.getTardinessHours() > 0) {
+                                accumOutOfDeadline += lot.getQuantity();
+                            }
+                        }
+                    }
+
                     if (!blockLots.isEmpty()) {
-                        allEvents = buildEvents(solution, allLots, blockStart, blockEnd);
+                        // buildEvents solo necesita los lotes del bloque actual:
+                        // los eventos de bloques anteriores ya fueron emitidos y
+                        // no se vuelven a reproducir, así que no hace falta allLots.
+                        allEvents = buildEvents(solution, blockLots, blockStart, blockEnd);
                     }
 
                     // Lanzar INMEDIATAMENTE el siguiente bloque en background
@@ -231,7 +253,9 @@ public class SimulationService {
                             fmtClock(blockStart), blockNo,
                             fmtClock(blockStart), fmtClock(blockEnd),
                             staticAirports, prevRoutes, List.of(),
-                            buildKpis(allLots, solution, staticAirports, delivered, replanifications, 0, blockStart),
+                            buildKpis(accumTotalBags, accumRoutedBags, accumOutOfDeadline,
+                                    solution, staticAirports, blockLots,
+                                    delivered, replanifications, 0, blockStart),
                             false, blockLots.isEmpty()
                                 ? "Simulación activa"
                                 : "Bloque " + blockNo + " (" + blockLots.size() + " lotes)",
@@ -264,7 +288,7 @@ public class SimulationService {
                         String cancelId = pendingCancellations.poll();
                         if (cancelId != null) {
                             solution = processCancellation(cancelId, context, blockLots, solution);
-                            allEvents = buildEvents(solution, allLots, blockStart, blockEnd);
+                            allEvents = buildEvents(solution, blockLots, blockStart, blockEnd);
                             events    = allEvents;
                             replanifications++;
                             nextEvent = 0;
@@ -286,9 +310,10 @@ public class SimulationService {
 
                         int                activeFlights = countActiveFlights(events, simulatedNow);
                         List<AirportState> airportStates = airportStates(airports, solution, simulatedNow);
-                        Kpis               kpis          = buildKpis(allLots, solution, airportStates,
-                                                                    delivered, replanifications,
-                                                                    activeFlights, simulatedNow);
+                        Kpis               kpis          = buildKpis(
+                                accumTotalBags, accumRoutedBags, accumOutOfDeadline,
+                                solution, airportStates, blockLots,
+                                delivered, replanifications, activeFlights, simulatedNow);
                         collapsed = airportStates.stream().anyMatch(a -> a.current() > a.capacity());
 
                         List<UpcomingFlight> upcoming = "diadia".equals(request.mode())
@@ -334,17 +359,6 @@ public class SimulationService {
             int blockEnd) throws IOException {
         return repoShipments.loadShipmentsForMinuteRange(
                 "data/envios/", airports, blockStart, blockEnd);
-    }
-
-    private void addKnownLots(
-            List<BaggageLot> allLots,
-            Set<String> loadedLotIds,
-            List<BaggageLot> newLots) {
-        for (BaggageLot lot : newLots) {
-            if (loadedLotIds.add(lot.getId())) {
-                allLots.add(lot);
-            }
-        }
     }
 
     private List<BaggageLot> applyCollapseMode(
@@ -450,51 +464,30 @@ public class SimulationService {
     }
 
     private Kpis buildKpis(
-            List<BaggageLot> lots,
+            int accumTotalBags,
+            int accumRoutedBags,
+            int accumOutOfDeadline,
             WorkingSolution solution,
             List<AirportState> airports,
+            List<BaggageLot> blockLots,   // solo el bloque actual, para SLA en tránsito
             int delivered,
             int replanifications,
             int activeFlights,
-            int simulatedNow) { // <-- NUEVO PARÁMETRO
+            int simulatedNow) {
 
-        // 1. Filtrar solo las maletas que YA entraron al sistema hasta este minuto
-        List<BaggageLot> currentLots = lots.stream()
-                .filter(lot -> lot.getRegistrationHour() <= simulatedNow)
-                .collect(Collectors.toList());
-
-        // 2. Usar 'currentLots' en vez de 'lots' para los cálculos
-        int totalBags = currentLots.stream().mapToInt(BaggageLot::getQuantity).sum();
-        int routed    = currentLots.stream()
-                .filter(lot -> solution.getPlan(lot.getId()) != null)
-                .mapToInt(BaggageLot::getQuantity).sum();
-        
+        int totalBags     = accumTotalBags;
+        int routed        = accumRoutedBags;
+        int outOfDeadline = accumOutOfDeadline;
         int atRisk        = Math.max(0, totalBags - routed);
 
-        // BUG FIX 2: usar .mapToInt(quantity).sum() en vez de .count().
-        // .count() devolvía el número de LOTES con tardiness (ej: 5 lotes),
-        // mientras que deliveredOnTime y routedBags son sumas de MALETAS (ej: 5000).
-        // La mezcla de unidades hacía que la fórmula del frontend
-        // inTransit = routedBags - delivered - overdue fuera incorrecta.
-        int outOfDeadline = currentLots.stream()
-                .filter(lot -> {
-                    RoutePlan p = solution.getPlan(lot.getId());
-                    return p != null && p.getTardinessHours() > 0;
-                })
-                .mapToInt(BaggageLot::getQuantity)
-                .sum();
-
-        // Semáforo SLA: solo lotes aún en tránsito (no entregados todavía).
-        // Un lote está entregado cuando su arrivalHour ya pasó (arrivalHour <= simulatedNow).
-        // elapsed = simulatedNow - registrationHour
-        // slaLimit = dueHour - registrationHour  (1440 min mismo / 2880 distinto continente)
-
-        // CRÍTICO: en tránsito, sin tardanza, pero ya superó el 50% del plazo
-        int slaCritical = currentLots.stream()
+        // Semáforo SLA: calculado sobre el bloque actual en tránsito.
+        // Los bloques anteriores ya fueron procesados; sus lotes están o entregados
+        // o fuera de plazo, ambos ya contabilizados en los acumuladores.
+        int slaCritical = blockLots.stream()
                 .filter(lot -> {
                     RoutePlan p = solution.getPlan(lot.getId());
                     if (p == null || p.getTardinessHours() > 0) return false;
-                    if (p.arrivalHour() <= simulatedNow) return false; // ya entregado
+                    if (p.arrivalHour() <= simulatedNow) return false;
                     int elapsed  = simulatedNow - lot.getRegistrationHour();
                     int slaLimit = lot.getDueHour() - lot.getRegistrationHour();
                     if (slaLimit <= 0) return false;
@@ -504,12 +497,11 @@ public class SimulationService {
                 .mapToInt(BaggageLot::getQuantity)
                 .sum();
 
-        // VERDE: en tránsito, sin tardanza, dentro del primer 50% del plazo
-        int slaOnTrack = currentLots.stream()
+        int slaOnTrack = blockLots.stream()
                 .filter(lot -> {
                     RoutePlan p = solution.getPlan(lot.getId());
                     if (p == null || p.getTardinessHours() > 0) return false;
-                    if (p.arrivalHour() <= simulatedNow) return false; // ya entregado
+                    if (p.arrivalHour() <= simulatedNow) return false;
                     int elapsed  = simulatedNow - lot.getRegistrationHour();
                     int slaLimit = lot.getDueHour() - lot.getRegistrationHour();
                     if (slaLimit <= 0) return false;
@@ -519,16 +511,19 @@ public class SimulationService {
                 .mapToInt(BaggageLot::getQuantity)
                 .sum();
 
-        int capacity    = airports.stream().mapToInt(AirportState::capacity).sum();
-        int current     = airports.stream().mapToInt(AirportState::current).sum();
-        int peakPct     = airports.stream()
+        int capacity     = airports.stream().mapToInt(AirportState::capacity).sum();
+        int current      = airports.stream().mapToInt(AirportState::current).sum();
+        int peakPct      = airports.stream()
                 .mapToInt(a -> a.capacity() == 0 ? 0
                         : (int) Math.round(a.current() * 100.0 / a.capacity()))
                 .max().orElse(0);
         int occupancyPct = capacity == 0 ? 0
                 : (int) Math.round(current * 100.0 / capacity);
 
-        double avgDeliveryDays = currentLots.stream()
+        // avgDeliveryDays: solo sobre lotes del bloque actual ya entregados.
+        // No acumulamos el promedio global (requeriría guardar todos los lotes)
+        // pero es representativo del rendimiento reciente del planificador.
+        double avgDeliveryDays = blockLots.stream()
                 .filter(lot -> {
                     RoutePlan p = solution.getPlan(lot.getId());
                     return p != null && p.arrivalHour() <= simulatedNow;
