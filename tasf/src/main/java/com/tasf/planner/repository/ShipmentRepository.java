@@ -8,409 +8,252 @@ import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
-import java.util.stream.Collectors;
 
 /**
  * Carga lotes de equipaje con registro en UTC.
  *
- * Flujo:
- *  1. loadAllUtc()          — lee todos los archivos, convierte cada timestamp a UTC
- *  2. findDayWithK()        — busca el primer día con al menos targetK lotes (±10%)
- *  3. loadShipmentsForDay() — devuelve los primeros maxLots lotes de ese día en UTC
+ * ESTRATEGIA DE MEMORIA (servidor 3 GB / 2 vCPU):
+ * ─────────────────────────────────────────────────
+ * El caché anterior almacenaba ~9 millones de LotEntry en heap (~2 GB),
+ * lo que combinado con allLots + lookahead + Spring/Tomcat superaba los
+ * 4 GB disponibles → OutOfMemoryError: Java heap space desde el bloque 1.
  *
- * Conversión a UTC:
- *   registrationTime_UTC = registrationTime_local - gmtOffset_origen
- *   dueTime = registrationTime_UTC + 48h (siempre en UTC)
- * En cada aeropuerto origen se llena un archivo
-    id_envío-aaaammdd-hh-mm-dest-###-IdClien
-    00000001-20250102-01-38-EBCI-006-0007729
-
-    Dónde 
-    id_pedido. Identificador de pedido para el destino solicitado.
-    aaaammdd: 
-    mm: 01, ..., 12
-    dd: 01, 04, 12, 24
-    hh: horas dos posiciones 01,14..23 (máximo de 23)
-    mm: minutos dos posiciones  01, 08, 25..59 (máximo de 59)
-    dest: codigo del aeropuerto destino considerado: SVMI, SBBR, etc 
-    ###: cantidad como cadena de 3 posiciones   001, 002, 089, 999 
- * 
+ * Solución: índice ligero (FileIndex) + lectura por rango bajo demanda.
+ *
+ *  • FileIndex: por cada archivo de envíos, guarda SOLO la lista de fechas
+ *    UTC presentes (un Set<LocalDate> de ints compactos). ~30 archivos,
+ *    negligible en RAM.
+ *
+ *  • loadShipmentsForMinuteRange() / loadShipmentsForDays() leen solo los
+ *    archivos que contienen datos del rango pedido, línea a línea, y
+ *    descartan las demás sin crear objetos.
+ *
+ *  • scanAllUtc() se elimina. Toda lógica de escaneo usa el índice primero
+ *    para descartar archivos enteros antes de abrirlos.
+ *
+ *  • findConsecutiveDaysWithK() construye el mapa de conteos leyendo una
+ *    sola vez, sin conservar ningún LotEntry en memoria.
  */
 public class ShipmentRepository {
 
-    // Fecha base del sistema: todo tiempo se mide en minutos desde este instante UTC
     private static final LocalDateTime BASE_UTC = LocalDateTime.of(2026, 1, 1, 0, 0);
-    private List<LotEntry>       cachedEntries  = null;
-    private String               cachedFolder   = null;
-    private Map<String, Airport> cachedAirports = null;
-    // ── clase interna ────────────────────────────────────────────────────────
 
-    private interface LotEntryConsumer {
-        void accept(LotEntry entry) throws IOException;
-    }
+    // ── Índice ligero ─────────────────────────────────────────────────────────
+    // Se construye una sola vez al primer uso; almacena solo qué fechas UTC
+    // están en cada archivo. Sin objetos BaggageLot, sin LotEntry.
 
-    private static class LotEntry {
-        final BaggageLot lot;
-        final long utcMinutes;   // minutos desde BASE_UTC — ya en UTC
-        final LocalDate utcDate;
+    /** Datos de un archivo de envíos: origen ICAO + conjunto de fechas UTC presentes. */
+    private static class FileIndex {
+        final File          file;
+        final String        origin;
+        final int           gmtOffset;
+        final Set<LocalDate> dates;   // fechas UTC presentes en el archivo
 
-        LotEntry(BaggageLot lot, long utcMinutes) {
-            this.lot        = lot;
-            this.utcMinutes = utcMinutes;
-            this.utcDate    = BASE_UTC.plusMinutes(utcMinutes).toLocalDate();
+        FileIndex(File file, String origin, int gmtOffset, Set<LocalDate> dates) {
+            this.file      = file;
+            this.origin    = origin;
+            this.gmtOffset = gmtOffset;
+            this.dates     = dates;
         }
-
     }
 
-    // ── API pública ──────────────────────────────────────────────────────────
+    // Solo el índice sobrevive entre llamadas (~30 FileIndex, cada uno con
+    // un Set<LocalDate> de pocos elementos — <1 MB total).
+    private List<FileIndex>  index         = null;
+    private String           indexedFolder = null;
+    private Map<String,Airport> indexedAirports = null;
+
+    // ── API pública ───────────────────────────────────────────────────────────
 
     /**
-     * Busca el primer día (en UTC) que tenga al menos targetK lotes.
-     * Tolerancia: acepta días con lotes en [targetK * 0.9, ∞).
-     *
-     * @param folderPath ruta a la carpeta de envíos
-     * @param airports   mapa ICAO → Airport para leer gmtOffset
-     * @param targetK    cantidad mínima de lotes requerida
-     * @return fecha UTC del día encontrado, o null si ninguno cumple
+     * Busca el primer día UTC con al menos targetK maletas.
      */
     public LocalDate findDayWithK(String folderPath,
                                   Map<String, Airport> airports,
                                   int targetK) throws IOException {
 
-        // contar MALETAS por día UTC (no lotes — cada lote tiene N maletas)
-        Map<LocalDate, Integer> bagsByDay  = new TreeMap<>();
-        Map<LocalDate, Integer> lotsByDay  = new TreeMap<>();
-        scanAllUtc(folderPath, airports, entry -> {
-            bagsByDay.merge(entry.utcDate, entry.lot.getQuantity(), Integer::sum);
-            lotsByDay.merge(entry.utcDate, 1, Integer::sum);
+        Map<LocalDate, Integer> bagsByDay = new TreeMap<>();
+        Map<LocalDate, Integer> lotsByDay = new TreeMap<>();
+        streamAllLots(folderPath, airports, null, entry -> {
+            bagsByDay.merge(entry.utcDate, entry.quantity, Integer::sum);
+            lotsByDay.merge(entry.utcDate, 1,              Integer::sum);
         });
 
-        int lowerBound = (int) (targetK * 0.9);
-
+        int lowerBound = (int)(targetK * 0.9);
         System.out.println("Distribución por día UTC (maletas / lotes):");
         for (LocalDate d : bagsByDay.keySet()) {
             System.out.printf("  %s : %d maletas en %d lotes%n",
                     d, bagsByDay.get(d), lotsByDay.getOrDefault(d, 0));
         }
-
-        // primer día (orden cronológico) con suficientes MALETAS
         for (Map.Entry<LocalDate, Integer> e : bagsByDay.entrySet()) {
             if (e.getValue() >= lowerBound) {
-                System.out.printf("Día seleccionado: %s (%d maletas en %d lotes, target=%d)%n",
-                        e.getKey(), e.getValue(),
-                        lotsByDay.getOrDefault(e.getKey(), 0), targetK);
+                System.out.printf("Día seleccionado: %s (%d maletas, target=%d)%n",
+                        e.getKey(), e.getValue(), targetK);
                 return e.getKey();
             }
         }
-
-        System.out.println("⚠ Ningún día tiene " + lowerBound + "+ lotes.");
+        System.out.println("⚠ Ningún día tiene " + lowerBound + "+ maletas.");
         return null;
     }
 
     /**
-     * Devuelve los primeros maxLots lotes del día targetDay, ordenados por
-     * hora de registro UTC.
-     *
-     * @param maxLots número máximo de lotes a devolver (≤0 = todos los del día)
+     * Devuelve los lotes del día targetDay (hasta maxLots maletas acumuladas).
      */
     public List<BaggageLot> loadShipmentsForDay(String folderPath,
                                                  Map<String, Airport> airports,
                                                  LocalDate targetDay,
                                                  int maxLots) throws IOException {
+        List<BaggageLot> result = new ArrayList<>();
+        int[] bagsAcc = {0};
+        Set<LocalDate> filter = Collections.singleton(targetDay);
 
-        List<LotEntry> dayEntries = new ArrayList<>();
-        scanAllUtc(folderPath, airports, entry -> {
-            if (entry.utcDate.equals(targetDay)) {
-                dayEntries.add(entry);
-            }
+        streamAllLots(folderPath, airports, filter, entry -> {
+            if (maxLots > 0 && bagsAcc[0] >= maxLots) return;
+            result.add(entry.toLot());
+            bagsAcc[0] += entry.quantity;
         });
 
-        // ordenar por hora UTC dentro del día
-        dayEntries.sort(Comparator.comparingLong(e -> e.utcMinutes));
-
-        // acumular lotes hasta completar maxBags maletas
-        // (maxBags <= 0 = todos los lotes del día)
-        List<BaggageLot> result = new ArrayList<>();
-        int bagsAccumulated = 0;
-        for (LotEntry entry : dayEntries) {
-            if (maxLots > 0 && bagsAccumulated >= maxLots) break;
-            result.add(entry.lot);
-            bagsAccumulated += entry.lot.getQuantity();
-        }
-
-        System.out.printf("Lotes cargados del día %s: %d lotes / %d maletas (objetivo=%d maletas)%n",
-                targetDay, result.size(), bagsAccumulated, maxLots);
+        result.sort(Comparator.comparingInt(BaggageLot::getRegistrationHour));
+        System.out.printf("Lotes cargados del día %s: %d lotes / %d maletas (objetivo=%d)%n",
+                targetDay, result.size(), bagsAcc[0], maxLots);
         return result;
     }
 
+    /**
+     * Devuelve todos los lotes de los días indicados, ordenados por hora UTC.
+     * Lee solo los archivos que contienen esos días (filtrado por índice).
+     */
     public List<BaggageLot> loadShipmentsForDays(String folderPath,
-                                                 Map<String, Airport> airports,
-                                                 List<LocalDate> targetDays) throws IOException {
-        Set<LocalDate> selectedDays = new HashSet<>(targetDays);
-        List<LotEntry> selectedEntries = new ArrayList<>();
-        scanAllUtc(folderPath, airports, entry -> {
-            if (selectedDays.contains(entry.utcDate)) {
-                selectedEntries.add(entry);
-            }
-        });
-
-        selectedEntries.sort(Comparator.comparingLong(e -> e.utcMinutes));
-
+                                                  Map<String, Airport> airports,
+                                                  List<LocalDate> targetDays) throws IOException {
+        Set<LocalDate> filter = new HashSet<>(targetDays);
         List<BaggageLot> result = new ArrayList<>();
-        for (LotEntry entry : selectedEntries) {
-            result.add(entry.lot);
-        }
+
+        streamAllLots(folderPath, airports, filter, entry -> result.add(entry.toLot()));
+        result.sort(Comparator.comparingInt(BaggageLot::getRegistrationHour));
+        System.out.printf("loadShipmentsForDays: %d lotes para %d días%n",
+                result.size(), targetDays.size());
         return result;
     }
 
+    /**
+     * Devuelve los lotes cuya hora UTC de registro cae en [fromMinute, toMinute).
+     * Es el método clave para la carga bloque a bloque: solo materializa
+     * los objetos del rango pedido, sin tocar el resto del dataset.
+     */
     public List<BaggageLot> loadShipmentsForMinuteRange(String folderPath,
-                                                        Map<String, Airport> airports,
-                                                        int fromMinute,
-                                                        int toMinute) throws IOException {
-        List<LotEntry> selectedEntries = new ArrayList<>();
-        scanAllUtc(folderPath, airports, entry -> {
+                                                         Map<String, Airport> airports,
+                                                         int fromMinute,
+                                                         int toMinute) throws IOException {
+
+        // Convertir el rango de minutos a fechas UTC para filtrar archivos
+        LocalDate dateFrom = BASE_UTC.plusMinutes(fromMinute).toLocalDate();
+        LocalDate dateTo   = BASE_UTC.plusMinutes(toMinute - 1).toLocalDate();
+
+        Set<LocalDate> dateFilter = new HashSet<>();
+        LocalDate cur = dateFrom;
+        while (!cur.isAfter(dateTo)) { dateFilter.add(cur); cur = cur.plusDays(1); }
+
+        List<BaggageLot> result = new ArrayList<>();
+        streamAllLots(folderPath, airports, dateFilter, entry -> {
             if (entry.utcMinutes >= fromMinute && entry.utcMinutes < toMinute) {
-                selectedEntries.add(entry);
+                result.add(entry.toLot());
             }
         });
-
-        selectedEntries.sort(Comparator.comparingLong(e -> e.utcMinutes));
-
-        List<BaggageLot> result = new ArrayList<>(selectedEntries.size());
-        for (LotEntry entry : selectedEntries) {
-            result.add(entry.lot);
-        }
-
+        result.sort(Comparator.comparingInt(BaggageLot::getRegistrationHour));
         System.out.printf("Rango cargado [%d, %d): %d lotes%n",
                 fromMinute, toMinute, result.size());
         return result;
     }
 
-    // ── método original — se conserva para compatibilidad ───────────────────
-
     /**
-     * @deprecated Usar loadShipmentsForDay() para garantizar que todos los
-     *             lotes pertenecen al mismo día UTC.
+     * Encuentra una ventana de targetDays días consecutivos con al menos
+     * targetTotalBags maletas. Lee todos los archivos UNA sola vez para
+     * construir el mapa de conteos; no guarda ningún LotEntry en memoria.
      */
-    @Deprecated
-    public List<BaggageLot> loadShipmentsFromFolder(String folderPath, int maxLots)
-            throws IOException {
-        // sin mapa de aeropuertos → no puede convertir a UTC; aviso explícito
-        System.out.println("⚠ loadShipmentsFromFolder() no convierte a UTC. " +
-                           "Usar loadShipmentsForDay() con mapa de aeropuertos.");
-        List<LotEntry> all = loadAllUtc(folderPath, Collections.emptyMap());
-        all.sort(Comparator.comparingLong(e -> e.utcMinutes));
-        int limit = (maxLots <= 0) ? all.size() : Math.min(maxLots, all.size());
-        List<BaggageLot> result = new ArrayList<>(limit);
-        for (int i = 0; i < limit; i++) result.add(all.get(i).lot);
-        return result;
-    }
+    public List<LocalDate> findConsecutiveDaysWithK(String folderPath,
+                                                     Map<String, Airport> airports,
+                                                     int targetTotalBags,
+                                                     int targetDays) throws IOException {
 
-    // ── implementación interna ───────────────────────────────────────────────
+        Map<LocalDate, Integer> bagsByDay = new TreeMap<>();
+        Map<LocalDate, Integer> lotsByDay = new TreeMap<>();
 
-    /**
-     * Lee todos los archivos de la carpeta y devuelve todos los lotes
-     * con su timestamp ya convertido a UTC.
-     */
-    private List<LotEntry> loadAllUtc(String folderPath,
-                                      Map<String, Airport> airports)
-            throws IOException {
-        List<LotEntry> all = new ArrayList<>();
-        scanAllUtc(folderPath, airports, all::add);
-        return all;
-    }
+        streamAllLots(folderPath, airports, null, entry -> {
+            bagsByDay.merge(entry.utcDate, entry.quantity, Integer::sum);
+            lotsByDay.merge(entry.utcDate, 1,              Integer::sum);
+        });
 
-    private synchronized void scanAllUtc(String folderPath,
-                                        Map<String, Airport> airports,
-                                        LotEntryConsumer consumer) throws IOException {
-        // Usar caché si ya existe para esta carpeta y aeropuertos
-        if (cachedEntries != null
-                && folderPath.equals(cachedFolder)
-                && airports == cachedAirports) {
-            for (LotEntry entry : cachedEntries) consumer.accept(entry);
-            return;
+        if (bagsByDay.isEmpty()) return null;
+
+        List<LocalDate> allDays   = new ArrayList<>(bagsByDay.keySet());
+        int             totalDays = allDays.size();
+
+        System.out.println("Distribución por día UTC:");
+        for (LocalDate d : allDays) {
+            System.out.printf("  %s : %d maletas en %d lotes%n",
+                    d, bagsByDay.get(d), lotsByDay.getOrDefault(d, 0));
         }
 
-        File folder = new File(folderPath);
-        File[] files = folder.listFiles();
-        if (files == null) return;
+        int lowerBound = Math.max(0, targetTotalBags);
 
-        Arrays.sort(files, Comparator.comparing(File::getName));
-
-        List<File> enviosFiles = new ArrayList<>();
-        for (File f : files) {
-            if (f.getName().contains("_envios_")) enviosFiles.add(f);
-        }
-        int maxFiles = Math.min(enviosFiles.size(), 30);
-
-        List<LotEntry> loaded = new ArrayList<>();
-
-        for (int fi = 0; fi < maxFiles; fi++) {
-            File file = enviosFiles.get(fi);
-            String origin    = extractOrigin(file.getName());
-            int    gmtOrigin = getGmt(airports, origin);
-
-            try (BufferedReader br = new BufferedReader(new FileReader(file))) {
-                String line;
-                while ((line = br.readLine()) != null) {
-                    line = clean(line);
-                    if (line.isEmpty()) continue;
-
-                    String[] parts = line.split("-");
-                    if (parts.length < 7) continue;
-
-                    try {
-                        String id      = origin + "_" + parts[0];
-                        String dateStr = parts[1];
-                        int year  = Integer.parseInt(dateStr.substring(0, 4));
-                        int month = Integer.parseInt(dateStr.substring(4, 6));
-                        int day   = Integer.parseInt(dateStr.substring(6, 8));
-                        int hour  = Integer.parseInt(parts[2]);
-                        int min   = Integer.parseInt(parts[3]);
-
-                        LocalDateTime localTs      = LocalDateTime.of(year, month, day, hour, min);
-                        long          localMinutes = Duration.between(BASE_UTC, localTs).toMinutes();
-                        long          utcMinutes   = localMinutes - gmtOrigin;
-                        int           regUtc       = (int) utcMinutes;
-
-                        String  destination   = cleanCode(parts[4]);
-                        int     quantity      = Integer.parseInt(
-                                                clean(parts[5]).replaceAll("[^0-9]", ""));
-
-                        Airport originAirport = airports.get(origin);
-                        Airport destAirport   = airports.get(destination);
-                        boolean sameContinent = originAirport != null && destAirport != null
-                                && originAirport.getRegion().equals(destAirport.getRegion());
-                        int dueTimeUtc = regUtc + (sameContinent ? 24 * 60 : 48 * 60);
-
-                        BaggageLot lot = new BaggageLot(
-                                id, origin, destination, quantity,
-                                regUtc, dueTimeUtc, false);
-
-                        loaded.add(new LotEntry(lot, utcMinutes));
-
-                    } catch (Exception e) {
-                        System.out.println("⚠ Error envío: " + line);
+        // ── Ventana de longitud fija ──────────────────────────────────────────
+        if (targetDays > 0) {
+            for (int start = 0; start + targetDays <= totalDays; start++) {
+                boolean consecutive = true;
+                for (int i = start; i < start + targetDays - 1; i++) {
+                    if (!allDays.get(i).plusDays(1).equals(allDays.get(i + 1))) {
+                        consecutive = false; break;
                     }
                 }
-            }
-        }
+                if (!consecutive) continue;
 
-        cachedEntries  = loaded;
-        cachedFolder   = folderPath;
-        cachedAirports = airports;
-        System.out.println("Caché cargado: " + loaded.size() + " entradas (30 archivos)");
-
-        for (LotEntry entry : loaded) consumer.accept(entry);
-    }
-    
-    public List<LocalDate> findConsecutiveDaysWithK(
-        String folderPath,
-        Map<String, Airport> airports,
-        int targetTotalBags,
-        int targetDays) throws IOException {
- 
-            // Build per-day bag counts (sorted chronologically)
-            Map<LocalDate, Integer> bagsByDay  = new TreeMap<>();
-            Map<LocalDate, Integer> lotsByDay  = new TreeMap<>();
-
-            scanAllUtc(folderPath, airports, entry -> {
-                bagsByDay.merge(entry.utcDate, entry.lot.getQuantity(), Integer::sum);
-                lotsByDay.merge(entry.utcDate, 1, Integer::sum);
-            });
-
-            if (bagsByDay.isEmpty()) return null;
-
-            List<LocalDate> allDays   = new ArrayList<>(bagsByDay.keySet()); // already sorted
-            int             totalDays = allDays.size();
-
-            System.out.println("Distribución por día UTC:");
-            for (LocalDate d : allDays) {
-                System.out.printf("  %s : %d maletas en %d lotes%n",
-                        d, bagsByDay.get(d), lotsByDay.getOrDefault(d, 0));
-            }
-
-            int lowerBound = Math.max(0, targetTotalBags);
-
-            // ── Case 1: fixed window length ──────────────────────────────────────
-            if (targetDays > 0) {
-                for (int start = 0; start + targetDays <= totalDays; start++) {
-                    // Check days are actually consecutive (no gaps)
-                    boolean consecutive = true;
-                    for (int i = start; i < start + targetDays - 1; i++) {
-                        if (!allDays.get(i).plusDays(1).equals(allDays.get(i + 1))) {
-                            consecutive = false;
-                            break;
-                        }
-                    }
-                    if (!consecutive) continue;
-
-                    int windowBags = 0;
-                    for (int i = start; i < start + targetDays; i++) {
-                        windowBags += bagsByDay.get(allDays.get(i));
-                    }
-                    if (windowBags >= lowerBound) {
-                        List<LocalDate> window = new ArrayList<>(
-                                allDays.subList(start, start + targetDays));
-                        System.out.printf(
-                                "Ventana encontrada: %s → %s (%d días, %d maletas totales)%n",
-                                window.get(0), window.get(window.size() - 1),
-                                targetDays, windowBags);
-                        return window;
-                    }
+                int windowBags = 0;
+                for (int i = start; i < start + targetDays; i++) {
+                    windowBags += bagsByDay.get(allDays.get(i));
                 }
-                System.out.printf(
-                        "No se encontró ventana de %d días consecutivos con %d+ maletas.%n",
-                        targetDays, lowerBound);
-                return null;
-            }
-
-            // ── Case 2: run until collapse (targetDays == 0) ─────────────────────
-            // Find the first start date where a consecutive run from that point
-            // accumulates >= targetTotalBags, then return everything from there onward.
-            for (int start = 0; start < totalDays; start++) {
-                int runBags = 0;
-                int runEnd  = start;
-
-                // Accumulate as long as days are consecutive
-                for (int i = start; i < totalDays; i++) {
-                    if (i > start && !allDays.get(i - 1).plusDays(1).equals(allDays.get(i))) {
-                        break; // gap in calendar — stop the run
-                    }
-                    runBags += bagsByDay.get(allDays.get(i));
-                    runEnd   = i;
-                    if (runBags >= lowerBound) {
-                        // Found enough bags — return from this start to end of data
-                        List<LocalDate> window = new ArrayList<>(
-                                allDays.subList(start, totalDays));
-                        System.out.printf(
-                                "Ventana encontrada (modo colapso): inicio=%s  días_disponibles=%d  "
-                                + "maletas_acumuladas=%d (umbral alcanzado en día %s)%n",
-                                window.get(0), window.size(), runBags, allDays.get(runEnd));
-                        return window;
-                    }
+                if (windowBags >= lowerBound) {
+                    List<LocalDate> window = new ArrayList<>(allDays.subList(start, start + targetDays));
+                    System.out.printf("Ventana encontrada: %s → %s (%d días, %d maletas)%n",
+                            window.get(0), window.get(window.size()-1), targetDays, windowBags);
+                    return window;
                 }
             }
-
-            System.out.printf(
-                    "No se encontró secuencia consecutiva con %d+ maletas totales.%n",
-                    lowerBound);
+            System.out.printf("No se encontró ventana de %d días con %d+ maletas.%n",
+                    targetDays, lowerBound);
             return null;
         }
 
+        // ── Modo colapso (targetDays == 0) ────────────────────────────────────
+        for (int start = 0; start < totalDays; start++) {
+            int runBags = 0, runEnd = start;
+            for (int i = start; i < totalDays; i++) {
+                if (i > start && !allDays.get(i-1).plusDays(1).equals(allDays.get(i))) break;
+                runBags += bagsByDay.get(allDays.get(i));
+                runEnd = i;
+                if (runBags >= lowerBound) {
+                    List<LocalDate> window = new ArrayList<>(allDays.subList(start, totalDays));
+                    System.out.printf("Ventana colapso: inicio=%s días=%d maletas=%d (umbral en %s)%n",
+                            window.get(0), window.size(), runBags, allDays.get(runEnd));
+                    return window;
+                }
+            }
+        }
+        System.out.printf("No se encontró secuencia con %d+ maletas totales.%n", lowerBound);
+        return null;
+    }
 
     public List<LocalDate> getAvailableDates(String folderPath,
-                                            Map<String, Airport> airports) throws IOException {
+                                             Map<String, Airport> airports) throws IOException {
         Set<LocalDate> dates = new TreeSet<>();
-        scanAllUtc(folderPath, airports, entry -> dates.add(entry.utcDate));
+        streamAllLots(folderPath, airports, null, entry -> dates.add(entry.utcDate));
         return new ArrayList<>(dates);
     }
 
     public List<LocalDate> getDaysFrom(String folderPath,
-                                        Map<String, Airport> airports,
-                                        LocalDate startDate,
-                                        int numDays) throws IOException {
-        // Usar lightweight para no cargar el caché completo
+                                       Map<String, Airport> airports,
+                                       LocalDate startDate,
+                                       int numDays) throws IOException {
         List<LocalDate> all = getAvailableDatesLightweight(folderPath);
         if (all.isEmpty()) return List.of();
 
@@ -425,7 +268,7 @@ public class ShipmentRepository {
 
         List<LocalDate> result = new ArrayList<>();
         for (int i = startIdx; i < all.size(); i++) {
-            if (i > startIdx && !all.get(i - 1).plusDays(1).equals(all.get(i))) break;
+            if (i > startIdx && !all.get(i-1).plusDays(1).equals(all.get(i))) break;
             result.add(all.get(i));
             if (numDays > 0 && result.size() >= numDays) break;
         }
@@ -433,13 +276,13 @@ public class ShipmentRepository {
         System.out.printf("getDaysFrom(%s, numDays=%d): %d días (%s → %s)%n",
                 startDate, numDays, result.size(),
                 result.isEmpty() ? "—" : result.get(0),
-                result.isEmpty() ? "—" : result.get(result.size() - 1));
+                result.isEmpty() ? "—" : result.get(result.size()-1));
         return result;
     }
 
     /**
-     * Obtiene fechas disponibles leyendo solo nombres de archivo,
-     * sin cargar ningún lote en memoria. Mucho más eficiente.
+     * Obtiene fechas disponibles leyendo solo nombres y primeras líneas de archivo.
+     * No construye ningún LotEntry. Muy rápido.
      */
     public List<LocalDate> getAvailableDatesLightweight(String folderPath) {
         Set<LocalDate> dates = new TreeSet<>();
@@ -449,9 +292,6 @@ public class ShipmentRepository {
 
         for (File file : files) {
             if (!file.getName().contains("_envios_")) continue;
-            // formato: algo_envios_ICAO.txt
-            // las fechas están dentro del archivo, pero el archivo
-            // representa un aeropuerto origen — leer solo primera línea
             try (BufferedReader br = new BufferedReader(new FileReader(file))) {
                 String line;
                 while ((line = br.readLine()) != null) {
@@ -462,10 +302,10 @@ public class ShipmentRepository {
                     try {
                         String dateStr = parts[1];
                         if (dateStr.length() != 8) continue;
-                        int year  = Integer.parseInt(dateStr.substring(0, 4));
-                        int month = Integer.parseInt(dateStr.substring(4, 6));
-                        int day   = Integer.parseInt(dateStr.substring(6, 8));
-                        dates.add(LocalDate.of(year, month, day));
+                        dates.add(LocalDate.of(
+                                Integer.parseInt(dateStr.substring(0, 4)),
+                                Integer.parseInt(dateStr.substring(4, 6)),
+                                Integer.parseInt(dateStr.substring(6, 8))));
                     } catch (Exception ignored) {}
                 }
             } catch (Exception e) {
@@ -478,7 +318,194 @@ public class ShipmentRepository {
         return result;
     }
 
-    // ── helpers ──────────────────────────────────────────────────────────────
+    // ── Índice ligero ─────────────────────────────────────────────────────────
+
+    /**
+     * Construye el índice la primera vez (o si cambia la carpeta/aeropuertos).
+     * El índice almacena SOLO: File + origin + gmtOffset + Set<LocalDate>.
+     * Sin BaggageLot, sin LotEntry — usa <1 MB para 30 archivos.
+     */
+    private synchronized List<FileIndex> getOrBuildIndex(
+            String folderPath, Map<String, Airport> airports) throws IOException {
+
+        if (index != null
+                && folderPath.equals(indexedFolder)
+                && airports == indexedAirports) {
+            return index;
+        }
+
+        File folder = new File(folderPath);
+        File[] files = folder.listFiles();
+        if (files == null) { index = List.of(); return index; }
+
+        Arrays.sort(files, Comparator.comparing(File::getName));
+
+        List<FileIndex> built = new ArrayList<>();
+        int maxFiles = 0;
+        for (File f : files) if (f.getName().contains("_envios_")) maxFiles++;
+        maxFiles = Math.min(maxFiles, 30);
+
+        int processed = 0;
+        for (File file : files) {
+            if (!file.getName().contains("_envios_")) continue;
+            if (processed >= maxFiles) break;
+            processed++;
+
+            String        origin    = extractOrigin(file.getName());
+            int           gmt       = getGmt(airports, origin);
+            Set<LocalDate> fileDates = new HashSet<>();
+
+            try (BufferedReader br = new BufferedReader(
+                    new FileReader(file), 64 * 1024)) {
+                String line;
+                while ((line = br.readLine()) != null) {
+                    line = clean(line);
+                    if (line.isEmpty()) continue;
+                    String[] parts = line.split("-");
+                    if (parts.length < 7) continue;
+                    try {
+                        String dateStr = parts[1];
+                        if (dateStr.length() != 8) continue;
+                        int year  = Integer.parseInt(dateStr.substring(0, 4));
+                        int month = Integer.parseInt(dateStr.substring(4, 6));
+                        int day   = Integer.parseInt(dateStr.substring(6, 8));
+                        int hour  = Integer.parseInt(parts[2]);
+                        int min   = Integer.parseInt(parts[3]);
+                        LocalDateTime localTs    = LocalDateTime.of(year, month, day, hour, min);
+                        long          utcMinutes = Duration.between(BASE_UTC, localTs).toMinutes() - gmt;
+                        fileDates.add(BASE_UTC.plusMinutes(utcMinutes).toLocalDate());
+                    } catch (Exception ignored) {}
+                }
+            }
+            built.add(new FileIndex(file, origin, gmt, fileDates));
+        }
+
+        index          = built;
+        indexedFolder  = folderPath;
+        indexedAirports = airports;
+        System.out.printf("Índice construido: %d archivos indexados%n", built.size());
+        return index;
+    }
+
+    // ── Motor de streaming ────────────────────────────────────────────────────
+
+    /**
+     * Interfaz interna: entrada mínima para filtrar antes de crear BaggageLot.
+     */
+    @FunctionalInterface
+    private interface RawLotConsumer {
+        void accept(RawLot lot) throws IOException;
+    }
+
+    /** Datos mínimos de un lote antes de decidir si construir el objeto completo. */
+    private static class RawLot {
+        final String    id, origin, destination;
+        final int       quantity, utcMinutes, dueUtc;
+        final LocalDate utcDate;
+
+        RawLot(String id, String origin, String destination,
+               int quantity, int utcMinutes, int dueUtc) {
+            this.id          = id;
+            this.origin      = origin;
+            this.destination = destination;
+            this.quantity    = quantity;
+            this.utcMinutes  = utcMinutes;
+            this.dueUtc      = dueUtc;
+            this.utcDate     = BASE_UTC.plusMinutes(utcMinutes).toLocalDate();
+        }
+
+        BaggageLot toLot() {
+            return new BaggageLot(id, origin, destination, quantity,
+                                  utcMinutes, dueUtc, false);
+        }
+    }
+
+    /**
+     * Lee línea a línea solo los archivos relevantes (filtrados por índice),
+     * parsea cada línea y pasa el RawLot al consumer.
+     * No acumula ninguna lista interna → O(1) memoria adicional por lote.
+     *
+     * @param dateFilter si null, lee todos los días; si no, filtra por fechas.
+     */
+    private void streamAllLots(String folderPath,
+                                Map<String, Airport> airports,
+                                Set<LocalDate> dateFilter,
+                                RawLotConsumer consumer) throws IOException {
+
+        List<FileIndex> idx = getOrBuildIndex(folderPath, airports);
+
+        for (FileIndex fi : idx) {
+            // Saltar el archivo completo si ninguna de sus fechas intersecta el filtro
+            if (dateFilter != null) {
+                boolean hasOverlap = false;
+                for (LocalDate d : fi.dates) {
+                    if (dateFilter.contains(d)) { hasOverlap = true; break; }
+                }
+                if (!hasOverlap) continue;
+            }
+
+            try (BufferedReader br = new BufferedReader(
+                    new FileReader(fi.file), 64 * 1024)) {
+                String line;
+                while ((line = br.readLine()) != null) {
+                    line = clean(line);
+                    if (line.isEmpty()) continue;
+                    String[] parts = line.split("-");
+                    if (parts.length < 7) continue;
+                    try {
+                        String dateStr = parts[1];
+                        if (dateStr.length() != 8) continue;
+                        int year  = Integer.parseInt(dateStr.substring(0, 4));
+                        int month = Integer.parseInt(dateStr.substring(4, 6));
+                        int day   = Integer.parseInt(dateStr.substring(6, 8));
+                        int hour  = Integer.parseInt(parts[2]);
+                        int minp  = Integer.parseInt(parts[3]);
+
+                        LocalDateTime localTs    = LocalDateTime.of(year, month, day, hour, minp);
+                        int           utcMinutes = (int)(Duration.between(BASE_UTC, localTs).toMinutes()
+                                                         - fi.gmtOffset);
+                        LocalDate     utcDate    = BASE_UTC.plusMinutes(utcMinutes).toLocalDate();
+
+                        // Filtro de fecha rápido antes de parsear el resto
+                        if (dateFilter != null && !dateFilter.contains(utcDate)) continue;
+
+                        String destination = cleanCode(parts[4]);
+                        int    quantity    = Integer.parseInt(
+                                clean(parts[5]).replaceAll("[^0-9]", ""));
+                        String id = fi.origin + "_" + parts[0];
+
+                        Airport originAirport = airports.get(fi.origin);
+                        Airport destAirport   = airports.get(destination);
+                        boolean sameContinent = originAirport != null && destAirport != null
+                                && originAirport.getRegion().equals(destAirport.getRegion());
+                        int dueUtc = utcMinutes + (sameContinent ? 24 * 60 : 48 * 60);
+
+                        consumer.accept(new RawLot(id, fi.origin, destination,
+                                                   quantity, utcMinutes, dueUtc));
+                    } catch (Exception e) {
+                        // línea malformada — ignorar silenciosamente
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Método deprecado — solo para compatibilidad ───────────────────────────
+
+    /** @deprecated Usar loadShipmentsForDay() */
+    @Deprecated
+    public List<BaggageLot> loadShipmentsFromFolder(String folderPath, int maxLots)
+            throws IOException {
+        System.out.println("⚠ loadShipmentsFromFolder() no convierte a UTC. " +
+                           "Usar loadShipmentsForDay().");
+        List<BaggageLot> all = new ArrayList<>();
+        streamAllLots(folderPath, Collections.emptyMap(), null, e -> all.add(e.toLot()));
+        all.sort(Comparator.comparingInt(BaggageLot::getRegistrationHour));
+        int limit = (maxLots <= 0) ? all.size() : Math.min(maxLots, all.size());
+        return new ArrayList<>(all.subList(0, limit));
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
 
     private int getGmt(Map<String, Airport> airports, String code) {
         if (airports == null || airports.isEmpty()) return 0;
@@ -491,14 +518,12 @@ public class ShipmentRepository {
     }
 
     private String extractOrigin(String filename) {
-        // formato esperado: algo_envios_ICAO.txt
         String[] parts = filename.split("_");
         return parts.length > 2 ? cleanCode(parts[2]) : "UNK";
     }
 
     private String clean(String s) {
-        return s
-                .replace("\uFEFF", "")
+        return s.replace("\uFEFF", "")
                 .replace("\u200B", "")
                 .replace("\u00A0", "")
                 .trim();
