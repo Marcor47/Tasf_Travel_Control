@@ -35,12 +35,9 @@ public class SimulationService {
     // BASE_UTC del ShipmentRepository — ambos deben coincidir
     private static final LocalDateTime BASE_UTC            = LocalDateTime.of(2026, 1, 1, 0, 0);
     private static final int            BLOCK_HOURS         = 1;
-    // Tiempo real por bloque: ALNS tarda ~30s, así que damos 60s y usamos
-    // los 30s restantes para animar el bloque en pantalla
     private static final int            BLOCK_REAL_SECONDS  = 30;
     private static final int            ALNS_TIME_BUDGET_SEC = 15;
     private static final int            ALNS_MAX_ITERATIONS  = 0;
-    // Intervalo de broadcast en ms durante la animación del bloque
     private static final int            BROADCAST_INTERVAL_MS = 800;
 
     private final List<SseEmitter> emitters   = new CopyOnWriteArrayList<>();
@@ -52,7 +49,6 @@ public class SimulationService {
     private final ConcurrentLinkedQueue<String> pendingCancellations
         = new ConcurrentLinkedQueue<>();
 
-    // Repositorios compartidos entre getAvailableDates() y runSimulation()
     private final AirportRepository  repoAirports  = new AirportRepository();
     private final FlightRepository   repoFlights   = new FlightRepository();
     private final ShipmentRepository repoShipments = new ShipmentRepository();
@@ -159,8 +155,6 @@ public class SimulationService {
             }
 
             // 4. Calcular offset absoluto de los días encontrados
-            //    Los lotes tienen registrationHour en minutos desde BASE_UTC=2026-01-01
-            //    El primer día puede ser 2028-08-19 → offset muy grande
             int simulationStart = absoluteMinute(days.get(0).atStartOfDay());
             int simulationEnd   = simulationStart + days.size() * 1440;
             int blockMinutes    = BLOCK_HOURS * 60;
@@ -169,212 +163,233 @@ public class SimulationService {
                     days.get(0), days.get(days.size() - 1),
                     simulationStart, simulationEnd);
 
-                WorkingSolution solution         = new WorkingSolution(context);
-                int             delivered        = 0;
-                int             replanifications = 0;
-                boolean         collapsed        = false;
-                List<SimEvent>  allEvents        = new ArrayList<>();
-                // Vuelos que salieron en un bloque anterior y aún no han aterrizado.
-                // Son SimEvent ligeros (un record), no BaggageLot — costo mínimo.
-                // Se mezclan con los eventos del bloque siguiente para que los aviones
-                // en vuelo sigan visibles en el mapa al cruzar el límite de bloque.
-                List<SimEvent>  carryoverEvents  = new ArrayList<>();
+            WorkingSolution solution         = new WorkingSolution(context);
+            int             delivered        = 0;
+            int             replanifications = 0;
+            boolean         collapsed        = false;
+            List<SimEvent>  allEvents        = new ArrayList<>();
+            List<SimEvent>  carryoverEvents  = new ArrayList<>();
 
-                // Contadores acumulados — reemplazan a allLots en memoria.
-                // En lugar de conservar cada BaggageLot recibido (que en modo
-                // colapso llegaría a ser todo el dataset), solo acumulamos los
-                // valores numéricos que buildKpis necesita para sus métricas.
-                int accumTotalBags     = 0;  // suma de maletas registradas hasta ahora
-                int accumRoutedBags    = 0;  // suma de maletas con plan asignado
-                int accumOutOfDeadline = 0;  // suma de maletas con tardiness > 0
+            // Acumuladores globales — se actualizan AL TERMINAR cada bloque,
+            // no al inicio, para que los contadores empiecen en 0 y crezcan
+            // gradualmente conforme el tiempo simulado avanza.
+            int accumTotalBags     = 0;
+            int accumRoutedBags    = 0;
+            int accumOutOfDeadline = 0;
 
-                // Precalcular bloque 1 completamente en background (carga + ALNS)
-                Future<BlockResult> nextFuture = submitBlockWork(
-                        lookahead, context, airports,
-                        simulationStart, Math.min(simulationStart + blockMinutes, simulationEnd),
-                        1, solution);
+            // Precalcular bloque 1 completamente en background (carga + ALNS)
+            Future<BlockResult> nextFuture = submitBlockWork(
+                    lookahead, context, airports,
+                    simulationStart, Math.min(simulationStart + blockMinutes, simulationEnd),
+                    1, solution);
 
-                for (int blockStart = simulationStart, blockNo = 1;
-                    isActive(runId) && blockStart < simulationEnd && !collapsed;
-                    blockStart += blockMinutes, blockNo++) {
+            for (int blockStart = simulationStart, blockNo = 1;
+                isActive(runId) && blockStart < simulationEnd && !collapsed;
+                blockStart += blockMinutes, blockNo++) {
 
-                    int blockEnd = Math.min(blockStart + blockMinutes, simulationEnd);
+                int blockEnd = Math.min(blockStart + blockMinutes, simulationEnd);
 
-                    // Recoger resultado del bloque actual (carga + ALNS ya en paralelo)
-                    BlockResult blockResult;
-                    try {
-                        blockResult = nextFuture.get();
-                    } catch (Exception e) {
-                        System.err.println("Error en lookahead bloque " + blockNo + ": " + e.getMessage());
-                        blockResult = new BlockResult(solution, List.of());
-                    }
-
-                    solution = blockResult.solution();
-                    List<BaggageLot> rawBlockLots = blockResult.lots();
-
-                    final boolean collapseMode = "colapso".equals(request.mode());
-                    List<BaggageLot> blockLots = applyCollapseMode(rawBlockLots, collapseMode);
-
-                    // Actualizar contadores acumulados con los lotes de este bloque.
-                    // Usamos blockLots (ya con multiplicador colapso) para totalBags/routed,
-                    // y la solution actualizada para métricas SLA.
-                    for (BaggageLot lot : blockLots) {
-                        accumTotalBags += lot.getQuantity();
-                        RoutePlan p = solution.getPlan(lot.getId());
-                        if (p != null) {
-                            accumRoutedBags += lot.getQuantity();
-                            if (p.getTardinessHours() > 0) {
-                                accumOutOfDeadline += lot.getQuantity();
-                            }
-                        }
-                    }
-
-                    if (!blockLots.isEmpty()) {
-                        List<SimEvent> blockEvents = buildEvents(solution, blockLots, blockStart, blockEnd);
-                        // Mezclar carryover (vuelos aun en vuelo del bloque anterior)
-                        // con los eventos nuevos del bloque actual, reordenando por minuto.
-                        List<SimEvent> merged = new ArrayList<>(carryoverEvents.size() + blockEvents.size());
-                        merged.addAll(carryoverEvents);
-                        merged.addAll(blockEvents);
-                        merged.sort(Comparator.comparingInt(SimEvent::minute)
-                                              .thenComparing(SimEvent::type));
-                        allEvents = merged;
-                    } else if (!carryoverEvents.isEmpty()) {
-                        // Bloque vacio de lotes pero hay vuelos en transito: solo carryover
-                        allEvents = new ArrayList<>(carryoverEvents);
-                    }
-
-                    // Lanzar INMEDIATAMENTE el siguiente bloque en background
-                    // (carga de lotes + ALNS corren mientras animamos el bloque actual)
-                    int nextBlockStart = blockStart + blockMinutes;
-                    int nextBlockEnd   = Math.min(nextBlockStart + blockMinutes, simulationEnd);
-                    final int nextBlockNo = blockNo + 1;
-                    final WorkingSolution solSnap = solution;
-
-                    if (nextBlockStart < simulationEnd && isActive(runId)) {
-                        nextFuture = submitBlockWork(
-                                lookahead, context, airports,
-                                nextBlockStart, nextBlockEnd,
-                                nextBlockNo, solSnap);
-                    }
-
-                    // Notificar inicio de bloque
-                    List<AirportState> staticAirports = airportStaticList(airports, solution, blockStart);
-                    List<RouteState>   prevRoutes     = state.routes();
-                    state = new SimulationState(
-                            true, request.mode(),
-                            fmtClock(blockStart), blockNo,
-                            fmtClock(blockStart), fmtClock(blockEnd),
-                            staticAirports, prevRoutes, List.of(),
-                            buildKpis(accumTotalBags, accumRoutedBags, accumOutOfDeadline,
-                                    solution, staticAirports, blockLots,
-                                    delivered, replanifications, 0, blockStart),
-                            false, blockLots.isEmpty()
-                                ? "Simulación activa"
-                                : "Bloque " + blockNo + " (" + blockLots.size() + " lotes)",
-                            blockStart,
-                            List.of());
-                    broadcast(state);
-
-                    if (!isActive(runId)) return;
-
-                    // Animar bloque actual
-                    List<SimEvent> events  = allEvents;
-                    long realStart         = System.currentTimeMillis();
-                    long realDurationMs    = Math.max(1,
-                            request.blockSecondsOrDefault(BLOCK_REAL_SECONDS)) * 1000L;
-
-                    final int fBlockStart = blockStart;
-                    int nextEvent = 0;
-                    while (nextEvent < events.size()
-                        && events.get(nextEvent).minute() < fBlockStart) {
-                        nextEvent++;
-                    }
-
-                    while (isActive(runId)) {
-                        long elapsedMs    = System.currentTimeMillis() - realStart;
-                        int  simulatedNow = blockStart + (int) Math.min(
-                                (long)(blockEnd - blockStart),
-                                (elapsedMs * (long)(blockEnd - blockStart)) / realDurationMs);
-
-                        // Cancelaciones pendientes
-                        String cancelId = pendingCancellations.poll();
-                        if (cancelId != null) {
-                            solution = processCancellation(cancelId, context, blockLots, solution);
-                            List<SimEvent> rebuildBlock = buildEvents(solution, blockLots, blockStart, blockEnd);
-                            List<SimEvent> rebuildMerged = new ArrayList<>(carryoverEvents.size() + rebuildBlock.size());
-                            rebuildMerged.addAll(carryoverEvents);
-                            rebuildMerged.addAll(rebuildBlock);
-                            rebuildMerged.sort(Comparator.comparingInt(SimEvent::minute)
-                                                         .thenComparing(SimEvent::type));
-                            allEvents = rebuildMerged;
-                            events    = allEvents;
-                            replanifications++;
-                            nextEvent = 0;
-                            while (nextEvent < events.size()
-                                && events.get(nextEvent).minute() <= simulatedNow) {
-                                nextEvent++;
-                            }
-                        }
-
-                        List<SimEvent> emitted = new ArrayList<>();
-                        while (nextEvent < events.size()
-                            && events.get(nextEvent).minute() <= simulatedNow) {
-                            SimEvent ev = events.get(nextEvent++);
-                            emitted.add(ev);
-                            if ("landed".equals(ev.type()) && ev.finalDestination()) {
-                                delivered += ev.bags();
-                            }
-                        }
-
-                        int                activeFlights = countActiveFlights(events, simulatedNow);
-                        List<AirportState> airportStates = airportStates(airports, solution, simulatedNow);
-                        Kpis               kpis          = buildKpis(
-                                accumTotalBags, accumRoutedBags, accumOutOfDeadline,
-                                solution, airportStates, blockLots,
-                                delivered, replanifications, activeFlights, simulatedNow);
-                        collapsed = airportStates.stream().anyMatch(a -> a.current() > a.capacity());
-
-                        List<UpcomingFlight> upcoming = "diadia".equals(request.mode())
-                                ? buildUpcomingFlights(context, solution, simulatedNow)
-                                : List.of();
-
-                        state = new SimulationState(
-                                true, request.mode(),
-                                fmtClock(simulatedNow), blockNo,
-                                fmtClock(blockStart), fmtClock(blockEnd),
-                                airportStates,
-                                recentRoutes(events, simulatedNow),
-                                emitted, kpis, collapsed,
-                                collapsed ? "⚠ Capacidad de almacén excedida" : "Simulación activa",
-                                simulatedNow,
-                                upcoming);
-                        broadcast(state);
-
-                        if (simulatedNow >= blockEnd) break;
-                        sleep(BROADCAST_INTERVAL_MS);
-                    }
-
-                    // Al terminar el bloque, calcular carryover: eventos departed cuyo
-                    // vuelo aun no ha aterrizado al final del bloque (blockEnd).
-                    // Estos se inyectaran al inicio del siguiente bloque para que los
-                    // aviones en vuelo sigan visibles sin necesidad de guardar los lotes.
-                    Set<String> landedByBlockEnd = allEvents.stream()
-                            .filter(e -> "landed".equals(e.type()) && e.minute() <= blockEnd)
-                            .map(SimEvent::flightId)
-                            .collect(Collectors.toSet());
-                    carryoverEvents = allEvents.stream()
-                            .filter(e -> "departed".equals(e.type())
-                                    && e.minute() <= blockEnd
-                                    && !landedByBlockEnd.contains(e.flightId()))
-                            .collect(Collectors.toList());
+                // Recoger resultado del bloque actual (carga + ALNS ya en paralelo)
+                BlockResult blockResult;
+                try {
+                    blockResult = nextFuture.get();
+                } catch (Exception e) {
+                    System.err.println("Error en lookahead bloque " + blockNo + ": " + e.getMessage());
+                    blockResult = new BlockResult(solution, List.of());
                 }
 
-                if (!isActive(runId)) return;
-                running.set(false);
-                state = state.withRunning(false).withMessage(
-                        state.collapsed() ? state.message() : "Simulación finalizada");
+                solution = blockResult.solution();
+                List<BaggageLot> rawBlockLots = blockResult.lots();
+
+                final boolean collapseMode = "colapso".equals(request.mode());
+                List<BaggageLot> blockLots = applyCollapseMode(rawBlockLots, collapseMode);
+
+                // ── SNAPSHOT de acumuladores ANTES de este bloque ─────────────
+                // Los contadores del panel arrancan desde el estado real al inicio
+                // del bloque (lotes de bloques anteriores ya contabilizados).
+                // Los lotes del bloque actual se irán sumando dinámicamente dentro
+                // del loop de animación conforme su registrationHour sea alcanzado.
+                final int prevBlockTotal   = accumTotalBags;
+                final int prevBlockRouted  = accumRoutedBags;
+                final int prevBlockOverdue = accumOutOfDeadline;
+
+                if (!blockLots.isEmpty()) {
+                    List<SimEvent> blockEvents = buildEvents(solution, blockLots, blockStart, blockEnd);
+                    List<SimEvent> merged = new ArrayList<>(carryoverEvents.size() + blockEvents.size());
+                    merged.addAll(carryoverEvents);
+                    merged.addAll(blockEvents);
+                    merged.sort(Comparator.comparingInt(SimEvent::minute)
+                                          .thenComparing(SimEvent::type));
+                    allEvents = merged;
+                } else if (!carryoverEvents.isEmpty()) {
+                    allEvents = new ArrayList<>(carryoverEvents);
+                }
+
+                // Lanzar INMEDIATAMENTE el siguiente bloque en background
+                int nextBlockStart = blockStart + blockMinutes;
+                int nextBlockEnd   = Math.min(nextBlockStart + blockMinutes, simulationEnd);
+                final int nextBlockNo = blockNo + 1;
+                final WorkingSolution solSnap = solution;
+
+                if (nextBlockStart < simulationEnd && isActive(runId)) {
+                    nextFuture = submitBlockWork(
+                            lookahead, context, airports,
+                            nextBlockStart, nextBlockEnd,
+                            nextBlockNo, solSnap);
+                }
+
+                // Notificar inicio de bloque — contadores aún en estado previo,
+                // sin sumar nada del bloque actual (los lotes no son visibles aún).
+                List<AirportState> staticAirports = airportStaticList(airports, solution, blockStart);
+                List<RouteState>   prevRoutes     = state.routes();
+                state = new SimulationState(
+                        true, request.mode(),
+                        fmtClock(blockStart), blockNo,
+                        fmtClock(blockStart), fmtClock(blockEnd),
+                        staticAirports, prevRoutes, List.of(),
+                        buildKpis(prevBlockTotal, prevBlockRouted, prevBlockOverdue,
+                                solution, staticAirports, List.of(),
+                                delivered, replanifications, 0, blockStart),
+                        false, blockLots.isEmpty()
+                            ? "Simulación activa"
+                            : "Bloque " + blockNo + " (" + blockLots.size() + " lotes)",
+                        blockStart,
+                        List.of());
                 broadcast(state);
+
+                if (!isActive(runId)) return;
+
+                // Animar bloque actual
+                List<SimEvent> events  = allEvents;
+                long realStart         = System.currentTimeMillis();
+                long realDurationMs    = Math.max(1,
+                        request.blockSecondsOrDefault(BLOCK_REAL_SECONDS)) * 1000L;
+
+                final int fBlockStart = blockStart;
+                int nextEvent = 0;
+                while (nextEvent < events.size()
+                    && events.get(nextEvent).minute() < fBlockStart) {
+                    nextEvent++;
+                }
+
+                while (isActive(runId)) {
+                    long elapsedMs    = System.currentTimeMillis() - realStart;
+                    int  simulatedNow = blockStart + (int) Math.min(
+                            (long)(blockEnd - blockStart),
+                            (elapsedMs * (long)(blockEnd - blockStart)) / realDurationMs);
+
+                    // Cancelaciones pendientes
+                    String cancelId = pendingCancellations.poll();
+                    if (cancelId != null) {
+                        solution = processCancellation(cancelId, context, blockLots, solution);
+                        List<SimEvent> rebuildBlock = buildEvents(solution, blockLots, blockStart, blockEnd);
+                        List<SimEvent> rebuildMerged = new ArrayList<>(carryoverEvents.size() + rebuildBlock.size());
+                        rebuildMerged.addAll(carryoverEvents);
+                        rebuildMerged.addAll(rebuildBlock);
+                        rebuildMerged.sort(Comparator.comparingInt(SimEvent::minute)
+                                                     .thenComparing(SimEvent::type));
+                        allEvents = rebuildMerged;
+                        events    = allEvents;
+                        replanifications++;
+                        nextEvent = 0;
+                        while (nextEvent < events.size()
+                            && events.get(nextEvent).minute() <= simulatedNow) {
+                            nextEvent++;
+                        }
+                    }
+
+                    List<SimEvent> emitted = new ArrayList<>();
+                    while (nextEvent < events.size()
+                        && events.get(nextEvent).minute() <= simulatedNow) {
+                        SimEvent ev = events.get(nextEvent++);
+                        emitted.add(ev);
+                        if ("landed".equals(ev.type()) && ev.finalDestination()) {
+                            delivered += ev.bags();
+                        }
+                    }
+
+                    // ── Lotes visibles en este instante ───────────────────────
+                    // Solo los lotes cuya hora de registro ya fue alcanzada por
+                    // el tiempo simulado contribuyen a los contadores del panel.
+                    // Esto hace que los números arranquen en 0 y crezcan gradualmente.
+                    final WorkingSolution solForCalc = solution;
+                    List<BaggageLot> visibleLots = blockLots.stream()
+                            .filter(lot -> lot.getRegistrationHour() <= simulatedNow)
+                            .collect(Collectors.toList());
+
+                    int dynTotal   = visibleLots.stream()
+                            .mapToInt(BaggageLot::getQuantity).sum();
+                    int dynRouted  = visibleLots.stream()
+                            .filter(l -> solForCalc.getPlan(l.getId()) != null)
+                            .mapToInt(BaggageLot::getQuantity).sum();
+                    int dynOverdue = visibleLots.stream()
+                            .filter(l -> {
+                                RoutePlan p = solForCalc.getPlan(l.getId());
+                                return p != null && p.getTardinessHours() > 0;
+                            })
+                            .mapToInt(BaggageLot::getQuantity).sum();
+
+                    int                activeFlights = countActiveFlights(events, simulatedNow);
+                    List<AirportState> airportStates = airportStates(airports, solution, simulatedNow);
+                    Kpis               kpis          = buildKpis(
+                            prevBlockTotal   + dynTotal,
+                            prevBlockRouted  + dynRouted,
+                            prevBlockOverdue + dynOverdue,
+                            solution, airportStates, visibleLots,
+                            delivered, replanifications, activeFlights, simulatedNow);
+                    collapsed = airportStates.stream().anyMatch(a -> a.current() > a.capacity());
+
+                    List<UpcomingFlight> upcoming = "diadia".equals(request.mode())
+                            ? buildUpcomingFlights(context, solution, simulatedNow)
+                            : List.of();
+
+                    state = new SimulationState(
+                            true, request.mode(),
+                            fmtClock(simulatedNow), blockNo,
+                            fmtClock(blockStart), fmtClock(blockEnd),
+                            airportStates,
+                            recentRoutes(events, simulatedNow),
+                            emitted, kpis, collapsed,
+                            collapsed ? "⚠ Capacidad de almacén excedida" : "Simulación activa",
+                            simulatedNow,
+                            upcoming);
+                    broadcast(state);
+
+                    if (simulatedNow >= blockEnd) break;
+                    sleep(BROADCAST_INTERVAL_MS);
+                }
+
+                // ── Actualizar acumuladores AL TERMINAR el bloque ─────────────
+                // Ahora sí contabilizamos todos los lotes del bloque para que
+                // el siguiente bloque parta desde el total correcto acumulado.
+                for (BaggageLot lot : blockLots) {
+                    accumTotalBags += lot.getQuantity();
+                    RoutePlan p = solution.getPlan(lot.getId());
+                    if (p != null) {
+                        accumRoutedBags += lot.getQuantity();
+                        if (p.getTardinessHours() > 0) {
+                            accumOutOfDeadline += lot.getQuantity();
+                        }
+                    }
+                }
+
+                // Calcular carryover para el siguiente bloque
+                Set<String> landedByBlockEnd = allEvents.stream()
+                        .filter(e -> "landed".equals(e.type()) && e.minute() <= blockEnd)
+                        .map(SimEvent::flightId)
+                        .collect(Collectors.toSet());
+                carryoverEvents = allEvents.stream()
+                        .filter(e -> "departed".equals(e.type())
+                                && e.minute() <= blockEnd
+                                && !landedByBlockEnd.contains(e.flightId()))
+                        .collect(Collectors.toList());
+            }
+
+            if (!isActive(runId)) return;
+            running.set(false);
+            state = state.withRunning(false).withMessage(
+                    state.collapsed() ? state.message() : "Simulación finalizada");
+            broadcast(state);
         } catch (Exception e) {
             e.printStackTrace();
             if (!isActive(runId)) return;
@@ -485,7 +500,6 @@ public class SimulationService {
             Map<String, Airport> airports,
             WorkingSolution solution,
             int minute) {
-        // minute ya está en minutos absolutos desde BASE_UTC — igual que la timeline
         return airports.values().stream()
                 .sorted(Comparator.comparing(Airport::getCode))
                 .map(a -> new AirportState(
@@ -502,7 +516,7 @@ public class SimulationService {
             int accumOutOfDeadline,
             WorkingSolution solution,
             List<AirportState> airports,
-            List<BaggageLot> blockLots,   // solo el bloque actual, para SLA en tránsito
+            List<BaggageLot> blockLots,   // solo lotes visibles del bloque actual
             int delivered,
             int replanifications,
             int activeFlights,
@@ -513,9 +527,7 @@ public class SimulationService {
         int outOfDeadline = accumOutOfDeadline;
         int atRisk        = Math.max(0, totalBags - routed);
 
-        // Semáforo SLA: calculado sobre el bloque actual en tránsito.
-        // Los bloques anteriores ya fueron procesados; sus lotes están o entregados
-        // o fuera de plazo, ambos ya contabilizados en los acumuladores.
+        // Semáforo SLA: sobre los lotes visibles del bloque actual en tránsito.
         int slaCritical = blockLots.stream()
                 .filter(lot -> {
                     RoutePlan p = solution.getPlan(lot.getId());
@@ -553,9 +565,6 @@ public class SimulationService {
         int occupancyPct = capacity == 0 ? 0
                 : (int) Math.round(current * 100.0 / capacity);
 
-        // avgDeliveryDays: solo sobre lotes del bloque actual ya entregados.
-        // No acumulamos el promedio global (requeriría guardar todos los lotes)
-        // pero es representativo del rendimiento reciente del planificador.
         double avgDeliveryDays = blockLots.stream()
                 .filter(lot -> {
                     RoutePlan p = solution.getPlan(lot.getId());
@@ -576,13 +585,11 @@ public class SimulationService {
             List<BaggageLot> blockLots,
             WorkingSolution solution) {
 
-        // 1. Marcar vuelo como cancelado
         context.getFlights().stream()
                 .filter(f -> f.getId().equals(flightId))
                 .findFirst()
                 .ifPresent(f -> f.setCancelled(true));
 
-        // 2. Lotes afectados en este bloque
         List<BaggageLot> affected = blockLots.stream()
                 .filter(lot -> {
                     RoutePlan plan = solution.getPlan(lot.getId());
@@ -598,10 +605,8 @@ public class SimulationService {
         System.out.printf("Vuelo %s cancelado — replanificando %d lotes.%n",
                 flightId, affected.size());
 
-        // 3. Quitar lotes afectados de la solución
         affected.forEach(solution::remove);
 
-        // 4. Re-run ALNS con cancelledFlightId
         ALNSPlanner planner = new ALNSPlanner(context, System.currentTimeMillis());
         Map<String, List<RoutePlan>> candidates = planner.buildCandidateMap(affected);
         return planner.solveWithCandidates(
@@ -629,7 +634,6 @@ public class SimulationService {
                 .collect(Collectors.toList());
     }
 
-
     // ── Eventos ──────────────────────────────────────────────────────────────
 
     private List<SimEvent> buildEvents(
@@ -644,17 +648,12 @@ public class SimulationService {
             if (plan == null) continue;
             List<RouteSegment> segments = plan.getSegments();
 
-            // SLA: mismo continente = 24h (1440 min), distinto = 48h (2880 min)
-            // El dueHour ya fue calculado en ShipmentRepository con esa misma lógica,
-            // así que simplemente derivamos el límite del propio lote.
             int slaLimitMinutes = lot.getDueHour() - lot.getRegistrationHour();
 
             for (int i = 0; i < segments.size(); i++) {
                 RouteSegment seg       = segments.get(i);
                 boolean      finalDest = i == segments.size() - 1;
 
-                // FIX Bug 3: incluir eventos aunque estén fuera del bloque actual
-                // para que vuelos iniciados en bloques anteriores sigan visibles
                 addEvent(grouped, seg, seg.getDepartureHour(), "departed",
                          false, lot.getQuantity(),
                          lot.getRegistrationHour(), slaLimitMinutes);
@@ -679,8 +678,6 @@ public class SimulationService {
             int bags,
             int registrationMinute,
             int slaLimitMinutes) {
-        // Sin filtro de blockStart/blockEnd — queremos todos los eventos de la solución
-        // La key incluye registrationMinute para no fusionar lotes con distinto SLA
         String key = minute + "|" + type + "|" + seg.getFlightId()
                 + "|" + finalDestination + "|" + registrationMinute;
         grouped.computeIfAbsent(key, k -> new EventAccumulator(
@@ -708,7 +705,6 @@ public class SimulationService {
                 .map(SimEvent::flightId)
                 .collect(Collectors.toSet());
 
-        // Minuto de salida por vuelo (evento departed)
         Map<String, Integer> departureByFlight = events.stream()
                 .filter(e -> "departed".equals(e.type()))
                 .collect(Collectors.toMap(
@@ -716,7 +712,6 @@ public class SimulationService {
                         SimEvent::minute,
                         (a, b) -> a));
 
-        // Minuto de llegada por vuelo (evento landed)
         Map<String, Integer> arrivalByFlight = events.stream()
                 .filter(e -> "landed".equals(e.type()))
                 .collect(Collectors.toMap(
@@ -732,7 +727,7 @@ public class SimulationService {
                 departureByFlight.getOrDefault(e.flightId(), e.minute()),
                 arrivalByFlight.getOrDefault(e.flightId(), e.minute() + 60)))
         .sorted(Comparator.comparingInt(RouteState::bags).reversed())
-        .collect(Collectors.toList()); // ← sin .limit(40)
+        .collect(Collectors.toList());
 
         List<RouteState> justLanded = events.stream()
                 .filter(e -> "landed".equals(e.type()))

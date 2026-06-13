@@ -100,12 +100,20 @@ export default function WorldMap({
 
   const allActive = (!running || routes.length === 0)
     ? []
-    : routes.filter(r => r.status === "departed");
+    : routes.filter(r =>
+        r.status === "departed" &&
+        (r.arrivalMinute == null || simulatedMinute <= r.arrivalMinute)
+      );
 
   useEffect(() => {
     if (!running) return;
     const id = setInterval(() => setTick(t => t + 1), 800);
     return () => clearInterval(id);
+  }, [running]);
+
+  // Añadir después del useEffect del tick:
+  useEffect(() => {
+    if (!running) setLineMode("limited");
   }, [running]);
 
   // Zoom con rueda — passive: false para poder hacer preventDefault

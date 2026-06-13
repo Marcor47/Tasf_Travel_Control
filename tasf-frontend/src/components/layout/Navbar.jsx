@@ -15,7 +15,7 @@ const menu = [
   { label:"Monitoreo", path:"/monitoreo", icon:<Bell size={14}/>     },
 ];
 
-export default function Navbar({ running, onToggle, onModeClick, clock, mode, message }) {
+export default function Navbar({ running, onToggle, onModeClick, clock, mode, simulationMode, message }) {
   const nav          = useNavigate();
   const { pathname } = useLocation();
 
@@ -63,7 +63,7 @@ export default function Navbar({ running, onToggle, onModeClick, clock, mode, me
         <span className="text-gray-500 mr-2 text-xs">Modo:</span>
         {Object.entries(modeMap).map(([key, m]) => {
           const isActive      = pathname === m.path;
-          const isRunningHere = running && mode === key;
+          const isRunningHere = running && (simulationMode ?? mode) === key;
           return (
             <button key={key}
               onClick={() => onModeClick ? onModeClick(key) : nav(m.path)}

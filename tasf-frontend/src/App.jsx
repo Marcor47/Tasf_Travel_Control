@@ -46,8 +46,7 @@ function AppContent() {
   };
 
   const handleModeClick = (mode) => {
-    // Solo detener si el usuario hace click en un modo distinto al que corre
-    if (running && simulation?.mode !== mode) stop();
+    // No detener la simulación al navegar entre pestañas
     navigate(mode === "colapso" ? "/colapso"
           : mode === "periodo" ? "/periodo"
           : "/");
@@ -66,14 +65,15 @@ function AppContent() {
 
   return (
     <div className="flex flex-col min-h-screen">
-      <Navbar
+    <Navbar
       running={running}
       onToggle={handleToggle}
       onModeClick={handleModeClick}
       clock={clock}
       mode={modeFromPath}
+      simulationMode={simulation?.mode}   // ← modo real de la sim activa
       message={simulation?.message ?? ""}/>
-
+      
       <main className="flex-1 overflow-hidden">
         <Routes>
           <Route path="/"         element={<Dashboard mode="diadia"   {...dashboardProps}/>}/>
