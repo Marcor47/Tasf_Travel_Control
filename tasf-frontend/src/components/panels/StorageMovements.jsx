@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { AIRPORT_META, airportMatches } from "../../data/staticAirports";
+import { AIRPORT_META } from "../../data/staticAirports";
 
 // Cuántos almacenes mostrar cuando no hay filtro (para no saturar la vista)
 const MAX_STORAGES_NO_FILTER = 6;
@@ -11,11 +11,11 @@ const MAX_ROWS_PER_STORAGE   = 8;
  * que entran (llegadas) y salen (salidas) con su código, hora y tipo
  * (Final / Transbordo). Derivado del historial de eventos del backend.
  *
- * Respeta el mismo filtro del panel de almacenes (código / país / región) para
- * mantener coherencia con el resto del tablero. Mismo estilo de tarjeta; vive
- * dentro de un panel lateral colapsable.
+ * Respeta el mismo foco de aeropuertos que el mapa y las demás tarjetas: si hay
+ * uno o varios aeropuertos enfocados (por clic o filtro), solo muestra esos.
+ * Mismo estilo de tarjeta; vive dentro de un panel lateral colapsable.
  */
-export default function StorageMovements({ history = [], filter = "", airports = [] }) {
+export default function StorageMovements({ history = [], focusCodes = [], airports = [] }) {
   const nameByCode = useMemo(() => {
     const m = {};
     airports.forEach(a => { if (a.code) m[a.code] = a.name; });
@@ -40,17 +40,15 @@ export default function StorageMovements({ history = [], filter = "", airports =
     return acc;
   }, [history]);
 
-  const hasFilter = filter.trim().length > 0;
+  const focus     = useMemo(() => new Set(focusCodes), [focusCodes]);
+  const hasFilter = focus.size > 0;
 
   const codes = useMemo(() => {
     let list = Object.keys(byAirport);
-    if (hasFilter) {
-      list = list.filter(c =>
-        airportMatches({ code: c, name: nameByCode[c] }, filter));
-    }
+    if (hasFilter) list = list.filter(c => focus.has(c));
     list.sort();
     return hasFilter ? list : list.slice(0, MAX_STORAGES_NO_FILTER);
-  }, [byAirport, hasFilter, filter, nameByCode]);
+  }, [byAirport, hasFilter, focus]);
 
   return (
     <div className="bg-[#031525] border border-teal/20 rounded p-2 mt-2">

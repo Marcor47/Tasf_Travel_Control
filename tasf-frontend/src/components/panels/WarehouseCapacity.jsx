@@ -4,6 +4,7 @@ import { STATIC_AIRPORTS, AIRPORT_META, airportMatches } from "../../data/static
 export default function WarehouseCapacity({
   airports = [], kpis = {},
   filter = "", onFilterChange,
+  selectedCode = null, onAirportClick,
 }) {
   const hasFilter = filter.trim().length > 0;
 
@@ -93,8 +94,13 @@ export default function WarehouseCapacity({
                              : color === "amber"  ? "text-yellow-400"
                              : "text-red-400";
               const country  = AIRPORT_META[a.code]?.country;
+              const isSel    = a.code === selectedCode;
               return (
-                <div key={a.code}>
+                <button key={a.code}
+                  onClick={() => onAirportClick?.(a.code)}
+                  title="Resaltar en el mapa y filtrar"
+                  className={`w-full text-left rounded px-1 py-0.5 -mx-1 transition
+                    ${isSel ? "bg-teal/15 ring-1 ring-teal/40" : "hover:bg-white/5"}`}>
                   <div className="flex justify-between mb-0.5">
                     <span className="text-gray-300 truncate max-w-[140px]">
                       {a.name || a.code}
@@ -111,7 +117,7 @@ export default function WarehouseCapacity({
                                     transition-all duration-700`}
                          style={{ width:`${clampPct}%` }}/>
                   </div>
-                </div>
+                </button>
               );
             })}
           </div>

@@ -56,8 +56,10 @@ export default function Dashboard({
     }
   };
   const [showCollapse, setShowCollapse] = useState(false);
-  // Filtro del panel de almacenes (también resalta en el mapa)
+  // Filtro del panel de almacenes (texto: código/país/región)
   const [storageFilter, setStorageFilter] = useState("");
+  // Aeropuerto enfocado por clic (mapa o tarjeta de almacenes)
+  const [selectedAirport, setSelectedAirport] = useState(null);
   // Paneles laterales colapsables
   const [leftOpen,  setLeftOpen]  = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
@@ -81,12 +83,25 @@ export default function Dashboard({
   // Códigos de aeropuerto que coinciden con el filtro de almacenes — se usan
   // para resaltar tanto en el panel como en el mapa. Usa la misma fuente que
   // el mapa (datos en vivo si existen, si no los estáticos del dataset).
-  const liveAirports   = simulation?.airports;
-  const highlightCodes = useMemo(() => {
+  // Foco de aeropuertos: un clic (un aeropuerto) tiene prioridad; si no hay,
+  // se usa el filtro de texto del panel de almacenes (región). Estos códigos
+  // resaltan en el mapa Y filtran las tarjetas laterales.
+  const liveAirports = simulation?.airports;
+  const focusCodes = useMemo(() => {
+    if (selectedAirport) return [selectedAirport];
     if (!storageFilter.trim()) return [];
     const src = (liveAirports && liveAirports.length) ? liveAirports : STATIC_AIRPORTS;
     return src.filter(a => airportMatches(a, storageFilter)).map(a => a.code);
-  }, [storageFilter, liveAirports]);
+  }, [selectedAirport, storageFilter, liveAirports]);
+
+  // Un solo foco a la vez: escribir en el filtro o clicar un aeropuerto se
+  // excluyen mutuamente para no confundir.
+  const handleFilterChange = (v) => { setStorageFilter(v); setSelectedAirport(null); };
+  const handleAirportClick = (code) => {
+    setStorageFilter("");
+    setSelectedAirport(prev => (prev === code ? null : code));
+  };
+  const clearFocus = () => { setStorageFilter(""); setSelectedAirport(null); };
 
 
 
@@ -219,10 +234,12 @@ export default function Dashboard({
             events={simulation?.history ?? []}
             running={running}
             simulatedNow={simulatedNow}
+            focusCodes={focusCodes}
           />
           <FlightsCapacity
             flights={simulation?.flights ?? []}
             routes={simulation?.routes ?? []}
+            focusCodes={focusCodes}
             running={running} />
         </SidePanel>
 
@@ -235,7 +252,9 @@ export default function Dashboard({
           message={simulation?.message ?? ""}
           simulatedMinute={simulatedNow}
           activeFlightsCount={kpis?.activeFlights ?? 0}
-          highlightCodes={highlightCodes}/>
+          highlightCodes={focusCodes}
+          onAirportClick={handleAirportClick}
+          onClearSelection={clearFocus}/>
 
           {showCollapse && (
             <CollapseAlert
@@ -271,10 +290,12 @@ export default function Dashboard({
             airports={simulation?.airports ?? []}
             kpis={kpis}
             filter={storageFilter}
-            onFilterChange={setStorageFilter}/>
+            onFilterChange={handleFilterChange}
+            selectedCode={selectedAirport}
+            onAirportClick={handleAirportClick}/>
           <StorageMovements
             history={simulation?.history ?? []}
-            filter={storageFilter}
+            focusCodes={focusCodes}
             airports={simulation?.airports ?? []}/>
         </SidePanel>
       </div>

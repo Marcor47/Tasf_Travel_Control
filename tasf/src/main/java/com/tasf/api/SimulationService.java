@@ -2,6 +2,7 @@ package com.tasf.api;
 
 import com.tasf.planner.alns.ALNSPlanner;
 import com.tasf.planner.core.PlanningContext;
+import com.tasf.planner.core.RouteEvaluator;
 import com.tasf.planner.core.ScenarioConfig;
 import com.tasf.planner.core.WorkingSolution;
 import com.tasf.planner.model.Airport;
@@ -48,6 +49,8 @@ public class SimulationService {
     private final AtomicInteger    generation = new AtomicInteger(0);
 
     private final ConcurrentLinkedQueue<String> pendingCancellations
+        = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<BaggageLot> pendingAdditions
         = new ConcurrentLinkedQueue<>();
 
     private final AirportRepository  repoAirports  = new AirportRepository();
@@ -123,6 +126,98 @@ public class SimulationService {
         if (!running.get()) return state;
         pendingCancellations.add(flightId);
         return state;
+    }
+
+    // ── Registro de lotes (solo día a día) ─────────────────────────────────────
+
+    /**
+     * Evalúa la viabilidad de un nuevo lote SIN agregarlo: ¿existe ruta dentro
+     * del plazo (1 día mismo continente / 2 días si no), con capacidad de vuelo,
+     * y cómo está la ocupación de los almacenes de origen y destino?
+     */
+    public FeasibilityReport evaluateLot(String origin, String destination, int quantity) {
+        try {
+            Map<String, Airport> airports = loadAirports();
+            Airport o = airports.get(origin), d = airports.get(destination);
+            if (o == null || d == null)
+                return FeasibilityReport.infeasible("Aeropuerto de origen o destino no válido");
+            if (origin.equals(destination))
+                return FeasibilityReport.infeasible("Origen y destino no pueden ser el mismo");
+            if (quantity <= 0)
+                return FeasibilityReport.infeasible("La cantidad debe ser mayor que 0");
+
+            List<FlightInstance> flights = repoFlights.loadFlights("data/planes_vuelo.txt", airports);
+            PlanningContext context = new PlanningContext(airports, flights, ScenarioConfig.defaultWeek4());
+
+            int     regMin        = Math.max(0, state.simulatedMinute());
+            boolean sameContinent = o.getRegion().equals(d.getRegion());
+            int     slaMin        = sameContinent ? 24 * 60 : 48 * 60;
+
+            BaggageLot lot = new BaggageLot("USER-EVAL", origin, destination,
+                    quantity, regMin, regMin + slaMin, false);
+            List<RoutePlan> candidates = new RouteEvaluator(context).enumerateCandidates(lot);
+
+            int origPct = warehousePctFromState(origin);
+            int destPct = warehousePctFromState(destination);
+
+            if (candidates.isEmpty()) {
+                return new FeasibilityReport(false,
+                        "Sin ruta viable dentro del plazo (" + (sameContinent ? "1 día" : "2 días") + ")",
+                        sameContinent, slaMin / 60, 0, 0.0, List.of(), origPct, destPct);
+            }
+
+            RoutePlan best = candidates.get(0);
+            List<String> path = new ArrayList<>();
+            path.add(best.getSegments().get(0).getOrigin());
+            for (RouteSegment s : best.getSegments()) path.add(s.getDestination());
+
+            boolean capacityOk = best.getSegments().stream()
+                    .allMatch(s -> flightCapacity(flights, s.getFlightId()) >= quantity);
+            double etaHours = best.getTotalTravelHours() / 60.0;
+
+            return new FeasibilityReport(capacityOk,
+                    capacityOk ? "Ruta viable encontrada"
+                               : "Ruta encontrada pero algún vuelo no tiene capacidad para "
+                                 + quantity + " maletas",
+                    sameContinent, slaMin / 60, best.transfers(),
+                    Math.round(etaHours * 10) / 10.0, path, origPct, destPct);
+        } catch (Exception e) {
+            return FeasibilityReport.infeasible("Error evaluando: " + e.getMessage());
+        }
+    }
+
+    /** Encola un nuevo lote para inyectarlo en la simulación día a día en curso. */
+    public synchronized SimulationState addLot(String origin, String destination, int quantity) {
+        if (!running.get() || !"diadia".equals(state.mode())) return state;
+        try {
+            Map<String, Airport> airports = loadAirports();
+            Airport o = airports.get(origin), d = airports.get(destination);
+            if (o == null || d == null || origin.equals(destination) || quantity <= 0) return state;
+            int     regMin        = Math.max(0, state.simulatedMinute());
+            boolean sameContinent = o.getRegion().equals(d.getRegion());
+            int     dueMin        = regMin + (sameContinent ? 24 * 60 : 48 * 60);
+            pendingAdditions.add(new BaggageLot(
+                    "USER-" + System.currentTimeMillis(),
+                    origin, destination, quantity, regMin, dueMin, false));
+        } catch (IOException e) {
+            System.err.println("Error agregando lote: " + e.getMessage());
+        }
+        return state;
+    }
+
+    private int flightCapacity(List<FlightInstance> flights, String flightId) {
+        return flights.stream()
+                .filter(f -> f.getId().equals(flightId))
+                .mapToInt(FlightInstance::getCapacity)
+                .findFirst().orElse(0);
+    }
+
+    private int warehousePctFromState(String code) {
+        return state.airports().stream()
+                .filter(a -> a.code().equals(code))
+                .mapToInt(a -> a.capacity() == 0 ? 0
+                        : (int) Math.round(a.current() * 100.0 / a.capacity()))
+                .findFirst().orElse(0);
     }
 
     private Map<String, Airport> loadAirports() throws IOException {
@@ -368,6 +463,39 @@ public class SimulationService {
                         }
                     }
 
+                    // Adiciones pendientes (registro día a día): inyectar el lote,
+                    // planearlo de forma greedy sobre la solución actual (sin gastar
+                    // los 15 s de ALNS para no congelar la animación) y reconstruir
+                    // los eventos del bloque.
+                    BaggageLot added = pendingAdditions.poll();
+                    if (added != null) {
+                        List<BaggageLot> mergedLots = new ArrayList<>(blockLots);
+                        mergedLots.add(added);
+                        blockLots = mergedLots;
+                        try {
+                            WorkingSolution next = solution.copy();
+                            for (RoutePlan p : new RouteEvaluator(context).enumerateCandidates(added)) {
+                                if (next.canAssign(added, p)) { next.assign(added, p); break; }
+                            }
+                            solution = next;
+                        } catch (Exception e) {
+                            System.err.println("Error planificando lote agregado: " + e.getMessage());
+                        }
+                        List<SimEvent> addBlock  = buildEvents(solution, blockLots, blockStart, blockEnd);
+                        List<SimEvent> addMerged = new ArrayList<>(carryoverEvents.size() + addBlock.size());
+                        addMerged.addAll(carryoverEvents);
+                        addMerged.addAll(addBlock);
+                        addMerged.sort(Comparator.comparingInt(SimEvent::minute)
+                                                 .thenComparing(SimEvent::type));
+                        allEvents = addMerged;
+                        events    = allEvents;
+                        nextEvent = 0;
+                        while (nextEvent < events.size()
+                            && events.get(nextEvent).minute() <= simulatedNow) {
+                            nextEvent++;
+                        }
+                    }
+
                     List<SimEvent> emitted = new ArrayList<>();
                     while (nextEvent < events.size()
                         && events.get(nextEvent).minute() <= simulatedNow) {
@@ -407,7 +535,24 @@ public class SimulationService {
                             prevBlockOverdue + dynOverdue,
                             solution, airportStates, visibleLots,
                             delivered, replanifications, activeFlights, simulatedNow);
-                    collapsed = airportStates.stream().anyMatch(a -> a.current() > a.capacity());
+                    // ── Detección de colapso ──────────────────────────────────
+                    // 1. Almacén lleno: alguna bodega supera su capacidad.
+                    // 2. Ruteo inviable (solo en el escenario "colapso"): alguna
+                    //    maleta ya visible que el planificador NO pudo enrutar a
+                    //    tiempo — sin ruta dentro de su plazo (1 día mismo
+                    //    continente / 2 días si no) o con retraso. Esto implementa
+                    //    el fin del escenario "hasta el colapso".
+                    boolean storageCollapse = airportStates.stream()
+                            .anyMatch(a -> a.current() > a.capacity());
+                    boolean routingCollapse = "colapso".equals(request.mode())
+                            && visibleLots.stream().anyMatch(lot -> {
+                                RoutePlan p = solForCalc.getPlan(lot.getId());
+                                return p == null || p.getTardinessHours() > 0;
+                            });
+                    collapsed = storageCollapse || routingCollapse;
+                    String collapseReason = !collapsed ? "Simulación activa"
+                            : storageCollapse ? "⚠ Capacidad de almacén excedida"
+                            : "⚠ Maletas sin ruta viable dentro del plazo";
 
                     List<UpcomingFlight> upcoming = "diadia".equals(request.mode())
                             ? buildUpcomingFlights(context, solution, simulatedNow)
@@ -420,7 +565,7 @@ public class SimulationService {
                             airportStates,
                             recentRoutes(events, simulatedNow),
                             emitted, kpis, collapsed,
-                            collapsed ? "⚠ Capacidad de almacén excedida" : "Simulación activa",
+                            collapseReason,
                             simulatedNow,
                             upcoming);
                     broadcast(state);
@@ -975,6 +1120,18 @@ public class SimulationService {
 
     public record FlightInfo(String id, String origin, String destination,
                              String departureClock, String arrivalClock, int capacity) {}
+
+    public record FeasibilityReport(boolean feasible, String reason, boolean sameContinent,
+                                    int slaHours, int transfers, double etaHours,
+                                    List<String> path, int originStoragePct, int destStoragePct) {
+        static FeasibilityReport infeasible(String reason) {
+            return new FeasibilityReport(false, reason, false, 0, 0, 0.0, List.of(), 0, 0);
+        }
+    }
+
+    public record LotRequest(String origin, String destination, Integer quantity) {
+        int qty() { return quantity == null ? 0 : quantity; }
+    }
 
     public record UpcomingFlight(String flightId, String origin, String destination,
                                 int departureMinute, String departureClock,

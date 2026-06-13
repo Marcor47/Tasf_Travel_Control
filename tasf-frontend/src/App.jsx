@@ -88,7 +88,7 @@ function AppContent() {
           <Route path="/"         element={<Dashboard mode="diadia"   {...dashboardProps}/>}/>
           <Route path="/periodo"  element={<Dashboard mode="periodo"  {...dashboardProps}/>}/>
           <Route path="/colapso"  element={<Dashboard mode="colapso"  {...dashboardProps}/>}/>
-          <Route path="/registro"  element={<RegisterLot/>}/>
+          <Route path="/registro"  element={<RegisterLot simulation={simulation}/>}/>
           <Route path="/monitoreo" element={<LiveMonitor  simulation={simulation}/>}/>
           <Route path="/reportes"  element={<ReportView   simulation={simulation}/>}/>
           <Route path="/historial" element={<HistoryView  history={history} running={running}/>}/>

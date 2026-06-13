@@ -132,6 +132,7 @@ export default function SLAMonitor({
   running = false,
   message = "",
   simulatedMinute = 0,
+  focusCodes = [],
 }) {
   const [filterText, setFilterText] = useState("");
 
@@ -141,19 +142,27 @@ export default function SLAMonitor({
 
   const isPlanning = message.startsWith("Planificando");
 
+  // Si hay aeropuertos en foco, restringir los eventos a los que entran/salen
+  // de ellos (coherente con el mapa y las demás tarjetas).
+  const focusedEvents = useMemo(() => {
+    if (!focusCodes.length) return events;
+    const focus = new Set(focusCodes);
+    return events.filter(e => focus.has(e.from) || focus.has(e.to));
+  }, [events, focusCodes]);
+
   // ── Últimos 5 eventos para el monitor de plazos general ───────────────────
   const recentEvents = useMemo(() => {
-    if (!events.length) return [];
-    return [...events].reverse().slice(0, 5);
-  }, [events]);
+    if (!focusedEvents.length) return [];
+    return [...focusedEvents].reverse().slice(0, 5);
+  }, [focusedEvents]);
 
   // ── Eventos a nivel Maleta para el buscador ───────────────────────────────
   const bagLevelDetails = useMemo(() => {
-    if (!events.length) return [];
-    
+    if (!focusedEvents.length) return [];
+
     let result = [];
     // Tomamos los últimos 100 eventos para asegurar rendimiento en frontend
-    const recentToProcess = [...events].reverse().slice(0, 100);
+    const recentToProcess = [...focusedEvents].reverse().slice(0, 100);
 
     for (const e of recentToProcess) {
       const pkgId = getPackageId(e);
@@ -181,7 +190,7 @@ export default function SLAMonitor({
 
     // Retornamos las primeras 6 para que la tabla no sea inmensa
     return result.slice(0, 6);
-  }, [events, filterText]);
+  }, [focusedEvents, filterText]);
 
   // ── Contadores globales ───────────────────────────────────────────────────
   const delivered = safeKpis.deliveredOnTime;

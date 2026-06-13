@@ -63,4 +63,18 @@ public class SimulationController {
             @RequestBody SimulationService.CancelRequest request) {
         return simulationService.cancelFlight(request.flightId());
     }
+
+    @PostMapping("/evaluateLot")
+    public SimulationService.FeasibilityReport evaluateLot(
+            @RequestBody SimulationService.LotRequest request) {
+        return simulationService.evaluateLot(
+                request.origin(), request.destination(), request.qty());
+    }
+
+    @PostMapping("/addLot")
+    public SimulationService.SimulationState addLot(
+            @RequestBody SimulationService.LotRequest request) {
+        return simulationService.addLot(
+                request.origin(), request.destination(), request.qty());
+    }
 }

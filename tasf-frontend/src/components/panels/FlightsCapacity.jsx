@@ -17,7 +17,7 @@ function hhmm(minute) {
  * origen-destino-hora de salida. Las maletas se suman por vuelo (un mismo vuelo
  * puede llevar varios grupos de lotes).
  */
-export default function FlightsCapacity({ flights = [], routes = [], running = false }) {
+export default function FlightsCapacity({ flights = [], routes = [], running = false, focusCodes = [] }) {
   // Capacidad por vuelo: clave origen-destino-horaSalida
   const capByKey = useMemo(() => {
     const m = {};
@@ -27,11 +27,14 @@ export default function FlightsCapacity({ flights = [], routes = [], running = f
     return m;
   }, [flights]);
 
-  // Agrupar las rutas activas por vuelo y sumar maletas
+  // Agrupar las rutas activas por vuelo y sumar maletas. Si hay un aeropuerto
+  // en foco, mostrar solo los vuelos que entran o salen de él.
   const activeFlights = useMemo(() => {
+    const focus = new Set(focusCodes);
     const groups = {};
     for (const r of routes) {
       if (r.status !== "departed") continue;
+      if (focus.size > 0 && !focus.has(r.from) && !focus.has(r.to)) continue;
       const dep = hhmm(r.departureMinute);
       const key = `${r.from}-${r.to}-${dep}`;
       if (!groups[key]) {
@@ -48,7 +51,7 @@ export default function FlightsCapacity({ flights = [], routes = [], running = f
         pct: g.capacity ? Math.round((g.bags / g.capacity) * 100) : null,
       }))
       .sort((a, b) => (b.pct ?? -1) - (a.pct ?? -1));
-  }, [routes, capByKey]);
+  }, [routes, capByKey, focusCodes]);
 
   return (
     <div className="bg-[#031525] border border-teal/20 rounded p-2 mt-2">

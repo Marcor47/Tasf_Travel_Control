@@ -1,155 +1,252 @@
 import { useState } from "react";
-import { airports } from "../data/mockData";
+import { STATIC_AIRPORTS } from "../data/staticAirports";
 
-export default function RegisterLot() {
+const API_BASE = import.meta.env.VITE_API_BASE || "";
+
+export default function RegisterLot({ simulation }) {
+  const running = simulation?.running ?? false;
+  const mode    = simulation?.mode ?? "diadia";
+  // Las altas de lotes solo aplican al escenario Día a Día en curso.
+  const canAdd  = running && mode === "diadia";
+
+  // Aeropuertos para los selectores: datos en vivo si hay, si no los del dataset
+  const airports = (simulation?.airports?.length
+    ? simulation.airports
+    : STATIC_AIRPORTS
+  ).slice().sort((a, b) => a.code.localeCompare(b.code));
+
   const [form, setForm] = useState({
-    origin:"", destination:"", client:"", quantity:150, date:""
+    origin: "", destination: "", client: "", quantity: 150,
+  });
+  const [report,     setReport]     = useState(null);
+  const [evaluating, setEvaluating] = useState(false);
+  const [adding,     setAdding]     = useState(false);
+  const [status,     setStatus]     = useState(null); // "added" | "error" | null
+
+  const handle = e => {
+    setForm(f => ({ ...f, [e.target.name]: e.target.value }));
+    setReport(null);
+    setStatus(null);
+  };
+
+  const payload = () => ({
+    origin: form.origin,
+    destination: form.destination,
+    quantity: Number(form.quantity) || 0,
   });
 
-  const handle = e =>
-    setForm(f => ({ ...f, [e.target.name]: e.target.value }));
+  const evaluate = async () => {
+    if (!form.origin || !form.destination) return;
+    setEvaluating(true); setStatus(null);
+    try {
+      const r = await fetch(`${API_BASE}/api/simulation/evaluateLot`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload()),
+      });
+      setReport(r.ok ? await r.json() : null);
+    } catch {
+      setReport(null);
+    } finally {
+      setEvaluating(false);
+    }
+  };
+
+  const addLot = async () => {
+    setAdding(true);
+    try {
+      const r = await fetch(`${API_BASE}/api/simulation/addLot`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload()),
+      });
+      setStatus(r.ok ? "added" : "error");
+    } catch {
+      setStatus("error");
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const formValid = form.origin && form.destination
+    && form.origin !== form.destination && Number(form.quantity) > 0;
 
   return (
     <div className="p-4 max-w-5xl mx-auto">
-      <h2 className="text-teal font-bold text-lg mb-1">
-        REGISTRO DE LOTES
-      </h2>
-      <p className="text-green-400 text-xs mb-4">● ESTADO: REGISTRADA</p>
+      <h2 className="text-teal font-bold text-lg mb-1">REGISTRO DE LOTES</h2>
+      <p className="text-gray-500 text-xs mb-4">
+        Alta de nuevos lotes de equipaje para el escenario Día a Día.
+        {!canAdd && (
+          <span className="text-yellow-400 ml-1">
+            Solo disponible con una simulación Día a Día en curso — puedes evaluar la
+            viabilidad, pero no agregar.
+          </span>
+        )}
+      </p>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Formulario */}
+        {/* ── Formulario ──────────────────────────────────────────────────── */}
         <div className="bg-[#031525] border border-teal/20 rounded p-4">
-          <p className="text-teal text-xs font-bold uppercase mb-3">
-            Ingesta de Datos
-          </p>
+          <p className="text-teal text-xs font-bold uppercase mb-3">Ingesta de Datos</p>
+
           <div className="grid grid-cols-2 gap-3 mb-3">
             {[
-              ["origin",      "Aeropuerto Origen",  "select"],
-              ["destination", "Aeropuerto Destino",  "select"],
-            ].map(([name, label, type]) => (
+              ["origin",      "Aeropuerto Origen"],
+              ["destination", "Aeropuerto Destino"],
+            ].map(([name, label]) => (
               <div key={name}>
-                <label className="text-gray-500 text-[10px] uppercase block mb-1">
-                  {label}
-                </label>
+                <label className="text-gray-500 text-[10px] uppercase block mb-1">{label}</label>
                 <select name={name} value={form[name]} onChange={handle}
-                  className="w-full bg-[#021020] border border-white/10
-                             rounded px-2 py-1.5 text-xs text-gray-300
-                             focus:outline-none focus:border-teal">
+                  className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1.5
+                             text-xs text-gray-300 focus:outline-none focus:border-teal">
                   <option value="">Seleccionar</option>
                   {airports.map(a => (
                     <option key={a.code} value={a.code}>
-                      {a.code} — {a.name}
+                      {a.code} — {a.name || a.code}
                     </option>
                   ))}
                 </select>
               </div>
             ))}
           </div>
+
           <div className="mb-3">
             <label className="text-gray-500 text-[10px] uppercase block mb-1">
               Nombre / Identificador de Cliente
             </label>
             <input name="client" value={form.client} onChange={handle}
               placeholder="Logística Global S.A."
-              className="w-full bg-[#021020] border border-white/10 rounded
-                         px-2 py-1.5 text-xs text-gray-300
-                         focus:outline-none focus:border-teal"/>
+              className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1.5
+                         text-xs text-gray-300 focus:outline-none focus:border-teal"/>
           </div>
-          <div className="grid grid-cols-2 gap-3 mb-4">
-            <div>
-              <label className="text-gray-500 text-[10px] uppercase block mb-1">
-                Cantidad de Maletas
-              </label>
-              <input name="quantity" type="number" value={form.quantity}
-                onChange={handle}
-                className="w-full bg-[#021020] border border-white/10 rounded
-                           px-2 py-1.5 text-xs text-gray-300
-                           focus:outline-none focus:border-teal"/>
-            </div>
-            <div>
-              <label className="text-gray-500 text-[10px] uppercase block mb-1">
-                Fecha de Entrega
-              </label>
-              <input name="date" type="datetime-local" value={form.date}
-                onChange={handle}
-                className="w-full bg-[#021020] border border-white/10 rounded
-                           px-2 py-1.5 text-xs text-gray-300
-                           focus:outline-none focus:border-teal"/>
-            </div>
+
+          <div className="mb-4 w-1/2">
+            <label className="text-gray-500 text-[10px] uppercase block mb-1">
+              Cantidad de Maletas
+            </label>
+            <input name="quantity" type="number" min="1" value={form.quantity} onChange={handle}
+              className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1.5
+                         text-xs text-gray-300 focus:outline-none focus:border-teal"/>
           </div>
-          <button className="w-full bg-teal hover:bg-teal/80 text-white
-                             text-sm py-2 rounded font-medium tracking-wide
-                             transition">
-            INICIAR PLAN DE VIAJE »
-          </button>
-          <div className="grid grid-cols-2 gap-2 mt-3 text-[10px]">
-            <div>
-              <p className="text-gray-500">Capacidad Almacén Origen</p>
-              <div className="flex items-center gap-2 mt-1">
-                <span className="text-yellow-400 font-bold">24%</span>
-                <div className="flex-1 bg-white/10 rounded-full h-1">
-                  <div className="bg-yellow-400 h-1 rounded-full w-1/4"/>
-                </div>
-              </div>
-            </div>
-            <div>
-              <p className="text-gray-500">Capacidad Almacén Destino</p>
-              <div className="flex items-center gap-2 mt-1">
-                <span className="text-yellow-400 font-bold">58%</span>
-                <div className="flex-1 bg-white/10 rounded-full h-1">
-                  <div className="bg-yellow-400 h-1 rounded-full w-3/5"/>
-                </div>
-              </div>
-            </div>
+
+          <div className="flex gap-2">
+            <button
+              onClick={evaluate}
+              disabled={!formValid || evaluating}
+              className="flex-1 bg-[#021020] border border-teal/40 hover:border-teal text-teal
+                         text-sm py-2 rounded font-medium tracking-wide transition
+                         disabled:opacity-40 disabled:cursor-not-allowed">
+              {evaluating ? "Evaluando…" : "Evaluar Viabilidad"}
+            </button>
+            <button
+              onClick={addLot}
+              disabled={!canAdd || !report?.feasible || adding}
+              title={!canAdd ? "Requiere una simulación Día a Día en curso"
+                             : !report?.feasible ? "Evalúa una ruta viable primero" : ""}
+              className="flex-1 bg-teal hover:bg-teal/80 text-white text-sm py-2 rounded
+                         font-medium tracking-wide transition
+                         disabled:opacity-40 disabled:cursor-not-allowed">
+              {adding ? "Agregando…" : "Agregar Lote »"}
+            </button>
           </div>
+
+          {status === "added" && (
+            <p className="text-green-400 text-xs mt-3">
+              ● Lote agregado a la simulación. Aparecerá en el bloque actual.
+            </p>
+          )}
+          {status === "error" && (
+            <p className="text-red-400 text-xs mt-3">
+              No se pudo agregar el lote (¿hay una simulación Día a Día en curso?).
+            </p>
+          )}
         </div>
 
-        {/* Panel de validación */}
+        {/* ── Panel de validación ─────────────────────────────────────────── */}
         <div className="bg-[#031525] border border-teal/20 rounded p-4">
-          <p className="text-teal text-xs font-bold uppercase mb-3">
-            Panel de Validación
-          </p>
-          {[
-            { icon:"✓", color:"text-green-400",
-              title:"Capacidad de Almacén: Origen",
-              desc:"Existe suficiente espacio en el Terminal A-4. Disponibilidad actual: 4,200 maletas." },
-            { icon:"~", color:"text-yellow-400",
-              title:"Capacidad Estimada en Almacén Destino",
-              desc:"Espacio proyectado en Terminal B-12 para T+36h es 62%. Dentro del rango seguro." },
-            { icon:"✓", color:"text-green-400",
-              title:"Viabilidad de Ruta",
-              desc:"Ruta confirmada, tiempo aproximado 2 días." },
-          ].map((v, i) => (
-            <div key={i}
-              className="flex gap-2 mb-3 bg-[#021020] rounded p-2">
-              <span className={`font-bold text-sm ${v.color}`}>{v.icon}</span>
-              <div>
-                <p className="text-gray-300 text-xs font-medium">{v.title}</p>
-                <p className="text-gray-500 text-[10px] mt-0.5">{v.desc}</p>
-              </div>
-            </div>
-          ))}
+          <p className="text-teal text-xs font-bold uppercase mb-3">Panel de Validación</p>
 
-          <p className="text-teal text-[10px] font-bold uppercase mt-3 mb-2">
-            Ruta Planeada
-          </p>
-          {[
-            { n:"01", code:"JF KENNEDY (JFK)", role:"Centro de Origen — Registro" },
-            { n:"02", code:"HEATHROW (LHR)",   role:"Punto de Transbordo Intermedio" },
-            { n:"03", code:"CHANGI (SIN)",      role:"Llegada y Clasificación en Destino" },
-          ].map(r => (
-            <div key={r.n}
-              className="flex items-center gap-2 mb-1 text-xs">
-              <span className="w-5 h-5 rounded-full bg-teal flex items-center
-                               justify-center text-[10px] font-bold flex-shrink-0">
-                {r.n}
-              </span>
-              <div>
-                <p className="text-gray-200 font-medium">{r.code}</p>
-                <p className="text-gray-500 text-[10px]">{r.role}</p>
+          {!report ? (
+            <p className="text-gray-600 text-xs py-6 text-center">
+              Completa origen, destino y cantidad y pulsa «Evaluar Viabilidad».
+            </p>
+          ) : (
+            <>
+              {/* Veredicto */}
+              <div className={`flex gap-2 mb-3 rounded p-2 ${
+                report.feasible ? "bg-green-900/20" : "bg-red-900/20"}`}>
+                <span className={`font-bold text-sm ${
+                  report.feasible ? "text-green-400" : "text-red-400"}`}>
+                  {report.feasible ? "✓" : "✕"}
+                </span>
+                <div>
+                  <p className="text-gray-200 text-xs font-medium">
+                    {report.feasible ? "Lote viable" : "Lote no viable"}
+                  </p>
+                  <p className="text-gray-500 text-[10px] mt-0.5">{report.reason}</p>
+                </div>
               </div>
-            </div>
-          ))}
+
+              {/* Detalles */}
+              {[
+                ["Plazo de entrega (SLA)",
+                  `${report.sameContinent ? "Mismo continente" : "Distinto continente"} · ${report.slaHours} h`],
+                report.feasible && ["Tiempo estimado de ruta",
+                  `${report.etaHours.toFixed(1)} h (~${(report.etaHours / 24).toFixed(2)} días)`],
+                report.feasible && ["Transbordos",
+                  report.transfers === 0 ? "Directo" : `${report.transfers}`],
+              ].filter(Boolean).map(([k, v]) => (
+                <div key={k} className="flex justify-between text-xs mb-1.5">
+                  <span className="text-gray-500">{k}</span>
+                  <span className="text-gray-300 font-medium">{v}</span>
+                </div>
+              ))}
+
+              {/* Almacenes */}
+              <div className="grid grid-cols-2 gap-2 mt-3">
+                {[
+                  ["Almacén Origen", report.originStoragePct],
+                  ["Almacén Destino", report.destStoragePct],
+                ].map(([label, pct]) => {
+                  const color = pct > 85 ? "text-red-400" : pct > 60 ? "text-yellow-400" : "text-green-400";
+                  const bar   = pct > 85 ? "bg-red-500"  : pct > 60 ? "bg-yellow-500"  : "bg-green-500";
+                  return (
+                    <div key={label}>
+                      <p className="text-gray-500 text-[10px]">{label}</p>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className={`font-bold text-xs ${color}`}>{pct}%</span>
+                        <div className="flex-1 bg-white/10 rounded-full h-1">
+                          <div className={`${bar} h-1 rounded-full`}
+                               style={{ width: `${Math.min(100, pct)}%` }}/>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Ruta planeada */}
+              {report.feasible && report.path?.length > 0 && (
+                <>
+                  <p className="text-teal text-[10px] font-bold uppercase mt-4 mb-2">
+                    Ruta Planeada
+                  </p>
+                  <div className="flex flex-wrap items-center gap-1 text-xs">
+                    {report.path.map((code, i) => (
+                      <span key={`${code}-${i}`} className="flex items-center gap-1">
+                        <span className="px-2 py-0.5 rounded bg-teal/15 text-teal font-mono">
+                          {code}
+                        </span>
+                        {i < report.path.length - 1 && (
+                          <span className="text-gray-600">→</span>
+                        )}
+                      </span>
+                    ))}
+                  </div>
+                </>
+              )}
+            </>
+          )}
         </div>
       </div>
     </div>

@@ -140,12 +140,13 @@ const routeKey = r => r.flightId || `${r.from}-${r.to}-${r.departureMinute ?? 0}
 export default function WorldMap({
   airports = [],
   routes = [],
-  onAirportClick,
+  onAirportClick,        // (code) => void — clic en un aeropuerto (enfoca)
+  onClearSelection,      // () => void — limpiar el foco
   running = false,
   message = "",
   simulatedMinute = 0,
   activeFlightsCount = 0,
-  highlightCodes = [],
+  highlightCodes = [],   // aeropuertos en foco (de clic o filtro) — controlado por el padre
 }) {
   useEffect(() => { injectAnimation(); }, []);
 
@@ -155,8 +156,9 @@ export default function WorldMap({
   const [zoom,       setZoom]       = useState(1);
   const [center,     setCenter]     = useState([20, 10]);
   const [dragging,   setDragging]   = useState(false);
-  // Selección para resaltado: { kind:"airport", code } | { kind:"route", key } | null
-  const [selected,   setSelected]   = useState(null);
+  // Ruta resaltada por clic (solo afecta al mapa). El foco de aeropuertos es
+  // controlado por el padre vía highlightCodes (así también filtra las tarjetas).
+  const [selectedRoute, setSelectedRoute] = useState(null);
 
   const dragStart    = useRef(null);
   const dragMoved    = useRef(false);
@@ -185,15 +187,13 @@ export default function WorldMap({
       });
   }, [running, routes, displayMinute]);
 
-  // Selección efectiva: si la ruta seleccionada ya aterrizó y desapareció,
-  // se trata como "sin selección" (derivado, sin tocar el estado).
-  const effectiveSelected = useMemo(() => {
-    if (selected && selected.kind === "route"
-        && !allActive.some(r => routeKey(r) === selected.key)) {
-      return null;
+  // Si la ruta seleccionada ya aterrizó y desapareció, se ignora (derivado).
+  const activeRouteKey = useMemo(() => {
+    if (selectedRoute && allActive.some(r => routeKey(r) === selectedRoute)) {
+      return selectedRoute;
     }
-    return selected;
-  }, [selected, allActive]);
+    return null;
+  }, [selectedRoute, allActive]);
 
   useEffect(() => {
     const el = mapRef.current;
@@ -232,9 +232,12 @@ export default function WorldMap({
     dragStart.current = null;
   };
 
-  // Click en el fondo del mapa (sin arrastrar) limpia la selección
+  // Click en el fondo del mapa (sin arrastrar) limpia toda la selección
   const handleBackgroundClick = () => {
-    if (!dragMoved.current) setSelected(null);
+    if (!dragMoved.current) {
+      setSelectedRoute(null);
+      onClearSelection?.();
+    }
   };
 
   const shownAirports = airports.length > 0 ? airports : STATIC_AIRPORTS;
@@ -251,50 +254,39 @@ export default function WorldMap({
   const isCalculating = running && message.startsWith("Planificando");
 
   // ── Lógica de resaltado ──────────────────────────────────────────────────
-  // Aeropuertos conectados al seleccionado (para resaltar también sus vecinos)
-  const neighborCodes = useMemo(() => {
-    if (!effectiveSelected || effectiveSelected.kind !== "airport") return new Set();
-    const code = effectiveSelected.code;
-    const set = new Set([code]);
-    allActive.forEach(r => {
-      if (r.from === code) set.add(r.to);
-      if (r.to   === code) set.add(r.from);
-    });
-    return set;
-  }, [effectiveSelected, allActive]);
-
-  // Resaltado externo proveniente del filtro de almacenes (código/país/región).
-  // Cuando está activo tiene prioridad sobre la selección por clic.
-  const externalHl = useMemo(() => new Set(highlightCodes), [highlightCodes]);
-  const filtering  = externalHl.size > 0;
+  // Foco de aeropuertos: viene del padre (clic en mapa/almacenes o filtro).
+  const focus    = useMemo(() => new Set(highlightCodes), [highlightCodes]);
+  const selRoute = activeRouteKey
+    ? allActive.find(r => routeKey(r) === activeRouteKey)
+    : null;
+  const hasFocus = focus.size > 0 || !!selRoute;
 
   const routeIsHighlighted = (r) => {
-    if (filtering) return externalHl.has(r.from) || externalHl.has(r.to);
-    if (!effectiveSelected) return true;
-    if (effectiveSelected.kind === "airport")
-      return r.from === effectiveSelected.code || r.to === effectiveSelected.code;
-    if (effectiveSelected.kind === "route") return routeKey(r) === effectiveSelected.key;
+    if (selRoute) return routeKey(r) === activeRouteKey;
+    if (focus.size > 0) return focus.has(r.from) || focus.has(r.to);
     return true;
   };
 
   const airportIsHighlighted = (code) => {
-    if (filtering) return externalHl.has(code);
-    if (!effectiveSelected) return true;
-    if (effectiveSelected.kind === "airport") return neighborCodes.has(code);
-    if (effectiveSelected.kind === "route") {
-      const r = allActive.find(x => routeKey(x) === effectiveSelected.key);
-      return !!r && (r.from === code || r.to === code);
-    }
-    return true;
+    if (selRoute) return selRoute.from === code || selRoute.to === code;
+    if (focus.size === 0) return true;
+    if (focus.has(code)) return true;
+    // vecinos: aeropuertos conectados por una ruta activa a uno enfocado
+    return allActive.some(r =>
+      (focus.has(r.from) && r.to === code) || (focus.has(r.to) && r.from === code));
   };
 
-  const selectAirport = (code) =>
-    setSelected(s => (s && s.kind === "airport" && s.code === code)
-      ? null : { kind: "airport", code });
+  // Clic en una ruta (línea o avión): resaltar esa ruta y limpiar foco de aeropuerto
+  const clickRoute = (key) => {
+    onClearSelection?.();
+    setSelectedRoute(prev => (prev === key ? null : key));
+  };
 
-  const selectRoute = (key) =>
-    setSelected(s => (s && s.kind === "route" && s.key === key)
-      ? null : { kind: "route", key });
+  // Clic en un aeropuerto: enfocar (lo gestiona el padre) y limpiar ruta
+  const clickAirport = (code) => {
+    setSelectedRoute(null);
+    onAirportClick?.(code);
+  };
 
   return (
     <div
@@ -326,15 +318,13 @@ export default function WorldMap({
               )}
             </span>
           )}
-          {filtering ? (
+          {hasFocus && (
             <span className="text-[10px] text-teal flex items-center gap-1">
-              ◉ {externalHl.size} aeropuerto{externalHl.size === 1 ? "" : "s"} resaltado{externalHl.size === 1 ? "" : "s"}
-            </span>
-          ) : effectiveSelected && (
-            <span className="text-[10px] text-teal flex items-center gap-1">
-              ◉ {effectiveSelected.kind === "airport" ? effectiveSelected.code : effectiveSelected.key}
+              ◉ {selRoute
+                  ? `${selRoute.from}→${selRoute.to}`
+                  : `${focus.size} aeropuerto${focus.size === 1 ? "" : "s"}`}
               <button
-                onClick={() => setSelected(null)}
+                onClick={() => { setSelectedRoute(null); onClearSelection?.(); }}
                 className="ml-1 px-1.5 py-0.5 rounded bg-gray-900/70 border border-white/10
                            text-gray-400 hover:text-white transition">
                 ✕ Limpiar
@@ -416,15 +406,25 @@ export default function WorldMap({
           const from = airportMap[r.from];
           const to   = airportMap[r.to];
           if (!from || !to) return null;
-          const hl = routeIsHighlighted(r);
+          const hl  = routeIsHighlighted(r);
+          const key = routeKey(r);
           return (
-            <Line key={`active-${routeKey(r)}`}
-              from={from} to={to}
-              stroke="#F4A261"
-              strokeWidth={effectiveSelected && hl ? 1.8 : 1.2}
-              strokeLinecap="round" strokeDasharray="8 4"
-              opacity={hl ? 1 : 0.12}
-              className="route-active"/>
+            <g key={`active-${key}`}>
+              {/* Corredor invisible y ancho para que la ruta sea fácil de clicar */}
+              <Line
+                from={from} to={to}
+                stroke="transparent" strokeWidth={8}
+                style={{ cursor: "pointer" }}
+                onClick={(e) => { e.stopPropagation(); clickRoute(key); }}/>
+              <Line
+                from={from} to={to}
+                stroke="#F4A261"
+                strokeWidth={hasFocus && hl ? 1.8 : 1.2}
+                strokeLinecap="round" strokeDasharray="8 4"
+                opacity={hl ? 1 : 0.12}
+                style={{ pointerEvents: "none" }}
+                className="route-active"/>
+            </g>
           );
         })}
 
@@ -438,7 +438,7 @@ export default function WorldMap({
             <Marker
               key={`plane-${routeKey(r)}`}
               coordinates={plane.coordinates}
-              onClick={(e) => { e.stopPropagation(); selectRoute(routeKey(r)); }}>
+              onClick={(e) => { e.stopPropagation(); clickRoute(routeKey(r)); }}>
               <g transform={`rotate(${plane.angle})`}
                  className="route-plane"
                  opacity={hl ? 1 : 0.15}
@@ -466,17 +466,14 @@ export default function WorldMap({
                      : pct > 0.6  ? "#F4A261"
                      : "#1C7293";
           const r    = 3 + Math.round(pct * 4);
-          const hl   = airportIsHighlighted(a.code);
-          const isSel = (filtering && externalHl.has(a.code))
-            || (!filtering && effectiveSelected && effectiveSelected.kind === "airport"
-                && effectiveSelected.code === a.code);
+          const hl    = airportIsHighlighted(a.code);
+          const isSel = focus.has(a.code);
           return (
             <Marker key={a.code}
               coordinates={[a.lng, a.lat]}
               onClick={(e) => {
                 e.stopPropagation();
-                selectAirport(a.code);
-                onAirportClick?.(a);
+                clickAirport(a.code);
               }}>
               <circle r={isSel ? r + 1.5 : r}
                 fill={fill}
