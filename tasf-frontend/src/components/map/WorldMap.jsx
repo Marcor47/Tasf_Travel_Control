@@ -97,30 +97,17 @@ export default function WorldMap({
 
   const dragStart    = useRef(null);
   const mapRef       = useRef(null);
-  const [, setTick]  = useState(0);
+
 
   const allActive = (!running || routes.length === 0)
     ? []
-    : routes.filter(r =>
-        r.status === "departed" &&
-        r.departureMinute != null &&
-        r.departureMinute <= simulatedMinute &&
-        (r.arrivalMinute == null || simulatedMinute < r.arrivalMinute)
-      ).filter((r, idx, arr) =>
-        // deduplicar por flightId para que el límite de 40 sea exacto
-        arr.findIndex(x => (x.flightId || `${x.from}-${x.to}`) === (r.flightId || `${r.from}-${r.to}`)) === idx
-      );
-
-  useEffect(() => {
-    if (!running) return;
-    const id = setInterval(() => setTick(t => t + 1), 800);
-    return () => clearInterval(id);
-  }, [running]);
-
-  // Añadir después del useEffect del tick:
-  useEffect(() => {
-    if (!running) setLineMode("limited");
-  }, [running]);
+    : routes
+        .filter(r => r.status === "departed")
+        .filter((r, idx, arr) =>
+          arr.findIndex(x =>
+            (x.flightId || `${x.from}-${x.to}`) === (r.flightId || `${r.from}-${r.to}`)
+          ) === idx
+        );
 
   // Zoom con rueda — passive: false para poder hacer preventDefault
   useEffect(() => {
