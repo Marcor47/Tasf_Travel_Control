@@ -720,14 +720,20 @@ public class SimulationService {
                         (a, b) -> a));
 
         List<RouteState> active = events.stream()
-        .filter(e -> "departed".equals(e.type()) && e.minute() <= minute)
-        .filter(e -> !landedIds.contains(e.flightId()))
-        .map(e -> new RouteState(
-                e.from(), e.to(), e.bags(), "departed",
-                departureByFlight.getOrDefault(e.flightId(), e.minute()),
-                arrivalByFlight.getOrDefault(e.flightId(), e.minute() + 60)))
-        .sorted(Comparator.comparingInt(RouteState::bags).reversed())
-        .collect(Collectors.toList());
+            .filter(e -> "departed".equals(e.type()) && e.minute() <= minute)
+            .filter(e -> !landedIds.contains(e.flightId()))
+            // ✅ un solo RouteState por flightId — el primero que aparezca
+            .collect(Collectors.toMap(
+                    SimEvent::flightId,
+                    e -> e,
+                    (a, b) -> a))          // si hay duplicados, queda el primero
+            .values().stream()
+            .map(e -> new RouteState(
+                    e.from(), e.to(), e.bags(), "departed",
+                    departureByFlight.getOrDefault(e.flightId(), e.minute()),
+                    arrivalByFlight.getOrDefault(e.flightId(), e.minute() + 60)))
+            .sorted(Comparator.comparingInt(RouteState::bags).reversed())
+            .collect(Collectors.toList());
 
         List<RouteState> justLanded = events.stream()
                 .filter(e -> "landed".equals(e.type()))

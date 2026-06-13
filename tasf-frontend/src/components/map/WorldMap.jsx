@@ -31,7 +31,6 @@ function planePosition(from, to, route, simulatedMinute) {
 
   const rad = Math.PI / 180;
 
-  // 1. Interpolación de Gran Círculo (Slerp) para seguir la curva exacta de la línea
   const lat1 = from[1] * rad;
   const lon1 = from[0] * rad;
   const lat2 = to[1] * rad;
@@ -40,7 +39,6 @@ function planePosition(from, to, route, simulatedMinute) {
   const dLon = lon2 - lon1;
   const dLat = lat2 - lat1;
 
-  // Fórmula de Haversine para la distancia angular
   const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
   const c = 2 * Math.asin(Math.sqrt(a));
 
@@ -56,18 +54,16 @@ function planePosition(from, to, route, simulatedMinute) {
   const lat = Math.atan2(z, Math.sqrt(x * x + y * y)) / rad;
   const lng = Math.atan2(y, x) / rad;
 
-  // 2. Cálculo del ángulo visual proyectando un punto microscópicamente adelantado
   const progNext = Math.min(1, progress + 0.001);
   const An = Math.sin((1 - progNext) * c) / Math.sin(c);
   const Bn = Math.sin(progNext * c) / Math.sin(c);
   const xn = An * Math.cos(lat1) * Math.cos(lon1) + Bn * Math.cos(lat2) * Math.cos(lon2);
   const yn = An * Math.cos(lat1) * Math.sin(lon1) + Bn * Math.cos(lat2) * Math.sin(lon2);
   const zn = An * Math.sin(lat1) + Bn * Math.sin(lat2);
-  
+
   const latNext = Math.atan2(zn, Math.sqrt(xn * xn + yn * yn)) / rad;
   const lngNext = Math.atan2(yn, xn) / rad;
 
-  // Proyectar a Mercator para que el avión apunte perfectamente en la pantalla plana
   const mY1 = Math.log(Math.tan(Math.PI / 4 + lat * rad / 2));
   const mY2 = Math.log(Math.tan(Math.PI / 4 + latNext * rad / 2));
   const dx  = (lngNext - lng) * rad;
@@ -84,7 +80,7 @@ export default function WorldMap({
   running = false,
   message = "",
   simulatedMinute = 0,
-  activeFlightsCount = 0, // ← nuevo
+  activeFlightsCount = 0,
 }) {
   useEffect(() => { injectAnimation(); }, []);
 
@@ -95,21 +91,20 @@ export default function WorldMap({
   const [center,     setCenter]     = useState([20, 10]);
   const [dragging,   setDragging]   = useState(false);
 
-  const dragStart    = useRef(null);
-  const mapRef       = useRef(null);
+  const dragStart = useRef(null);
+  const mapRef    = useRef(null);
 
-
+  // ✅ Dedup solo por flightId cuando existe; sin flightId cada vuelo es único
   const allActive = (!running || routes.length === 0)
     ? []
     : routes
         .filter(r => r.status === "departed")
         .filter((r, idx, arr) =>
-          arr.findIndex(x =>
-            (x.flightId || `${x.from}-${x.to}`) === (r.flightId || `${r.from}-${r.to}`)
-          ) === idx
+          !r.flightId
+            ? true
+            : arr.findIndex(x => x.flightId === r.flightId) === idx
         );
 
-  // Zoom con rueda — passive: false para poder hacer preventDefault
   useEffect(() => {
     const el = mapRef.current;
     if (!el) return;
@@ -224,7 +219,7 @@ export default function WorldMap({
                     ${lineMode === "limited"
                       ? "bg-teal/10 text-teal border border-teal/30"
                       : "bg-orange-900/40 text-orange-400 border border-orange-700/40"}`}>
-                  {lineMode === "limited" ? `≤40 rutas` : `todas (${allActive.length})`}
+                      {lineMode === "limited" ? `≤40 rutas` : `todas (${allActive.length})`}
                 </button>
               )}
             </>
@@ -255,12 +250,13 @@ export default function WorldMap({
           }
         </Geographies>
 
-        {showLines && activeRoutes.map((r, i) => {
+        {/* ✅ idx como segundo param del map */}
+        {showLines && activeRoutes.map((r, idx) => {
           const from = airportMap[r.from];
           const to   = airportMap[r.to];
           if (!from || !to) return null;
           return (
-            <Line key={`active-${r.from}-${r.to}-${i}`}
+            <Line key={`active-${r.flightId ?? idx}-${r.from}-${r.to}`}
               from={from} to={to}
               stroke="#F4A261" strokeWidth={1.2}
               strokeLinecap="round" strokeDasharray="8 4"
@@ -268,29 +264,25 @@ export default function WorldMap({
           );
         })}
 
-        {showPlanes && activeRoutes.map((r, i) => {
+        {/* ✅ idx como segundo param del map */}
+        {showPlanes && activeRoutes.map((r, idx) => {
           const from = airportMap[r.from];
           const to   = airportMap[r.to];
           if (!from || !to) return null;
           const plane = planePosition(from, to, r, simulatedMinute);
           return (
             <Marker
-              key={`plane-${r.flightId || `${r.from}-${r.to}`}-${i}`}
+              key={`plane-${r.flightId ?? idx}-${r.from}-${r.to}`}
               coordinates={plane.coordinates}>
               <g transform={`rotate(${plane.angle})`} className="route-plane">
-                {/* Fuselaje */}
                 <path d="M 10 0 L -6 -1.5 L -8 0 L -6 1.5 Z"
                       fill="#F4A261" stroke="#F4A261" strokeWidth={0.4}/>
-                {/* Ala izquierda */}
                 <path d="M 2 -1 L -3 -8 L -6 -7 L -3 -1 Z"
                       fill="#F4A261" stroke="#F4A261" strokeWidth={0.4}/>
-                {/* Ala derecha */}
                 <path d="M 2 1 L -3 8 L -6 7 L -3 1 Z"
                       fill="#F4A261" stroke="#F4A261" strokeWidth={0.4}/>
-                {/* Cola izquierda */}
                 <path d="M -5 -1 L -7 -4 L -9 -3.5 L -8 0 Z"
                       fill="#F4A261" stroke="#F4A261" strokeWidth={0.4}/>
-                {/* Cola derecha */}
                 <path d="M -5 1 L -7 4 L -9 3.5 L -8 0 Z"
                       fill="#F4A261" stroke="#F4A261" strokeWidth={0.4}/>
               </g>
@@ -298,6 +290,7 @@ export default function WorldMap({
           );
         })}
 
+        {/* ✅ key correcto: a.code, sin referencias a variables de otro scope */}
         {shownAirports.map(a => {
           const pct  = Math.min(1, (a.current || 0) / Math.max(1, a.capacity || 1));
           const fill = pct > 0.85 ? "#E76F51"
