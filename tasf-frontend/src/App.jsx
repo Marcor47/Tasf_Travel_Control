@@ -12,7 +12,7 @@ function AppContent() {
   const simulation = useSimulation();
   const {
     running, clock, kpis,
-    start, stop, history,
+    start, stop, pause, resume, paused, history,
     availableDates, selectedDate, setSelectedDate,
     selectedNumDays, setSelectedNumDays,
     selectedStartMinute, setSelectedStartMinute,
@@ -32,13 +32,14 @@ function AppContent() {
   // control de la barra superior se bloquea en las pestañas de otro modo.
 
   const handleToggle = () => {
-    // Si hay una simulación corriendo en otro modo, no se permite ni detenerla
-    // ni iniciar otra desde esta pestaña (no se corren dos a la vez).
+    // Si hay una simulación corriendo en otro modo, no se permite controlarla
+    // desde esta pestaña (no se corren dos a la vez).
     if (running && simulation?.mode && simulation.mode !== modeFromPath) {
       return;
     }
     if (running) {
-      stop();
+      // Pausar / reanudar — NO reinicia la simulación.
+      if (paused) resume(); else pause();
     } else {
       const targetPath = modeFromPath === "colapso" ? "/colapso"
                       : modeFromPath === "periodo"  ? "/periodo"
@@ -78,6 +79,8 @@ function AppContent() {
       clock={clock}
       mode={modeFromPath}
       simulationMode={simulation?.mode}   // ← modo real de la sim activa
+      paused={paused}
+      onStop={stop}
       message={simulation?.message ?? ""}/>
       
       <main className="flex-1 overflow-hidden">

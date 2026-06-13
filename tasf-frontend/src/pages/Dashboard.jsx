@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useMemo } from "react";
 import SLAMonitor        from "../components/panels/SLAMonitor";
 import WarehouseCapacity from "../components/panels/WarehouseCapacity";
 import FlightsCapacity   from "../components/panels/FlightsCapacity";
@@ -91,26 +91,13 @@ export default function Dashboard({
 
 
 
-  // Tiempo simulado: simulatedNow es minuto absoluto desde BASE_UTC
-  // El inicio de la simulación es el primer minuto del día seleccionado
-  const simStartMinute = simulation?.simulatedMinute != null && running
-    ? (simulation?.block === 1 || simulation?.block === 0
-        ? simulatedNow - (simulatedNow % 1440)  // inicio del primer día
-        : null)
-    : null;
-
-  // Acumulamos el minuto inicial de la simulación
-  const simOriginRef = useRef(null);
-  useEffect(() => {
-    if (running && simulatedNow > 0 && simOriginRef.current === null) {
-      // El primer bloque empieza en el inicio del día seleccionado
-      simOriginRef.current = simulatedNow - (simulatedNow % 60);
-    }
-    if (!running) simOriginRef.current = null;
-  }, [running, simulatedNow]);
-
-  const simElapsedMinutes = (running && simOriginRef.current != null)
-    ? Math.max(0, simulatedNow - simOriginRef.current)
+  // Tiempo simulado transcurrido = minuto actual − minuto de inicio.
+  // El minuto de inicio es autoritativo y viene del hook (sobrevive a los
+  // cambios de pestaña), así que el contador siempre cuadra con el reloj y el
+  // bloque del backend.
+  const simStartMinute    = simulation?.simStartMinute ?? null;
+  const simElapsedMinutes = (running && simStartMinute != null)
+    ? Math.max(0, simulatedNow - simStartMinute)
     : 0;
 
   useEffect(() => {
@@ -213,7 +200,9 @@ export default function Dashboard({
                 {formatRealTime(realSeconds)}
               </p>
             </div>
-            <span className="text-green-400 text-xs animate-pulse">● En curso</span>
+            {simulation?.message === "Pausado"
+              ? <span className="text-amber-400 text-xs">❚❚ Pausado</span>
+              : <span className="text-green-400 text-xs animate-pulse">● En curso</span>}
           </div>
         )}
       </div>
@@ -231,7 +220,10 @@ export default function Dashboard({
             running={running}
             simulatedNow={simulatedNow}
           />
-          <FlightsCapacity flights={simulation?.flights ?? []} />
+          <FlightsCapacity
+            flights={simulation?.flights ?? []}
+            routes={simulation?.routes ?? []}
+            running={running} />
         </SidePanel>
 
         {/* Mapa central */}

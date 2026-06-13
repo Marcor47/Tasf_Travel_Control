@@ -1,77 +1,112 @@
-import { useState } from "react";
+import { useMemo } from "react";
+import { getWarehouseColor } from "../../hooks/useStatusColor";
+
+// Minuto absoluto → "HH:MM" del día (igual que el backend para casar capacidades)
+function hhmm(minute) {
+  const m = (((minute ?? 0) % 1440) + 1440) % 1440;
+  return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+}
 
 /**
- * Lista de todos los vuelos disponibles con su capacidad.
- * Mismo estilo de tarjeta que los demás paneles. Vive dentro de un panel
- * lateral colapsable, así que aquí solo se ocupa de su contenido.
+ * Vuelos activos (en el aire) y qué tan llenos están respecto a su capacidad.
+ * Semáforo igual que el resto de la página: verde casi vacío, ámbar a media
+ * carga, rojo casi lleno.
+ *
+ * Los RouteState del backend traen origen/destino/maletas/minuto de salida pero
+ * no la capacidad, así que la cruzamos con la lista estática de vuelos por
+ * origen-destino-hora de salida. Las maletas se suman por vuelo (un mismo vuelo
+ * puede llevar varios grupos de lotes).
  */
-export default function FlightsCapacity({ flights = [] }) {
-  const [q, setQ] = useState("");
-  const query = q.trim().toLowerCase();
+export default function FlightsCapacity({ flights = [], routes = [], running = false }) {
+  // Capacidad por vuelo: clave origen-destino-horaSalida
+  const capByKey = useMemo(() => {
+    const m = {};
+    for (const f of flights) {
+      m[`${f.origin}-${f.destination}-${f.departureClock}`] = f.capacity;
+    }
+    return m;
+  }, [flights]);
 
-  const filtered = query
-    ? flights.filter(f =>
-        (f.id          || "").toLowerCase().includes(query) ||
-        (f.origin      || "").toLowerCase().includes(query) ||
-        (f.destination || "").toLowerCase().includes(query))
-    : flights;
+  // Agrupar las rutas activas por vuelo y sumar maletas
+  const activeFlights = useMemo(() => {
+    const groups = {};
+    for (const r of routes) {
+      if (r.status !== "departed") continue;
+      const dep = hhmm(r.departureMinute);
+      const key = `${r.from}-${r.to}-${dep}`;
+      if (!groups[key]) {
+        groups[key] = {
+          key, from: r.from, to: r.to, departure: dep,
+          bags: 0, capacity: capByKey[key] ?? null,
+        };
+      }
+      groups[key].bags += r.bags || 0;
+    }
+    return Object.values(groups)
+      .map(g => ({
+        ...g,
+        pct: g.capacity ? Math.round((g.bags / g.capacity) * 100) : null,
+      }))
+      .sort((a, b) => (b.pct ?? -1) - (a.pct ?? -1));
+  }, [routes, capByKey]);
 
   return (
     <div className="bg-[#031525] border border-teal/20 rounded p-2 mt-2">
       <p className="text-teal font-bold mb-2 uppercase tracking-wide text-[10px]">
-        Vuelos y Capacidad
-        <span className="text-gray-500 normal-case ml-1">({flights.length})</span>
+        Vuelos Activos y Capacidad
+        {activeFlights.length > 0 && (
+          <span className="text-gray-500 normal-case ml-1">
+            ({activeFlights.length})
+          </span>
+        )}
       </p>
 
-      <input
-        value={q}
-        onChange={e => setQ(e.target.value)}
-        placeholder="Filtrar por origen, destino o vuelo…"
-        className="w-full bg-[#021020] border border-white/10 rounded
-                   px-2 py-1 text-[11px] text-gray-300 mb-2
-                   focus:outline-none focus:border-teal"
-      />
-
-      {flights.length === 0 ? (
+      {activeFlights.length === 0 ? (
         <p className="text-gray-600 text-center py-4 text-[10px]">
-          Cargando vuelos…
-        </p>
-      ) : filtered.length === 0 ? (
-        <p className="text-gray-600 text-center py-4 text-[10px]">
-          Sin coincidencias
+          {running ? "Sin vuelos activos en este momento" : "Inicia la simulación"}
         </p>
       ) : (
-        <div className="max-h-72 overflow-y-auto">
-          <table className="w-full text-xs">
-            <thead className="sticky top-0 bg-[#031525]">
-              <tr className="text-gray-500 border-b border-white/10 text-[10px]">
-                <th className="text-left py-1">Ruta</th>
-                <th className="text-left py-1">Salida</th>
-                <th className="text-left py-1">Llegada</th>
-                <th className="text-right py-1">Cap.</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map(f => (
-                <tr key={f.id} className="border-b border-white/5">
-                  <td className="py-1">
-                    <span className="text-teal">{f.origin}</span>
+        <div className="flex flex-col gap-2 max-h-72 overflow-y-auto">
+          {activeFlights.map(f => {
+            const pct      = f.pct;
+            const clamp    = pct == null ? 0 : Math.min(100, pct);
+            const color    = pct == null ? null : getWarehouseColor(pct);
+            const barColor = color === "green" ? "bg-green-500"
+                           : color === "amber" ? "bg-yellow-500"
+                           : color === "red"   ? "bg-red-500"
+                           : "bg-gray-600";
+            const txtColor = color === "green" ? "text-green-400"
+                           : color === "amber" ? "text-yellow-400"
+                           : color === "red"   ? "text-red-400"
+                           : "text-gray-400";
+            return (
+              <div key={f.key}>
+                <div className="flex justify-between items-center mb-0.5">
+                  <span className="text-gray-300 truncate">
+                    <span className="text-teal">{f.from}</span>
                     <span className="text-gray-600 mx-1">→</span>
-                    <span className="text-gray-200">{f.destination}</span>
-                  </td>
-                  <td className="py-1 text-gray-400 font-mono text-[10px]">
-                    {f.departureClock}
-                  </td>
-                  <td className="py-1 text-gray-400 font-mono text-[10px]">
-                    {f.arrivalClock}
-                  </td>
-                  <td className="py-1 text-right text-gray-300 font-bold tabular-nums">
-                    {(f.capacity || 0).toLocaleString()}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                    <span className="text-gray-200">{f.to}</span>
+                    <span className="text-gray-600 font-mono text-[10px] ml-1">
+                      {f.departure}
+                    </span>
+                  </span>
+                  <span className={`font-bold flex-shrink-0 ${txtColor}`}>
+                    {pct == null ? `${f.bags}` : `${pct}%`}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="flex-1 bg-white/10 rounded-full h-1.5">
+                    <div className={`${barColor} h-1.5 rounded-full transition-all duration-500`}
+                         style={{ width: `${clamp}%` }}/>
+                  </div>
+                  <span className="text-gray-500 text-[10px] tabular-nums flex-shrink-0">
+                    {(f.bags || 0).toLocaleString()}
+                    {f.capacity != null && ` / ${f.capacity.toLocaleString()}`}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

@@ -188,6 +188,24 @@ const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
     }
   }, []);
 
+  const pause = useCallback(async () => {
+    try {
+      const r = await fetch(`${API_BASE}/api/simulation/pause`, { method: "POST" });
+      if (r.ok) setState(await r.json());
+    } catch (e) {
+      console.error("Error al pausar simulación:", e);
+    }
+  }, []);
+
+  const resume = useCallback(async () => {
+    try {
+      const r = await fetch(`${API_BASE}/api/simulation/resume`, { method: "POST" });
+      if (r.ok) setState(await r.json());
+    } catch (e) {
+      console.error("Error al reanudar simulación:", e);
+    }
+  }, []);
+
   const cancelFlight = useCallback(async (flightId) => {
     try {
       const response = await fetch(`${API_BASE}/api/simulation/cancelFlight`, {
@@ -206,30 +224,41 @@ const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
 
 
 
+  // Pausa: el backend marca el estado con message="Pausado" mientras congela
+  // el reloj simulado.
+  const paused = state.message === "Pausado";
+
+  // Tiempo real transcurrido: cuenta por incrementos de 1 s y se CONGELA durante
+  // la pausa (no cuenta mientras la simulación está pausada).
   const [realSeconds, setRealSeconds] = useState(0);
-  const startTimeRef = useRef(null);
-
   useEffect(() => {
-    if (state.running) {
-      if (!startTimeRef.current) startTimeRef.current = Date.now();
-    } else {
-      startTimeRef.current = null;
-      setRealSeconds(0);
-    }
-  }, [state.running]);
-
-  useEffect(() => {
-    if (!state.running) return;
-    const id = setInterval(() => {
-      setRealSeconds(Math.floor((Date.now() - (startTimeRef.current ?? Date.now())) / 1000));
-    }, 1000);
+    if (!state.running) { setRealSeconds(0); return; }  // reset al detener
+    if (paused) return;                                  // congelar en pausa
+    const id = setInterval(() => setRealSeconds(s => s + 1), 1000);
     return () => clearInterval(id);
-  }, [state.running]);
+  }, [state.running, paused]);
+
+
+  // Minuto de inicio de la simulación (autoritativo): el primer simulatedMinute
+  // real que emite el backend. Se rastrea aquí, en el hook a nivel de App, que
+  // NO se remonta al cambiar de pestaña — así el "tiempo simulado transcurrido"
+  // no se descuadra al navegar entre modos.
+  const [simStartMinute, setSimStartMinute] = useState(null);
+  useEffect(() => {
+    if (!state.running) {
+      if (simStartMinute !== null) setSimStartMinute(null);
+    } else if (state.simulatedMinute > 0) {
+      setSimStartMinute(prev =>
+        prev === null ? state.simulatedMinute
+                      : Math.min(prev, state.simulatedMinute));
+    }
+  }, [state.running, state.simulatedMinute, simStartMinute]);
 
 
   return {
     ...state,
     history,
+    simStartMinute,
     availableDates,
     flights,
     selectedDate,
@@ -240,6 +269,9 @@ const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
     setSelectedStartMinute,
     start,
     stop,
+    pause,
+    resume,
+    paused,
     cancelFlight,
     realSeconds, // ← nuevo
   };

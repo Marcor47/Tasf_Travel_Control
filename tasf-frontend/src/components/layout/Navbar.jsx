@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { User, Clock, BarChart2, Bell, Settings, Play, Pause } from "lucide-react";
+import { User, Clock, BarChart2, Bell, Settings, Play, Pause, Square } from "lucide-react";
 
 const modeMap = {
   "diadia":  { label:"Dia-a-Dia", path:"/"        },
@@ -15,7 +15,7 @@ const menu = [
   { label:"Monitoreo", path:"/monitoreo", icon:<Bell size={14}/>     },
 ];
 
-export default function Navbar({ running, onToggle, onModeClick, clock, mode, simulationMode, message }) {
+export default function Navbar({ running, onToggle, onStop, paused, onModeClick, clock, mode, simulationMode, message }) {
   const nav          = useNavigate();
   const { pathname } = useLocation();
 
@@ -35,7 +35,8 @@ export default function Navbar({ running, onToggle, onModeClick, clock, mode, si
   useEffect(() => {
     const clockIsReal   = clock && !clock.startsWith("Dia --");
     const isAnimating   = !message.startsWith("Planificando")
-                      && !message.startsWith("Cargando");
+                      && !message.startsWith("Cargando")
+                      && message !== "Pausado";
     if (mode !== "diadia" || !running || !clockIsReal || !isAnimating) {
       setSeconds(0);
       return;
@@ -111,13 +112,29 @@ export default function Navbar({ running, onToggle, onModeClick, clock, mode, si
             {otherModeLabel} en curso
           </span>
         ) : (
-          <button onClick={onToggle}
-            className={`text-white text-xs px-3 py-1 rounded flex items-center gap-1
-                        transition ${running
-                          ? "bg-red-700 hover:bg-red-600"
-                          : "bg-teal hover:bg-teal/80"}`}>
-            {running ? <><Pause size={12}/> PAUSAR</> : <><Play size={12}/> INICIAR</>}
-          </button>
+          <>
+            <button onClick={onToggle}
+              className={`text-white text-xs px-3 py-1 rounded flex items-center gap-1
+                          transition ${!running
+                            ? "bg-teal hover:bg-teal/80"
+                            : paused
+                              ? "bg-green-700 hover:bg-green-600"
+                              : "bg-amber-700 hover:bg-amber-600"}`}>
+              {!running
+                ? <><Play size={12}/> INICIAR</>
+                : paused
+                  ? <><Play size={12}/> REANUDAR</>
+                  : <><Pause size={12}/> PAUSAR</>}
+            </button>
+            {running && (
+              <button onClick={onStop}
+                title="Detener simulación"
+                className="text-white text-xs px-3 py-1 rounded flex items-center gap-1
+                           bg-red-700 hover:bg-red-600 transition">
+                <Square size={11}/> DETENER
+              </button>
+            )}
+          </>
         )}
         <Settings size={16}
           className="text-gray-500 cursor-pointer hover:text-white transition"/>

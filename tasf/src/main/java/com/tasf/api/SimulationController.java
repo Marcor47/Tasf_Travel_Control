@@ -28,6 +28,16 @@ public class SimulationController {
         return simulationService.stop();
     }
 
+    @PostMapping("/pause")
+    public SimulationService.SimulationState pause() {
+        return simulationService.pause();
+    }
+
+    @PostMapping("/resume")
+    public SimulationService.SimulationState resume() {
+        return simulationService.resume();
+    }
+
     @GetMapping("/state")
     public SimulationService.SimulationState state() {
         return simulationService.currentState();

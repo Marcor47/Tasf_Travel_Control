@@ -37,42 +37,48 @@ function clamp01(v) { return Math.max(0, Math.min(1, v)); }
 function useSmoothMinute(targetMinute, running) {
   const [display, setDisplay] = useState(targetMinute);
   // Inicialización perezosa del ref (sin llamar a performance.now en render)
-  const sample = useRef(null);
-  if (sample.current === null) {
-    sample.current = { prevVal: targetMinute, prevT: 0, curVal: targetMinute, curT: 0 };
+  const s = useRef(null);
+  if (s.current === null) {
+    s.current = { curVal: targetMinute, curT: 0, rate: 0, disp: targetMinute };
   }
 
-  // Registrar cada nueva muestra del backend
+  // Registrar cada nueva muestra del backend y suavizar la velocidad (EMA).
+  // Suavizar la velocidad evita los tirones cuando los broadcast (~800 ms)
+  // llegan con jitter (red, GC, etc.).
   useEffect(() => {
     const now = performance.now();
-    const s = sample.current;
-    // Si el reloj retrocede (nueva simulación) reseteamos sin extrapolar
-    if (targetMinute < s.curVal) {
-      sample.current = { prevVal: targetMinute, prevT: now, curVal: targetMinute, curT: now };
+    const r = s.current;
+    if (targetMinute < r.curVal) {              // nueva simulación → reset
+      r.curVal = targetMinute; r.curT = now; r.rate = 0; r.disp = targetMinute;
       return;
     }
-    s.prevVal = s.curVal;
-    s.prevT   = s.curT;
-    s.curVal  = targetMinute;
-    s.curT    = now;
+    const dt = now - r.curT;
+    if (r.curT > 0 && dt > 0) {
+      const inst = (targetMinute - r.curVal) / dt;       // min simulados por ms
+      r.rate = r.rate > 0 ? r.rate * 0.65 + inst * 0.35 : inst;
+    }
+    r.curVal = targetMinute;
+    r.curT   = now;
   }, [targetMinute]);
 
+  // Bucle de animación: lee siempre del ref, así NO se reinicia con cada
+  // muestra (reiniciar rAF cada 800 ms provocaba microcortes).
   useEffect(() => {
     if (!running) return;
+    const NOMINAL_MS = 850; // no extrapolar más de ~1 intervalo si se atasca
     let raf;
     const tick = () => {
-      const s    = sample.current;
-      const dt   = s.curT - s.prevT;
-      const rate = dt > 0 ? (s.curVal - s.prevVal) / dt : 0; // min simulados por ms
-      const step = Math.max(0, s.curVal - s.prevVal);
-      const elapsed = performance.now() - s.curT;
-      const est  = Math.min(s.curVal + rate * elapsed, s.curVal + step);
-      setDisplay(est); // dentro del callback de rAF (asíncrono)
+      const r = s.current;
+      const elapsed = Math.min(performance.now() - r.curT, NOMINAL_MS);
+      let est = r.curVal + r.rate * elapsed;
+      if (est < r.disp) est = r.disp;   // monotónico: nunca retrocede (sin tirones)
+      r.disp = est;
+      setDisplay(est);                  // dentro del callback de rAF (asíncrono)
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [running, targetMinute]);
+  }, [running]);
 
   return running ? display : targetMinute;
 }
@@ -156,8 +162,10 @@ export default function WorldMap({
   const dragMoved    = useRef(false);
   const mapRef       = useRef(null);
 
-  // Minuto continuo y suavizado para mover los aviones sin saltos
-  const displayMinute = useSmoothMinute(simulatedMinute, running);
+  // Minuto continuo y suavizado para mover los aviones sin saltos.
+  // En pausa congelamos la interpolación (los aviones quedan quietos).
+  const paused        = message === "Pausado";
+  const displayMinute = useSmoothMinute(simulatedMinute, running && !paused);
 
   // Rutas en el aire: salieron (departed), aún no aterrizan según el backend
   // y, además, el reloj suavizado todavía no alcanza su minuto de llegada.

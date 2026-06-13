@@ -44,6 +44,7 @@ public class SimulationService {
     private final ExecutorService  executor   = Executors.newSingleThreadExecutor();
     private final ExecutorService  lookahead  = Executors.newSingleThreadExecutor();
     private final AtomicBoolean    running    = new AtomicBoolean(false);
+    private final AtomicBoolean    paused     = new AtomicBoolean(false);
     private final AtomicInteger    generation = new AtomicInteger(0);
 
     private final ConcurrentLinkedQueue<String> pendingCancellations
@@ -66,6 +67,7 @@ public class SimulationService {
         int    runId = generation.incrementAndGet();
         String mode  = normalizeMode(safeRequest.mode());
         running.set(true);
+        paused.set(false);
         state = SimulationState.initial()
                 .withMode(mode).withRunning(true).withMessage("Cargando datos...");
         broadcast(state);
@@ -79,8 +81,29 @@ public class SimulationService {
     public synchronized SimulationState stop() {
         generation.incrementAndGet();
         running.set(false);
+        paused.set(false);
         state = state.withRunning(false).withMessage("Detenido");
         broadcast(state);
+        return state;
+    }
+
+    /** Pausa la simulación en curso: congela el reloj sin terminar el run. */
+    public synchronized SimulationState pause() {
+        if (running.get() && !paused.get()) {
+            paused.set(true);
+            state = state.withMessage("Pausado");
+            broadcast(state);
+        }
+        return state;
+    }
+
+    /** Reanuda una simulación pausada desde el punto exacto en que se pausó. */
+    public synchronized SimulationState resume() {
+        paused.set(false);
+        if (running.get() && "Pausado".equals(state.message())) {
+            state = state.withMessage("Simulación activa");
+            broadcast(state);
+        }
         return state;
     }
 
@@ -307,6 +330,19 @@ public class SimulationService {
                 }
 
                 while (isActive(runId)) {
+                    // ── Pausa: congelar el tiempo simulado ────────────────────
+                    // Mientras paused esté activo no se avanza el reloj. Al salir
+                    // se desplaza realStart por la duración de la pausa para que
+                    // simulatedNow continúe exactamente donde estaba (sin saltos).
+                    if (paused.get()) {
+                        long pauseStart = System.currentTimeMillis();
+                        state = state.withMessage("Pausado");
+                        broadcast(state);
+                        while (paused.get() && isActive(runId)) sleep(150);
+                        if (!isActive(runId)) return;
+                        realStart += System.currentTimeMillis() - pauseStart;
+                    }
+
                     long elapsedMs    = System.currentTimeMillis() - realStart;
                     int  simulatedNow = blockStart + (int) Math.min(
                             (long)(blockEnd - blockStart),
@@ -407,16 +443,31 @@ public class SimulationService {
                     }
                 }
 
-                // Calcular carryover para el siguiente bloque
+                // ── Carryover para el siguiente bloque ────────────────────────
+                // Se conservan DOS grupos de eventos para mantener coherencia
+                // entre bloques:
+                //   1. Aviones aún en el aire al cerrar el bloque (departed cuyo
+                //      landed todavía no ha ocurrido) → para seguir dibujándolos.
+                //   2. TODOS los eventos aún en el futuro (minute > blockEnd):
+                //      incluyen los aterrizajes finales (ENTREGAS) y los tramos
+                //      posteriores de lotes ya planificados. Sin esto, cualquier
+                //      entrega que ocurra más de 1 h después del registro se perdía
+                //      y el contador de entregadas se quedaba clavado en 0.
                 Set<String> landedByBlockEnd = allEvents.stream()
                         .filter(e -> "landed".equals(e.type()) && e.minute() <= blockEnd)
                         .map(SimEvent::flightId)
                         .collect(Collectors.toSet());
-                carryoverEvents = allEvents.stream()
+                List<SimEvent> inAir = allEvents.stream()
                         .filter(e -> "departed".equals(e.type())
                                 && e.minute() <= blockEnd
                                 && !landedByBlockEnd.contains(e.flightId()))
                         .collect(Collectors.toList());
+                List<SimEvent> futurePending = allEvents.stream()
+                        .filter(e -> e.minute() > blockEnd)
+                        .collect(Collectors.toList());
+                carryoverEvents = new ArrayList<>(inAir.size() + futurePending.size());
+                carryoverEvents.addAll(inAir);
+                carryoverEvents.addAll(futurePending);
             }
 
             if (!isActive(runId)) return;
