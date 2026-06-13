@@ -1,9 +1,12 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import SLAMonitor        from "../components/panels/SLAMonitor";
 import WarehouseCapacity from "../components/panels/WarehouseCapacity";
+import FlightsCapacity   from "../components/panels/FlightsCapacity";
+import StorageMovements  from "../components/panels/StorageMovements";
 import WorldMap          from "../components/map/WorldMap";
 import CollapseAlert     from "../components/modals/CollapseAlert";
 import FlightCancelPanel from "../components/panels/FlightCancelPanel";
+import { STATIC_AIRPORTS, airportMatches } from "../data/staticAirports";
 
 const MODE_CONFIG = {
   diadia:  { selector: "Día a simular",  suffix: "(1 día — tiempo real)", showDays: false },
@@ -11,7 +14,8 @@ const MODE_CONFIG = {
   colapso: { selector: "Día de inicio",  suffix: "(hasta colapso)",       showDays: false },
 };
 
-const NUM_DAYS_OPTIONS = [2, 3, 4, 5];
+// Periodo permitido por el caso: 3, 4, 5 o 7 días
+const NUM_DAYS_OPTIONS = [3, 4, 5, 7];
 
 // Formatea segundos totales → "Xd Hh Mm Ss" o "Hh Mm Ss"
 function formatRealTime(seconds) {
@@ -37,16 +41,52 @@ export default function Dashboard({
   mode, simulation, onStop,
   availableDates = [], selectedDate = "", onDateChange,
   selectedNumDays = 5, onNumDaysChange,
+  selectedStartMinute = 0, onStartMinuteChange,
   cancelFlight,
   realSeconds = 0, // ← nuevo, viene del hook vía App
 }) {
+  // Hora de inicio (minuto del día) ↔ valor "HH:MM" del input
+  const startTimeValue =
+    `${String(Math.floor(selectedStartMinute / 60)).padStart(2, "0")}:` +
+    `${String(selectedStartMinute % 60).padStart(2, "0")}`;
+  const handleStartTimeChange = e => {
+    const [h, m] = e.target.value.split(":").map(Number);
+    if (Number.isFinite(h) && Number.isFinite(m)) {
+      onStartMinuteChange?.(h * 60 + m);
+    }
+  };
   const [showCollapse, setShowCollapse] = useState(false);
+  // Filtro del panel de almacenes (también resalta en el mapa)
+  const [storageFilter, setStorageFilter] = useState("");
+  // Paneles laterales colapsables
+  const [leftOpen,  setLeftOpen]  = useState(true);
+  const [rightOpen, setRightOpen] = useState(true);
 
 
   const kpis         = simulation?.kpis ?? {};
   const running      = simulation?.running ?? false;
   const simulatedNow = simulation?.simulatedMinute ?? 0;
   const cfg          = MODE_CONFIG[mode] ?? MODE_CONFIG.diadia;
+  // Hora simulada actual (lo que "marca el reloj dentro de la simulación")
+  const simClock     = simulation?.clock ?? "--:--";
+
+  // Reloj de pared: hora real actual, avanza cada segundo mientras corre
+  const [realNow, setRealNow] = useState(() => new Date());
+  useEffect(() => {
+    if (!running) return;
+    const id = setInterval(() => setRealNow(new Date()), 1000);
+    return () => clearInterval(id);
+  }, [running]);
+
+  // Códigos de aeropuerto que coinciden con el filtro de almacenes — se usan
+  // para resaltar tanto en el panel como en el mapa. Usa la misma fuente que
+  // el mapa (datos en vivo si existen, si no los estáticos del dataset).
+  const liveAirports   = simulation?.airports;
+  const highlightCodes = useMemo(() => {
+    if (!storageFilter.trim()) return [];
+    const src = (liveAirports && liveAirports.length) ? liveAirports : STATIC_AIRPORTS;
+    return src.filter(a => airportMatches(a, storageFilter)).map(a => a.code);
+  }, [storageFilter, liveAirports]);
 
 
 
@@ -82,10 +122,11 @@ export default function Dashboard({
   }, [running, simulation?.collapsed]);
 
   return (
-    <div className="flex flex-col gap-2 p-2 h-[calc(100vh-72px)]">
+    <div className="flex flex-col gap-2 p-2 h-[calc(100vh-72px)]
+                    overflow-y-auto md:overflow-hidden">
 
       {/* ── Selector de fecha + contadores ───────────────────────────────── */}
-      <div className="flex items-center gap-3 bg-[#031525] border border-teal/20
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 bg-[#031525] border border-teal/20
                       rounded px-3 py-2 flex-shrink-0">
         <span className="text-teal text-xs font-bold uppercase whitespace-nowrap">
           {cfg.selector}
@@ -106,6 +147,19 @@ export default function Dashboard({
             ))}
           </select>
         )}
+
+        {/* Hora y minuto de inicio (opcional) */}
+        <span className="text-gray-500 text-xs">a las</span>
+        <input
+          type="time"
+          value={startTimeValue}
+          onChange={handleStartTimeChange}
+          disabled={running}
+          title="Hora y minuto de inicio dentro del día"
+          className="bg-[#021020] border border-white/10 rounded px-2 py-1
+                     text-xs text-gray-300 focus:outline-none focus:border-teal
+                     disabled:opacity-40 disabled:cursor-not-allowed"
+        />
 
         {cfg.showDays && (
           <>
@@ -131,19 +185,32 @@ export default function Dashboard({
           <span className="text-gray-500 text-xs">{cfg.suffix}</span>
         )}
 
-        {/* Contadores de tiempo */}
+        {/* ── Relojes: hora simulada / transcurrido simulado / hora real /
+               transcurrido real ──────────────────────────────────────────── */}
         {running && (
-          <div className="ml-auto flex items-center gap-4">
+          <div className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-1">
             <div className="text-center">
-              <p className="text-gray-500 text-[9px] uppercase leading-none">Tiempo real</p>
-              <p className="text-white text-xs font-mono font-bold">
-                {formatRealTime(realSeconds)}
+              <p className="text-gray-500 text-[9px] uppercase leading-none">Hora simulada</p>
+              <p className="text-teal text-xs font-mono font-bold">
+                {simClock}
               </p>
             </div>
             <div className="text-center">
-              <p className="text-gray-500 text-[9px] uppercase leading-none">Tiempo simulado</p>
+              <p className="text-gray-500 text-[9px] uppercase leading-none">Tiempo simulado transcurrido</p>
               <p className="text-teal text-xs font-mono font-bold">
                 {formatSimTime(simElapsedMinutes)}
+              </p>
+            </div>
+            <div className="text-center">
+              <p className="text-gray-500 text-[9px] uppercase leading-none">Hora real</p>
+              <p className="text-white text-xs font-mono font-bold">
+                {realNow.toLocaleTimeString("es-ES")}
+              </p>
+            </div>
+            <div className="text-center">
+              <p className="text-gray-500 text-[9px] uppercase leading-none">Tiempo real transcurrido</p>
+              <p className="text-white text-xs font-mono font-bold">
+                {formatRealTime(realSeconds)}
               </p>
             </div>
             <span className="text-green-400 text-xs animate-pulse">● En curso</span>
@@ -152,27 +219,31 @@ export default function Dashboard({
       </div>
 
       {/* ── Paneles principales ───────────────────────────────────────────── */}
-      <div className="flex gap-2 flex-1 min-h-0">
+      <div className="flex flex-col md:flex-row gap-2 flex-1 min-h-0">
 
-        {/* Panel izquierdo — más ancho */}
-        <div className="w-72 flex-shrink-0 overflow-y-auto">
+        {/* Panel izquierdo — SLA (colapsable) */}
+        <SidePanel title="Plazos / SLA" side="left"
+                   open={leftOpen} onToggle={() => setLeftOpen(o => !o)}
+                   widthClass="md:w-72">
           <SLAMonitor
             kpis={kpis}
             events={simulation?.history ?? []}
             running={running}
             simulatedNow={simulatedNow}
           />
-        </div>
+          <FlightsCapacity flights={simulation?.flights ?? []} />
+        </SidePanel>
 
         {/* Mapa central */}
-        <div className="flex-1 relative">
+        <div className="flex-1 relative min-h-[320px] md:min-h-0">
         <WorldMap
           airports={simulation?.airports ?? []}
           routes={simulation?.routes ?? []}
           running={running}
           message={simulation?.message ?? ""}
           simulatedMinute={simulatedNow}
-          activeFlightsCount={kpis?.activeFlights ?? 0}/>
+          activeFlightsCount={kpis?.activeFlights ?? 0}
+          highlightCodes={highlightCodes}/>
 
           {showCollapse && (
             <CollapseAlert
@@ -200,13 +271,62 @@ export default function Dashboard({
           </div>
         </div>
 
-        {/* Panel derecho — más ancho */}
-        <div className="w-64 flex-shrink-0 overflow-y-auto">
+        {/* Panel derecho — Almacenes (colapsable) */}
+        <SidePanel title="Almacenes" side="right"
+                   open={rightOpen} onToggle={() => setRightOpen(o => !o)}
+                   widthClass="md:w-64">
           <WarehouseCapacity
             airports={simulation?.airports ?? []}
-            kpis={kpis}/>
-        </div>
+            kpis={kpis}
+            filter={storageFilter}
+            onFilterChange={setStorageFilter}/>
+          <StorageMovements
+            history={simulation?.history ?? []}
+            filter={storageFilter}
+            airports={simulation?.airports ?? []}/>
+        </SidePanel>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Panel lateral colapsable y responsivo.
+ * - Escritorio: abierto ocupa su ancho (md:w-72/64); colapsado se reduce a
+ *   una franja vertical con el título girado.
+ * - Móvil: ocupa todo el ancho y se apila; colapsado deja solo una barra de
+ *   cabecera para expandirlo.
+ */
+function SidePanel({ title, side, open, onToggle, widthClass, children }) {
+  if (!open) {
+    return (
+      <button
+        onClick={onToggle}
+        title={`Mostrar ${title}`}
+        className={`flex-shrink-0 w-full md:w-7 bg-[#031525] border border-teal/20 rounded
+                    flex md:flex-col items-center justify-between md:justify-start
+                    px-2 py-1 md:py-2 gap-1 hover:border-teal/50 transition`}>
+        <span className="text-gray-400 text-[10px] uppercase tracking-wide
+                         md:[writing-mode:vertical-rl]">
+          {title}
+        </span>
+        <span className="text-teal text-xs">
+          {side === "left" ? "▸" : "◂"}
+        </span>
+      </button>
+    );
+  }
+  return (
+    <div className={`${widthClass} w-full flex-shrink-0 overflow-y-auto
+                     max-h-[45vh] md:max-h-none`}>
+      <div className="flex items-center justify-between mb-1 px-0.5">
+        <span className="text-gray-500 text-[10px] uppercase tracking-wide">{title}</span>
+        <button onClick={onToggle} title={`Ocultar ${title}`}
+          className="text-gray-500 hover:text-white text-xs px-1">
+          {side === "left" ? "◂" : "▸"}
+        </button>
+      </div>
+      {children}
     </div>
   );
 }

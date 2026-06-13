@@ -115,8 +115,7 @@ public class WorkingSolution {
 
     /**
      * Representa un grupo de maletas que ocupa almacen entre dos minutos
-     * absolutos. Se conserva el nombre de clase porque DemoMain aun modela
-     * este estado como overnight entre dias.
+     * absolutos, modelando el estado overnight entre dias.
      */
     public static class OvernightArrival {
         public final String airportCode;

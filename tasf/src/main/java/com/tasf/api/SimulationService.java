@@ -53,6 +53,7 @@ public class SimulationService {
     private final FlightRepository   repoFlights   = new FlightRepository();
     private final ShipmentRepository repoShipments = new ShipmentRepository();
     private volatile Map<String, Airport> cachedAirports = null;
+    private volatile List<FlightInfo>     cachedFlights  = null;
 
     private volatile SimulationState state = SimulationState.initial();
 
@@ -60,7 +61,7 @@ public class SimulationService {
 
     public synchronized SimulationState start(StartRequest request) {
         StartRequest safeRequest = request == null
-                ? new StartRequest("diadia", null, null, null) : request;
+                ? new StartRequest("diadia", null, null, null, null) : request;
         stop();
         int    runId = generation.incrementAndGet();
         String mode  = normalizeMode(safeRequest.mode());
@@ -70,7 +71,8 @@ public class SimulationService {
         broadcast(state);
         executor.submit(() -> runSimulation(
                 new StartRequest(mode, safeRequest.blockSeconds(),
-                                safeRequest.startDate(), safeRequest.numDays()), runId));
+                                safeRequest.startDate(), safeRequest.numDays(),
+                                safeRequest.startMinuteOfDay()), runId));
         return state;
     }
 
@@ -109,6 +111,34 @@ public class SimulationService {
             }
         }
         return cachedAirports;
+    }
+
+    /** Lista estática de todos los vuelos disponibles con su capacidad. */
+    public List<FlightInfo> getFlights() {
+        if (cachedFlights == null) {
+            synchronized (this) {
+                if (cachedFlights == null) {
+                    try {
+                        Map<String, Airport> airports = loadAirports();
+                        List<FlightInstance> flights =
+                                repoFlights.loadFlights("data/planes_vuelo.txt", airports);
+                        cachedFlights = flights.stream()
+                                .sorted(Comparator.comparing(FlightInstance::getOrigin)
+                                        .thenComparingInt(FlightInstance::getDepartureHour))
+                                .map(f -> new FlightInfo(
+                                        f.getId(), f.getOrigin(), f.getDestination(),
+                                        fmtHHMM(f.getDepartureHour()),
+                                        fmtHHMM(f.getArrivalHour()),
+                                        f.getCapacity()))
+                                .collect(Collectors.toList());
+                    } catch (Exception e) {
+                        System.err.println("Error cargando vuelos: " + e.getMessage());
+                        return List.of();
+                    }
+                }
+            }
+        }
+        return cachedFlights;
     }
 
     public List<String> getAvailableDates() {
@@ -154,9 +184,13 @@ public class SimulationService {
                 return;
             }
 
-            // 4. Calcular offset absoluto de los días encontrados
-            int simulationStart = absoluteMinute(days.get(0).atStartOfDay());
-            int simulationEnd   = simulationStart + days.size() * 1440;
+            // 4. Calcular offset absoluto de los días encontrados.
+            //    El usuario puede elegir hora y minuto de inicio dentro del primer
+            //    día: la simulación arranca en ese minuto (se omiten los lotes
+            //    anteriores de ese día) y termina al final del último día cargado.
+            int dayStartAbs     = absoluteMinute(days.get(0).atStartOfDay());
+            int simulationStart = dayStartAbs + request.startMinuteOrDefault();
+            int simulationEnd   = dayStartAbs + days.size() * 1440;
             int blockMinutes    = BLOCK_HOURS * 60;
 
             System.out.printf("Simulación: %s → %s | start=%d end=%d | carga por bloques%n",
@@ -787,6 +821,12 @@ public class SimulationService {
                 + String.format("%02d:%02d", t.getHour(), t.getMinute());
     }
 
+    /** Formatea un minuto del día (0–1439) como HH:MM. */
+    private String fmtHHMM(int minuteOfDay) {
+        int m = ((minuteOfDay % 1440) + 1440) % 1440;
+        return String.format("%02d:%02d", m / 60, m % 60);
+    }
+
     private void sleep(long ms) {
         try { Thread.sleep(ms); }
         catch (InterruptedException e) { Thread.currentThread().interrupt(); }
@@ -817,12 +857,18 @@ public class SimulationService {
         }
     }
 
-    public record StartRequest(String mode, Integer blockSeconds, String startDate, Integer numDays) {
+    public record StartRequest(String mode, Integer blockSeconds, String startDate,
+                               Integer numDays, Integer startMinuteOfDay) {
         int blockSecondsOrDefault(int fallback) {
             return blockSeconds == null || blockSeconds <= 0 ? fallback : blockSeconds;
         }
         int numDaysOrDefault(int fallback) {
             return numDays == null || numDays <= 0 ? fallback : numDays;
+        }
+        /** Minuto de inicio dentro del día seleccionado (0–1439). 0 = inicio del día. */
+        int startMinuteOrDefault() {
+            if (startMinuteOfDay == null) return 0;
+            return Math.max(0, Math.min(1439, startMinuteOfDay));
         }
     }
 
@@ -875,6 +921,9 @@ public class SimulationService {
     }
 
     public record CancelRequest(String flightId) {}
+
+    public record FlightInfo(String id, String origin, String destination,
+                             String departureClock, String arrivalClock, int capacity) {}
 
     public record UpcomingFlight(String flightId, String origin, String destination,
                                 int departureMinute, String departureClock,

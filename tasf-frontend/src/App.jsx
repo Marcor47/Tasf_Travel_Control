@@ -1,5 +1,4 @@
 import { BrowserRouter, Routes, Route, useLocation, useNavigate } from "react-router-dom";
-import { useEffect } from "react";
 import Navbar        from "./components/layout/Navbar";
 import StatusBar     from "./components/layout/StatusBar";
 import Dashboard     from "./pages/Dashboard";
@@ -16,6 +15,7 @@ function AppContent() {
     start, stop, history,
     availableDates, selectedDate, setSelectedDate,
     selectedNumDays, setSelectedNumDays,
+    selectedStartMinute, setSelectedStartMinute,
     cancelFlight,
     realSeconds, // ← nuevo
   } = simulation;
@@ -27,14 +27,16 @@ function AppContent() {
                      : pathname === "/periodo"  ? "periodo"
                      : "diadia";
 
-  // Detener simulación si cambia de modo mientras corre
-  /*useEffect(() => {
-    if (running && simulation?.mode && simulation.mode !== modeFromPath) {
-      stop();
-    }
-  }, [modeFromPath]);*/
+  // Nota: cambiar de pestaña de modo NO detiene la simulación en curso.
+  // Solo navega; la simulación (única en el backend) sigue corriendo y el
+  // control de la barra superior se bloquea en las pestañas de otro modo.
 
   const handleToggle = () => {
+    // Si hay una simulación corriendo en otro modo, no se permite ni detenerla
+    // ni iniciar otra desde esta pestaña (no se corren dos a la vez).
+    if (running && simulation?.mode && simulation.mode !== modeFromPath) {
+      return;
+    }
     if (running) {
       stop();
     } else {
@@ -42,7 +44,7 @@ function AppContent() {
                       : modeFromPath === "periodo"  ? "/periodo"
                       : "/";
       navigate(targetPath);
-      start(modeFromPath, selectedDate, selectedNumDays);
+      start(modeFromPath, selectedDate, selectedNumDays, selectedStartMinute);
     }
   };
 
@@ -61,6 +63,8 @@ function AppContent() {
     onDateChange: setSelectedDate,
     selectedNumDays,
     onNumDaysChange: setSelectedNumDays,
+    selectedStartMinute,
+    onStartMinuteChange: setSelectedStartMinute,
     cancelFlight,
     realSeconds, // ← nuevo
   };

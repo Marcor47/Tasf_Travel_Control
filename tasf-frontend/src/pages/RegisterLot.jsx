@@ -14,9 +14,9 @@ export default function RegisterLot() {
       <h2 className="text-teal font-bold text-lg mb-1">
         REGISTRO DE LOTES
       </h2>
-      <p className="text-green-400 text-xs mb-4">● STATUS: REGISTRADA</p>
+      <p className="text-green-400 text-xs mb-4">● ESTADO: REGISTRADA</p>
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Formulario */}
         <div className="bg-[#031525] border border-teal/20 rounded p-4">
           <p className="text-teal text-xs font-bold uppercase mb-3">
@@ -50,7 +50,7 @@ export default function RegisterLot() {
               Nombre / Identificador de Cliente
             </label>
             <input name="client" value={form.client} onChange={handle}
-              placeholder="Global Logistics Corp"
+              placeholder="Logística Global S.A."
               className="w-full bg-[#021020] border border-white/10 rounded
                          px-2 py-1.5 text-xs text-gray-300
                          focus:outline-none focus:border-teal"/>
@@ -134,9 +134,9 @@ export default function RegisterLot() {
             Ruta Planeada
           </p>
           {[
-            { n:"01", code:"JF KENNEDY (JFK)", role:"Origin Hub — Registration" },
-            { n:"02", code:"HEATHROW (LHR)",   role:"Mid-Point Transfer Point" },
-            { n:"03", code:"CHANGI (SIN)",      role:"Destination Arrival & Sorting" },
+            { n:"01", code:"JF KENNEDY (JFK)", role:"Centro de Origen — Registro" },
+            { n:"02", code:"HEATHROW (LHR)",   role:"Punto de Transbordo Intermedio" },
+            { n:"03", code:"CHANGI (SIN)",      role:"Llegada y Clasificación en Destino" },
           ].map(r => (
             <div key={r.n}
               className="flex items-center gap-2 mb-1 text-xs">

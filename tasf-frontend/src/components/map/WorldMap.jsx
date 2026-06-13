@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useMemo } from "react";
 import {
   ComposableMap, Geographies, Geography,
   Marker, Line
@@ -23,6 +23,59 @@ function injectAnimation() {
 }
 
 function clamp01(v) { return Math.max(0, Math.min(1, v)); }
+
+/**
+ * Reloj simulado suavizado.
+ *
+ * El backend solo emite `simulatedMinute` cada ~800 ms, así que usarlo
+ * directamente hace que los aviones salten a tirones. Aquí interpolamos
+ * con requestAnimationFrame: medimos la velocidad entre las dos últimas
+ * muestras y extrapolamos hacia adelante, con un tope de un paso para no
+ * dispararnos si el stream se atasca. El resultado es un minuto continuo
+ * que avanza de forma fluida entre emisiones.
+ */
+function useSmoothMinute(targetMinute, running) {
+  const [display, setDisplay] = useState(targetMinute);
+  // Inicialización perezosa del ref (sin llamar a performance.now en render)
+  const sample = useRef(null);
+  if (sample.current === null) {
+    sample.current = { prevVal: targetMinute, prevT: 0, curVal: targetMinute, curT: 0 };
+  }
+
+  // Registrar cada nueva muestra del backend
+  useEffect(() => {
+    const now = performance.now();
+    const s = sample.current;
+    // Si el reloj retrocede (nueva simulación) reseteamos sin extrapolar
+    if (targetMinute < s.curVal) {
+      sample.current = { prevVal: targetMinute, prevT: now, curVal: targetMinute, curT: now };
+      return;
+    }
+    s.prevVal = s.curVal;
+    s.prevT   = s.curT;
+    s.curVal  = targetMinute;
+    s.curT    = now;
+  }, [targetMinute]);
+
+  useEffect(() => {
+    if (!running) return;
+    let raf;
+    const tick = () => {
+      const s    = sample.current;
+      const dt   = s.curT - s.prevT;
+      const rate = dt > 0 ? (s.curVal - s.prevVal) / dt : 0; // min simulados por ms
+      const step = Math.max(0, s.curVal - s.prevVal);
+      const elapsed = performance.now() - s.curT;
+      const est  = Math.min(s.curVal + rate * elapsed, s.curVal + step);
+      setDisplay(est); // dentro del callback de rAF (asíncrono)
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [running, targetMinute]);
+
+  return running ? display : targetMinute;
+}
 
 function planePosition(from, to, route, simulatedMinute) {
   const dep      = route.departureMinute ?? simulatedMinute;
@@ -73,6 +126,11 @@ function planePosition(from, to, route, simulatedMinute) {
   return { coordinates: [lng, lat], angle };
 }
 
+// Identidad estable de una ruta. RouteState no trae flightId, así que se
+// distingue por origen-destino + minuto de salida: así dos vuelos concurrentes
+// en la misma ruta no se colapsan, y los eventos duplicados del mismo vuelo sí.
+const routeKey = r => r.flightId || `${r.from}-${r.to}-${r.departureMinute ?? 0}`;
+
 export default function WorldMap({
   airports = [],
   routes = [],
@@ -81,6 +139,7 @@ export default function WorldMap({
   message = "",
   simulatedMinute = 0,
   activeFlightsCount = 0,
+  highlightCodes = [],
 }) {
   useEffect(() => { injectAnimation(); }, []);
 
@@ -90,20 +149,43 @@ export default function WorldMap({
   const [zoom,       setZoom]       = useState(1);
   const [center,     setCenter]     = useState([20, 10]);
   const [dragging,   setDragging]   = useState(false);
+  // Selección para resaltado: { kind:"airport", code } | { kind:"route", key } | null
+  const [selected,   setSelected]   = useState(null);
 
-  const dragStart = useRef(null);
-  const mapRef    = useRef(null);
+  const dragStart    = useRef(null);
+  const dragMoved    = useRef(false);
+  const mapRef       = useRef(null);
 
-  // ✅ Dedup solo por flightId cuando existe; sin flightId cada vuelo es único
-  const allActive = (!running || routes.length === 0)
-    ? []
-    : routes
-        .filter(r => r.status === "departed")
-        .filter((r, idx, arr) =>
-          !r.flightId
-            ? true
-            : arr.findIndex(x => x.flightId === r.flightId) === idx
-        );
+  // Minuto continuo y suavizado para mover los aviones sin saltos
+  const displayMinute = useSmoothMinute(simulatedMinute, running);
+
+  // Rutas en el aire: salieron (departed), aún no aterrizan según el backend
+  // y, además, el reloj suavizado todavía no alcanza su minuto de llegada.
+  // Esta última condición hace que el avión desaparezca exactamente al llegar,
+  // sin esperar al siguiente broadcast (~800 ms).
+  const allActive = useMemo(() => {
+    if (!running || routes.length === 0) return [];
+    const seen = new Set();
+    return routes
+      .filter(r => r.status === "departed")
+      .filter(r => displayMinute < (r.arrivalMinute ?? Infinity))
+      .filter(r => {
+        const k = routeKey(r);
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+  }, [running, routes, displayMinute]);
+
+  // Selección efectiva: si la ruta seleccionada ya aterrizó y desapareció,
+  // se trata como "sin selección" (derivado, sin tocar el estado).
+  const effectiveSelected = useMemo(() => {
+    if (selected && selected.kind === "route"
+        && !allActive.some(r => routeKey(r) === selected.key)) {
+      return null;
+    }
+    return selected;
+  }, [selected, allActive]);
 
   useEffect(() => {
     const el = mapRef.current;
@@ -119,6 +201,7 @@ export default function WorldMap({
   const handleMouseDown = (e) => {
     if (e.button !== 0) return;
     setDragging(true);
+    dragMoved.current = false;
     dragStart.current = { x: e.clientX, y: e.clientY, center: [...center] };
   };
 
@@ -126,6 +209,10 @@ export default function WorldMap({
     if (!dragging || !dragStart.current) return;
     const dx = (e.clientX - dragStart.current.x) / (zoom * 2);
     const dy = (e.clientY - dragStart.current.y) / (zoom * 2);
+    if (Math.abs(e.clientX - dragStart.current.x) > 3 ||
+        Math.abs(e.clientY - dragStart.current.y) > 3) {
+      dragMoved.current = true;
+    }
     setCenter([
       dragStart.current.center[0] - dx,
       dragStart.current.center[1] + dy,
@@ -135,6 +222,11 @@ export default function WorldMap({
   const handleMouseUp = () => {
     setDragging(false);
     dragStart.current = null;
+  };
+
+  // Click en el fondo del mapa (sin arrastrar) limpia la selección
+  const handleBackgroundClick = () => {
+    if (!dragMoved.current) setSelected(null);
   };
 
   const shownAirports = airports.length > 0 ? airports : STATIC_AIRPORTS;
@@ -150,6 +242,52 @@ export default function WorldMap({
 
   const isCalculating = running && message.startsWith("Planificando");
 
+  // ── Lógica de resaltado ──────────────────────────────────────────────────
+  // Aeropuertos conectados al seleccionado (para resaltar también sus vecinos)
+  const neighborCodes = useMemo(() => {
+    if (!effectiveSelected || effectiveSelected.kind !== "airport") return new Set();
+    const code = effectiveSelected.code;
+    const set = new Set([code]);
+    allActive.forEach(r => {
+      if (r.from === code) set.add(r.to);
+      if (r.to   === code) set.add(r.from);
+    });
+    return set;
+  }, [effectiveSelected, allActive]);
+
+  // Resaltado externo proveniente del filtro de almacenes (código/país/región).
+  // Cuando está activo tiene prioridad sobre la selección por clic.
+  const externalHl = useMemo(() => new Set(highlightCodes), [highlightCodes]);
+  const filtering  = externalHl.size > 0;
+
+  const routeIsHighlighted = (r) => {
+    if (filtering) return externalHl.has(r.from) || externalHl.has(r.to);
+    if (!effectiveSelected) return true;
+    if (effectiveSelected.kind === "airport")
+      return r.from === effectiveSelected.code || r.to === effectiveSelected.code;
+    if (effectiveSelected.kind === "route") return routeKey(r) === effectiveSelected.key;
+    return true;
+  };
+
+  const airportIsHighlighted = (code) => {
+    if (filtering) return externalHl.has(code);
+    if (!effectiveSelected) return true;
+    if (effectiveSelected.kind === "airport") return neighborCodes.has(code);
+    if (effectiveSelected.kind === "route") {
+      const r = allActive.find(x => routeKey(x) === effectiveSelected.key);
+      return !!r && (r.from === code || r.to === code);
+    }
+    return true;
+  };
+
+  const selectAirport = (code) =>
+    setSelected(s => (s && s.kind === "airport" && s.code === code)
+      ? null : { kind: "airport", code });
+
+  const selectRoute = (key) =>
+    setSelected(s => (s && s.kind === "route" && s.key === key)
+      ? null : { kind: "route", key });
+
   return (
     <div
       ref={mapRef}
@@ -161,12 +299,12 @@ export default function WorldMap({
       style={{ cursor: dragging ? "grabbing" : zoom > 1 ? "grab" : "default" }}>
 
       {/* Header */}
-      <div className="flex items-center justify-between px-2 pt-2 pb-1 gap-2">
+      <div className="flex flex-wrap items-center justify-between px-2 pt-2 pb-1 gap-2">
         <p className="text-teal text-[10px] font-bold uppercase tracking-wide flex-shrink-0">
           Monitoreo de Rutas y Posición GPS Real
         </p>
 
-        <div className="flex items-center gap-2 flex-1 justify-center">
+        <div className="flex items-center gap-2 flex-1 justify-center min-w-0">
           {isCalculating && (
             <span className="text-[10px] text-yellow-400 animate-pulse">
               ⚙ {message}
@@ -180,6 +318,21 @@ export default function WorldMap({
               )}
             </span>
           )}
+          {filtering ? (
+            <span className="text-[10px] text-teal flex items-center gap-1">
+              ◉ {externalHl.size} aeropuerto{externalHl.size === 1 ? "" : "s"} resaltado{externalHl.size === 1 ? "" : "s"}
+            </span>
+          ) : effectiveSelected && (
+            <span className="text-[10px] text-teal flex items-center gap-1">
+              ◉ {effectiveSelected.kind === "airport" ? effectiveSelected.code : effectiveSelected.key}
+              <button
+                onClick={() => setSelected(null)}
+                className="ml-1 px-1.5 py-0.5 rounded bg-gray-900/70 border border-white/10
+                           text-gray-400 hover:text-white transition">
+                ✕ Limpiar
+              </button>
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-1 flex-shrink-0">
@@ -189,7 +342,7 @@ export default function WorldMap({
               className="text-[10px] px-2 py-0.5 rounded transition font-medium
                          bg-gray-900/70 text-gray-400 border border-white/10
                          hover:text-white mr-1">
-              ↺ Reset
+              ↺ Reiniciar
             </button>
           )}
           {running && (
@@ -241,6 +394,7 @@ export default function WorldMap({
                 fill="#0a2540"
                 stroke="#1C7293"
                 strokeWidth={0.3}
+                onClick={handleBackgroundClick}
                 style={{
                   default: { outline: "none" },
                   hover:   { outline: "none" },
@@ -250,31 +404,38 @@ export default function WorldMap({
           }
         </Geographies>
 
-        {/* ✅ idx como segundo param del map */}
-        {showLines && activeRoutes.map((r, idx) => {
+        {showLines && activeRoutes.map(r => {
           const from = airportMap[r.from];
           const to   = airportMap[r.to];
           if (!from || !to) return null;
+          const hl = routeIsHighlighted(r);
           return (
-            <Line key={`active-${r.flightId ?? idx}-${r.from}-${r.to}`}
+            <Line key={`active-${routeKey(r)}`}
               from={from} to={to}
-              stroke="#F4A261" strokeWidth={1.2}
+              stroke="#F4A261"
+              strokeWidth={effectiveSelected && hl ? 1.8 : 1.2}
               strokeLinecap="round" strokeDasharray="8 4"
+              opacity={hl ? 1 : 0.12}
               className="route-active"/>
           );
         })}
 
-        {/* ✅ idx como segundo param del map */}
-        {showPlanes && activeRoutes.map((r, idx) => {
+        {showPlanes && activeRoutes.map(r => {
           const from = airportMap[r.from];
           const to   = airportMap[r.to];
           if (!from || !to) return null;
-          const plane = planePosition(from, to, r, simulatedMinute);
+          const plane = planePosition(from, to, r, displayMinute);
+          const hl    = routeIsHighlighted(r);
           return (
             <Marker
-              key={`plane-${r.flightId ?? idx}-${r.from}-${r.to}`}
-              coordinates={plane.coordinates}>
-              <g transform={`rotate(${plane.angle})`} className="route-plane">
+              key={`plane-${routeKey(r)}`}
+              coordinates={plane.coordinates}
+              onClick={(e) => { e.stopPropagation(); selectRoute(routeKey(r)); }}>
+              <g transform={`rotate(${plane.angle})`}
+                 className="route-plane"
+                 opacity={hl ? 1 : 0.15}
+                 style={{ cursor: "pointer" }}>
+                {/* Fuselaje */}
                 <path d="M 10 0 L -6 -1.5 L -8 0 L -6 1.5 Z"
                       fill="#F4A261" stroke="#F4A261" strokeWidth={0.4}/>
                 <path d="M 2 -1 L -3 -8 L -6 -7 L -3 -1 Z"
@@ -297,16 +458,29 @@ export default function WorldMap({
                      : pct > 0.6  ? "#F4A261"
                      : "#1C7293";
           const r    = 3 + Math.round(pct * 4);
+          const hl   = airportIsHighlighted(a.code);
+          const isSel = (filtering && externalHl.has(a.code))
+            || (!filtering && effectiveSelected && effectiveSelected.kind === "airport"
+                && effectiveSelected.code === a.code);
           return (
             <Marker key={a.code}
               coordinates={[a.lng, a.lat]}
-              onClick={() => onAirportClick?.(a)}>
-              <circle r={r} fill={fill} stroke="#fff" strokeWidth={0.8}
+              onClick={(e) => {
+                e.stopPropagation();
+                selectAirport(a.code);
+                onAirportClick?.(a);
+              }}>
+              <circle r={isSel ? r + 1.5 : r}
+                fill={fill}
+                stroke={isSel ? "#2dd4bf" : "#fff"}
+                strokeWidth={isSel ? 1.6 : 0.8}
+                opacity={hl ? 1 : 0.25}
                 style={{ cursor: "pointer" }}/>
               <text textAnchor="middle" y={-(r + 3)}
+                opacity={hl ? 1 : 0.25}
                 style={{
                   fontSize: Math.max(5, 7 / Math.sqrt(zoom)),
-                  fill: "#9DBDCC",
+                  fill: isSel ? "#2dd4bf" : "#9DBDCC",
                   fontFamily: "sans-serif",
                   pointerEvents: "none",
                 }}>

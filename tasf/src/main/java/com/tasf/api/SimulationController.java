@@ -43,6 +43,11 @@ public class SimulationController {
         return simulationService.getAvailableDates();
     }
 
+    @GetMapping("/flights")
+    public List<SimulationService.FlightInfo> flights() {
+        return simulationService.getFlights();
+    }
+
     @PostMapping("/cancelFlight")
     public SimulationService.SimulationState cancelFlight(
             @RequestBody SimulationService.CancelRequest request) {

@@ -33,8 +33,11 @@ export function useSimulation() {
   const [state, setState]               = useState(emptyState);
   const [history, setHistory]           = useState([]);
   const [availableDates, setAvailableDates] = useState([]);
+  const [flights, setFlights]               = useState([]);
   const [selectedDate, setSelectedDate] = useState("");
   const [selectedNumDays, setSelectedNumDays] = useState(5);
+  // Minuto de inicio dentro del día seleccionado (0–1439). 0 = inicio del día.
+  const [selectedStartMinute, setSelectedStartMinute] = useState(0);
 
 
   const prevEventsRef    = useRef([]);
@@ -83,6 +86,11 @@ export function useSimulation() {
       })
       .catch(() => {});
 
+    fetch(`${API_BASE}/api/simulation/flights`)
+      .then(r => (r.ok ? r.json() : []))
+      .then(setFlights)
+      .catch(() => {});
+
     connectSSE();
 
     return () => {
@@ -125,20 +133,36 @@ export function useSimulation() {
     });
   }, [state.events]);
 
-const start = useCallback(async (mode, startDate, numDays) => {
+const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
   try {
     setHistory([]);
     prevEventsRef.current = [];
     setState(prev => ({ ...prev, clock: "Dia --  00:00" })); // ← línea nueva
-    const blockSeconds = mode === "diadia" ? 3600 : 30;
+    // Velocidad por bloque:
+    //  · diadia  → 3600 s (tiempo real: 1 h sim = 1 h real)
+    //  · periodo → adaptable a numDays para que la animación quepa en ≤30 min
+    //              (1800 s objetivo / nº de bloques = numDays·24). Mínimo 8 s.
+    //              Nota: el presupuesto ALNS por bloque puede seguir dominando
+    //              el tiempo real total y requerir ajuste aparte.
+    //  · colapso → 30 s (duración abierta, no se puede acotar a 30 min)
+    let blockSeconds;
+    if (mode === "diadia") {
+      blockSeconds = 3600;
+    } else if (mode === "periodo") {
+      const days = numDays || 5;
+      blockSeconds = Math.max(8, Math.min(30, Math.floor(1800 / (days * 24))));
+    } else {
+      blockSeconds = 30;
+    }
     const response = await fetch(`${API_BASE}/api/simulation/start`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         mode,
         blockSeconds,
-        startDate: startDate || null,
-        numDays:   numDays   || null,
+        startDate:        startDate || null,
+        numDays:          numDays   || null,
+        startMinuteOfDay: startMinute || 0,
       }),
     });
     if (response.ok) {
@@ -207,10 +231,13 @@ const start = useCallback(async (mode, startDate, numDays) => {
     ...state,
     history,
     availableDates,
+    flights,
     selectedDate,
     setSelectedDate,
     selectedNumDays,
     setSelectedNumDays,
+    selectedStartMinute,
+    setSelectedStartMinute,
     start,
     stop,
     cancelFlight,

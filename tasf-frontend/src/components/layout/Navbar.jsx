@@ -50,8 +50,16 @@ export default function Navbar({ running, onToggle, onModeClick, clock, mode, si
     ? `${clock}:${String(seconds).padStart(2, "0")}`
     : clock;
 
+  // ¿Hay una simulación corriendo en un modo distinto al de la pestaña actual?
+  // En ese caso el control no debe permitir detenerla ni iniciar otra: solo
+  // informa que sigue en curso y que hay que ir a esa pestaña para controlarla.
+  const runningElsewhere = running && simulationMode && simulationMode !== mode;
+  const otherModeLabel   = runningElsewhere
+    ? (modeMap[simulationMode]?.label ?? simulationMode)
+    : "";
+
   return (
-    <nav className="flex items-center justify-between px-4 py-2
+    <nav className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-3 sm:px-4 py-2
                     bg-[#010f1e] border-b border-teal/30 text-sm">
       {/* Logo */}
       <span className="font-bold text-teal tracking-widest text-xs">
@@ -94,13 +102,23 @@ export default function Navbar({ running, onToggle, onModeClick, clock, mode, si
       {/* Reloj + Start/Pause */}
       <div className="flex items-center gap-3">
         <span className="text-gray-400 text-xs font-mono">{clockDisplay}</span>
-        <button onClick={onToggle}
-          className={`text-white text-xs px-3 py-1 rounded flex items-center gap-1
-                      transition ${running
-                        ? "bg-red-700 hover:bg-red-600"
-                        : "bg-teal hover:bg-teal/80"}`}>
-          {running ? <><Pause size={12}/> PAUSE</> : <><Play size={12}/> START</>}
-        </button>
+        {runningElsewhere ? (
+          <span
+            title={`Hay una simulación en curso en modo ${otherModeLabel}. Cámbiate a esa pestaña para pausarla.`}
+            className="text-yellow-400 text-xs px-3 py-1 rounded flex items-center gap-1
+                       border border-yellow-700/50 bg-yellow-900/20 whitespace-nowrap cursor-default">
+            <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse"/>
+            {otherModeLabel} en curso
+          </span>
+        ) : (
+          <button onClick={onToggle}
+            className={`text-white text-xs px-3 py-1 rounded flex items-center gap-1
+                        transition ${running
+                          ? "bg-red-700 hover:bg-red-600"
+                          : "bg-teal hover:bg-teal/80"}`}>
+            {running ? <><Pause size={12}/> PAUSAR</> : <><Play size={12}/> INICIAR</>}
+          </button>
+        )}
         <Settings size={16}
           className="text-gray-500 cursor-pointer hover:text-white transition"/>
       </div>

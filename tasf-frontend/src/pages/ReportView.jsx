@@ -74,7 +74,7 @@ export default function ReportView({ simulation }) {
       </div>
 
       {/* KPIs principales */}
-      <div className="grid grid-cols-4 gap-3 mb-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
         {[
           {
             label: "Total Maletas",
@@ -112,7 +112,7 @@ export default function ReportView({ simulation }) {
         ))}
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
         {/* Gráfica de flujo en tiempo real */}
         <div className="bg-[#031525] border border-teal/20 rounded p-3">

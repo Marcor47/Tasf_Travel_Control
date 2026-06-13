@@ -57,7 +57,7 @@ export default function LiveMonitor({ simulation }) {
       </div>
 
       {/* KPIs superiores */}
-      <div className="grid grid-cols-4 gap-2 mb-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4">
         {[
           ["Vuelos Activos",    safeKpis.activeFlights,           "text-white"],
           ["Ocupación Red",     `${safeKpis.occupancyPercent}%`,  safeKpis.occupancyPercent  > 85 ? "text-red-400" : safeKpis.occupancyPercent  > 60 ? "text-yellow-400" : "text-white"],
@@ -72,7 +72,7 @@ export default function LiveMonitor({ simulation }) {
         ))}
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
         {/* Panel izquierdo: Capacidad de Almacenes */}
         <div className="bg-[#031525] border border-teal/20 rounded p-3">
