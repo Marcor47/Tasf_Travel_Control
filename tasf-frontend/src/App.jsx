@@ -16,7 +16,8 @@ function AppContent() {
     start, stop, history,
     availableDates, selectedDate, setSelectedDate,
     selectedNumDays, setSelectedNumDays,
-    cancelFlight,  // ← falta esta línea
+    cancelFlight,
+    realSeconds, // ← nuevo
   } = simulation;
 
   const { pathname } = useLocation();
@@ -60,7 +61,8 @@ function AppContent() {
     onDateChange: setSelectedDate,
     selectedNumDays,
     onNumDaysChange: setSelectedNumDays,
-    cancelFlight,  // ← añadir
+    cancelFlight,
+    realSeconds, // ← nuevo
   };
 
   return (

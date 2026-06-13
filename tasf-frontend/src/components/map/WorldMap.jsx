@@ -84,6 +84,7 @@ export default function WorldMap({
   running = false,
   message = "",
   simulatedMinute = 0,
+  activeFlightsCount = 0, // ← nuevo
 }) {
   useEffect(() => { injectAnimation(); }, []);
 
@@ -102,7 +103,12 @@ export default function WorldMap({
     ? []
     : routes.filter(r =>
         r.status === "departed" &&
-        (r.arrivalMinute == null || simulatedMinute <= r.arrivalMinute)
+        r.departureMinute != null &&
+        r.departureMinute <= simulatedMinute &&
+        (r.arrivalMinute == null || simulatedMinute < r.arrivalMinute)
+      ).filter((r, idx, arr) =>
+        // deduplicar por flightId para que el límite de 40 sea exacto
+        arr.findIndex(x => (x.flightId || `${x.from}-${x.to}`) === (r.flightId || `${r.from}-${r.to}`)) === idx
       );
 
   useEffect(() => {
@@ -186,8 +192,8 @@ export default function WorldMap({
           )}
           {running && !isCalculating && (
             <span className="text-[10px] text-gray-400">
-              ✈ <span className="text-white font-bold">{allActive.length}</span> vuelos activos
-              {(showLines || showPlanes) && lineMode === "limited" && allActive.length > 40 && (
+              ✈ <span className="text-white font-bold">{activeFlightsCount}</span> vuelos activos
+              {(showLines || showPlanes) && lineMode === "limited" && activeFlightsCount > 40 && (
                 <span className="text-gray-600 ml-1">(mostrando 40 en mapa)</span>
               )}
             </span>

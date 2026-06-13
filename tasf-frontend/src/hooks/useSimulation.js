@@ -180,6 +180,29 @@ const start = useCallback(async (mode, startDate, numDays) => {
     }
   }, []);
 
+
+
+  const [realSeconds, setRealSeconds] = useState(0);
+  const startTimeRef = useRef(null);
+
+  useEffect(() => {
+    if (state.running) {
+      if (!startTimeRef.current) startTimeRef.current = Date.now();
+    } else {
+      startTimeRef.current = null;
+      setRealSeconds(0);
+    }
+  }, [state.running]);
+
+  useEffect(() => {
+    if (!state.running) return;
+    const id = setInterval(() => {
+      setRealSeconds(Math.floor((Date.now() - (startTimeRef.current ?? Date.now())) / 1000));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [state.running]);
+
+
   return {
     ...state,
     history,
@@ -190,6 +213,7 @@ const start = useCallback(async (mode, startDate, numDays) => {
     setSelectedNumDays,
     start,
     stop,
-    cancelFlight, // ← nuevo
+    cancelFlight,
+    realSeconds, // ← nuevo
   };
 }
