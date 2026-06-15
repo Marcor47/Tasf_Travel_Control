@@ -48,15 +48,21 @@ function useSmoothMinute(targetMinute, running) {
   useEffect(() => {
     const now = performance.now();
     const r = s.current;
-    if (targetMinute < r.curVal) {              // nueva simulación → reset
+    const diff = targetMinute - r.curVal;
+    const dt   = now - r.curT;
+    const inst = dt > 0 ? diff / dt : 0;
+
+    // Reset (sin extrapolar) si: la simulación retrocede (nueva corrida),
+    // es la primera muestra real (curT aún no establecido), o el salto
+    // implica una velocidad absurda (ej. salto inicial de 0 al minuto
+    // real de arranque del dataset).
+    const MAX_REASONABLE_RATE = 0.05; // ~50 min simulados por segundo, generoso
+    if (diff < 0 || r.curT === 0 || Math.abs(inst) > MAX_REASONABLE_RATE) {
       r.curVal = targetMinute; r.curT = now; r.rate = 0; r.disp = targetMinute;
       return;
     }
-    const dt = now - r.curT;
-    if (r.curT > 0 && dt > 0) {
-      const inst = (targetMinute - r.curVal) / dt;       // min simulados por ms
-      r.rate = r.rate > 0 ? r.rate * 0.65 + inst * 0.35 : inst;
-    }
+
+    r.rate = r.rate > 0 ? r.rate * 0.65 + inst * 0.35 : inst;
     r.curVal = targetMinute;
     r.curT   = now;
   }, [targetMinute]);
