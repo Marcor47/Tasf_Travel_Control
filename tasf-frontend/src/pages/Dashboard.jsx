@@ -125,60 +125,6 @@ export default function Dashboard({
     <div className="flex flex-col gap-2 p-2 h-[calc(100vh-72px)]
                     overflow-y-auto md:overflow-hidden">
 
-      {/* ── Barra de configuración (colapsable, cerrada al inicio) ────────── */}
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 bg-[#031525] border border-teal/20
-                      rounded px-3 py-1.5 flex-shrink-0">
-        <button onClick={() => setConfigOpen(o => !o)}
-          className="text-teal text-xs font-bold uppercase flex items-center gap-1
-                     hover:text-white transition">
-          <span>{configOpen ? "▾" : "▸"}</span> Configuración
-        </button>
-
-        {!configOpen && (
-          <span className="text-gray-500 text-xs truncate">
-            {cfg.selector}: <span className="text-gray-300">{selectedDate || "—"}</span>
-            {" "}a las <span className="text-gray-300">{startTimeValue}</span> {cfg.suffix}
-          </span>
-        )}
-
-        {configOpen && (
-          <>
-            <span className="text-teal text-xs font-bold uppercase whitespace-nowrap">
-              {cfg.selector}
-            </span>
-            {availableDates.length === 0 ? (
-              <span className="text-gray-600 text-xs italic">Cargando fechas...</span>
-            ) : (
-              <select
-                value={selectedDate}
-                onChange={e => onDateChange?.(e.target.value)}
-                disabled={running}
-                className="bg-[#021020] border border-white/10 rounded px-2 py-1
-                           text-xs text-gray-300 focus:outline-none focus:border-teal
-                           disabled:opacity-40 disabled:cursor-not-allowed">
-                {availableDates.map(d => (
-                  <option key={d} value={d}>{d}</option>
-                ))}
-              </select>
-            )}
-            <span className="text-gray-500 text-xs">a las</span>
-            <input
-              type="time"
-              value={startTimeValue}
-              onChange={handleStartTimeChange}
-              disabled={running}
-              title="Hora y minuto de inicio dentro del día"
-              className="bg-[#021020] border border-white/10 rounded px-2 py-1
-                         text-xs text-gray-300 focus:outline-none focus:border-teal
-                         disabled:opacity-40 disabled:cursor-not-allowed"
-            />
-            {cfg.suffix && (
-              <span className="text-gray-500 text-xs">{cfg.suffix}</span>
-            )}
-          </>
-        )}
-      </div>
-
       {/* ── Paneles principales ───────────────────────────────────────────── */}
       <div className="flex flex-col md:flex-row gap-2 flex-1 min-h-0">
 
@@ -212,6 +158,61 @@ export default function Dashboard({
           highlightCodes={focusCodes}
           onAirportClick={handleAirportClick}
           onClearSelection={clearFocus}/>
+
+          {/* ── Configuración: ventana flotante colapsable sobre el mapa ───── */}
+          <div className="absolute left-2 top-11 z-20 bg-[#031525]/95 border border-teal/20
+                          rounded px-2 py-1.5 max-w-[calc(100%-1rem)]
+                          flex flex-wrap items-center gap-x-3 gap-y-1">
+            <button onClick={() => setConfigOpen(o => !o)}
+              className="text-teal text-xs font-bold uppercase flex items-center gap-1
+                         hover:text-white transition">
+              <span>{configOpen ? "▾" : "▸"}</span> Configuración
+            </button>
+
+            {!configOpen && (
+              <span className="text-gray-500 text-xs truncate">
+                {cfg.selector}: <span className="text-gray-300">{selectedDate || "—"}</span>
+                {" "}a las <span className="text-gray-300">{startTimeValue}</span> {cfg.suffix}
+              </span>
+            )}
+
+            {configOpen && (
+              <>
+                <span className="text-teal text-xs font-bold uppercase whitespace-nowrap">
+                  {cfg.selector}
+                </span>
+                {availableDates.length === 0 ? (
+                  <span className="text-gray-600 text-xs italic">Cargando fechas...</span>
+                ) : (
+                  <select
+                    value={selectedDate}
+                    onChange={e => onDateChange?.(e.target.value)}
+                    disabled={running}
+                    className="bg-[#021020] border border-white/10 rounded px-2 py-1
+                               text-xs text-gray-300 focus:outline-none focus:border-teal
+                               disabled:opacity-40 disabled:cursor-not-allowed">
+                    {availableDates.map(d => (
+                      <option key={d} value={d}>{d}</option>
+                    ))}
+                  </select>
+                )}
+                <span className="text-gray-500 text-xs">a las</span>
+                <input
+                  type="time"
+                  value={startTimeValue}
+                  onChange={handleStartTimeChange}
+                  disabled={running}
+                  title="Hora y minuto de inicio dentro del día"
+                  className="bg-[#021020] border border-white/10 rounded px-2 py-1
+                             text-xs text-gray-300 focus:outline-none focus:border-teal
+                             disabled:opacity-40 disabled:cursor-not-allowed"
+                />
+                {cfg.suffix && (
+                  <span className="text-gray-500 text-xs">{cfg.suffix}</span>
+                )}
+              </>
+            )}
+          </div>
 
           {showCollapse && (
             <CollapseAlert
