@@ -59,6 +59,8 @@ export default function Dashboard({
   // Paneles laterales colapsables — al inicio ambos cerrados para ver el mapa
   const [leftOpen,  setLeftOpen]  = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
+  // Barra de configuración (fecha/hora) — cerrada al inicio
+  const [configOpen, setConfigOpen] = useState(false);
 
 
   const kpis         = simulation?.kpis ?? {};
@@ -123,78 +125,57 @@ export default function Dashboard({
     <div className="flex flex-col gap-2 p-2 h-[calc(100vh-72px)]
                     overflow-y-auto md:overflow-hidden">
 
-      {/* ── Selector de fecha + contadores ───────────────────────────────── */}
+      {/* ── Barra de configuración (colapsable, cerrada al inicio) ────────── */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 bg-[#031525] border border-teal/20
-                      rounded px-3 py-2 flex-shrink-0">
-        <span className="text-teal text-xs font-bold uppercase whitespace-nowrap">
-          {cfg.selector}
-        </span>
+                      rounded px-3 py-1.5 flex-shrink-0">
+        <button onClick={() => setConfigOpen(o => !o)}
+          className="text-teal text-xs font-bold uppercase flex items-center gap-1
+                     hover:text-white transition">
+          <span>{configOpen ? "▾" : "▸"}</span> Configuración
+        </button>
 
-        {availableDates.length === 0 ? (
-          <span className="text-gray-600 text-xs italic">Cargando fechas...</span>
-        ) : (
-          <select
-            value={selectedDate}
-            onChange={e => onDateChange?.(e.target.value)}
-            disabled={running}
-            className="bg-[#021020] border border-white/10 rounded px-2 py-1
-                       text-xs text-gray-300 focus:outline-none focus:border-teal
-                       disabled:opacity-40 disabled:cursor-not-allowed">
-            {availableDates.map(d => (
-              <option key={d} value={d}>{d}</option>
-            ))}
-          </select>
+        {!configOpen && (
+          <span className="text-gray-500 text-xs truncate">
+            {cfg.selector}: <span className="text-gray-300">{selectedDate || "—"}</span>
+            {" "}a las <span className="text-gray-300">{startTimeValue}</span> {cfg.suffix}
+          </span>
         )}
 
-        {/* Hora y minuto de inicio (opcional) */}
-        <span className="text-gray-500 text-xs">a las</span>
-        <input
-          type="time"
-          value={startTimeValue}
-          onChange={handleStartTimeChange}
-          disabled={running}
-          title="Hora y minuto de inicio dentro del día"
-          className="bg-[#021020] border border-white/10 rounded px-2 py-1
-                     text-xs text-gray-300 focus:outline-none focus:border-teal
-                     disabled:opacity-40 disabled:cursor-not-allowed"
-        />
-
-        {cfg.suffix && (
-          <span className="text-gray-500 text-xs">{cfg.suffix}</span>
-        )}
-
-        {/* ── Relojes: hora simulada / transcurrido simulado / hora real /
-               transcurrido real ──────────────────────────────────────────── */}
-        {running && (
-          <div className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-1">
-            <div className="text-center">
-              <p className="text-gray-500 text-[9px] uppercase leading-none">Hora simulada</p>
-              <p className="text-teal text-xs font-mono font-bold">
-                {simClock}
-              </p>
-            </div>
-            <div className="text-center">
-              <p className="text-gray-500 text-[9px] uppercase leading-none">Tiempo simulado transcurrido</p>
-              <p className="text-teal text-xs font-mono font-bold">
-                {formatSimTime(simElapsedMinutes)}
-              </p>
-            </div>
-            <div className="text-center">
-              <p className="text-gray-500 text-[9px] uppercase leading-none">Hora real</p>
-              <p className="text-white text-xs font-mono font-bold">
-                {realNow.toLocaleTimeString("es-ES")}
-              </p>
-            </div>
-            <div className="text-center">
-              <p className="text-gray-500 text-[9px] uppercase leading-none">Tiempo real transcurrido</p>
-              <p className="text-white text-xs font-mono font-bold">
-                {formatRealTime(realSeconds)}
-              </p>
-            </div>
-            {simulation?.message === "Pausado"
-              ? <span className="text-amber-400 text-xs">❚❚ Pausado</span>
-              : <span className="text-green-400 text-xs animate-pulse">● En curso</span>}
-          </div>
+        {configOpen && (
+          <>
+            <span className="text-teal text-xs font-bold uppercase whitespace-nowrap">
+              {cfg.selector}
+            </span>
+            {availableDates.length === 0 ? (
+              <span className="text-gray-600 text-xs italic">Cargando fechas...</span>
+            ) : (
+              <select
+                value={selectedDate}
+                onChange={e => onDateChange?.(e.target.value)}
+                disabled={running}
+                className="bg-[#021020] border border-white/10 rounded px-2 py-1
+                           text-xs text-gray-300 focus:outline-none focus:border-teal
+                           disabled:opacity-40 disabled:cursor-not-allowed">
+                {availableDates.map(d => (
+                  <option key={d} value={d}>{d}</option>
+                ))}
+              </select>
+            )}
+            <span className="text-gray-500 text-xs">a las</span>
+            <input
+              type="time"
+              value={startTimeValue}
+              onChange={handleStartTimeChange}
+              disabled={running}
+              title="Hora y minuto de inicio dentro del día"
+              className="bg-[#021020] border border-white/10 rounded px-2 py-1
+                         text-xs text-gray-300 focus:outline-none focus:border-teal
+                         disabled:opacity-40 disabled:cursor-not-allowed"
+            />
+            {cfg.suffix && (
+              <span className="text-gray-500 text-xs">{cfg.suffix}</span>
+            )}
+          </>
         )}
       </div>
 
@@ -256,6 +237,28 @@ export default function Dashboard({
             <p>{simulation?.blockStart || "---"} - {simulation?.blockEnd || "---"}</p>
             <p>{simulation?.message}</p>
           </div>
+
+          {/* ── Relojes flotantes (esquina inferior derecha) ──────────────── */}
+          {running && (
+            <div className="absolute right-3 bottom-3 bg-[#021020]/90 border border-teal/20
+                            rounded px-2 py-1 z-10 flex flex-wrap items-center gap-x-3 gap-y-0.5
+                            max-w-[calc(100%-1.5rem)] justify-end">
+              {[
+                ["Hora sim.",    simClock,                            "text-teal"],
+                ["Sim. transc.", formatSimTime(simElapsedMinutes),   "text-teal"],
+                ["Hora real",    realNow.toLocaleTimeString("es-ES"), "text-white"],
+                ["Real transc.", formatRealTime(realSeconds),        "text-white"],
+              ].map(([label, value, color]) => (
+                <div key={label} className="text-center">
+                  <p className="text-gray-500 text-[8px] uppercase leading-none">{label}</p>
+                  <p className={`text-[11px] font-mono font-bold leading-tight ${color}`}>{value}</p>
+                </div>
+              ))}
+              {simulation?.message === "Pausado"
+                ? <span className="text-amber-400 text-[10px]">❚❚ Pausado</span>
+                : <span className="text-green-400 text-[10px] animate-pulse">● En curso</span>}
+            </div>
+          )}
         </div>
 
         {/* Panel derecho — Almacenes (colapsable) */}

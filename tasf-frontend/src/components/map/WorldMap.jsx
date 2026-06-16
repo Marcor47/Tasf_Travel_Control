@@ -147,8 +147,8 @@ const routeKey = r => r.flightId || `${r.from}-${r.to}-${r.departureMinute ?? 0}
 
 // Vista inicial del mapa: centra y acerca a la franja donde están los
 // aeropuertos del dataset (sin impedir el zoom/arrastre manual posterior).
-const DEFAULT_CENTER = [5, 18];
-const DEFAULT_ZOOM   = 1.35;
+const DEFAULT_CENTER = [8, 20];
+const DEFAULT_ZOOM   = 1.8;
 
 // Semáforo de ocupación: verde casi vacío, ámbar a media carga, rojo casi lleno.
 function loadColor(pct) {
