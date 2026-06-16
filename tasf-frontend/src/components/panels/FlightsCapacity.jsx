@@ -17,41 +17,42 @@ function hhmm(minute) {
  * origen-destino-hora de salida. Las maletas se suman por vuelo (un mismo vuelo
  * puede llevar varios grupos de lotes).
  */
-export default function FlightsCapacity({ flights = [], routes = [], running = false, focusCodes = [] }) {
-  // Capacidad por vuelo: clave origen-destino-horaSalida
-  const capByKey = useMemo(() => {
-    const m = {};
-    for (const f of flights) {
-      m[`${f.origin}-${f.destination}-${f.departureClock}`] = f.capacity;
-    }
-    return m;
-  }, [flights]);
-
-  // Agrupar las rutas activas por vuelo y sumar maletas. Si hay un aeropuerto
-  // en foco, mostrar solo los vuelos que entran o salen de él.
+export default function FlightsCapacity({ routes = [], upcoming = [], running = false, focusCodes = [] }) {
+  // Cada ruta activa del backend ya es un vuelo con su capacidad y carga total.
+  // Si hay un aeropuerto en foco, mostrar solo los vuelos que entran o salen.
   const activeFlights = useMemo(() => {
     const focus = new Set(focusCodes);
-    const groups = {};
-    for (const r of routes) {
-      if (r.status !== "departed") continue;
-      if (focus.size > 0 && !focus.has(r.from) && !focus.has(r.to)) continue;
-      const dep = hhmm(r.departureMinute);
-      const key = `${r.from}-${r.to}-${dep}`;
-      if (!groups[key]) {
-        groups[key] = {
-          key, from: r.from, to: r.to, departure: dep,
-          bags: 0, capacity: capByKey[key] ?? null,
+    return routes
+      .filter(r => r.status === "departed")
+      .filter(r => focus.size === 0 || focus.has(r.from) || focus.has(r.to))
+      .map(r => {
+        const cap = r.capacity || 0;
+        return {
+          key: r.flightId || `${r.from}-${r.to}-${r.departureMinute}`,
+          from: r.from, to: r.to, departure: hhmm(r.departureMinute),
+          bags: r.bags || 0, capacity: cap || null,
+          pct: cap > 0 ? Math.round(((r.bags || 0) / cap) * 100) : null,
         };
-      }
-      groups[key].bags += r.bags || 0;
-    }
-    return Object.values(groups)
-      .map(g => ({
-        ...g,
-        pct: g.capacity ? Math.round((g.bags / g.capacity) * 100) : null,
-      }))
+      })
       .sort((a, b) => (b.pct ?? -1) - (a.pct ?? -1));
-  }, [routes, capByKey, focusCodes]);
+  }, [routes, focusCodes]);
+
+  // Vuelos PLANIFICADOS próximos (aún no despegan) con maletas asignadas —
+  // el registro de lo que el sistema planea. Respeta el foco de aeropuertos.
+  const plannedFlights = useMemo(() => {
+    const focus = new Set(focusCodes);
+    return upcoming
+      .filter(u => (u.assigned || 0) > 0)
+      .filter(u => focus.size === 0 || focus.has(u.origin) || focus.has(u.destination))
+      .map(u => ({
+        key: u.flightId,
+        from: u.origin, to: u.destination,
+        departure: (u.departureClock || "").split("  ")[1] || u.departureClock,
+        bags: u.assigned || 0, capacity: u.capacity || 0,
+        pct: u.capacity ? Math.round(((u.assigned || 0) / u.capacity) * 100) : null,
+      }))
+      .slice(0, 10);
+  }, [upcoming, focusCodes]);
 
   return (
     <div className="bg-[#031525] border border-teal/20 rounded p-2 mt-2">
@@ -72,12 +73,13 @@ export default function FlightsCapacity({ flights = [], routes = [], running = f
         <div className="flex flex-col gap-2 max-h-72 overflow-y-auto">
           {activeFlights.map(f => {
             const pct      = f.pct;
+            const empty    = (f.bags || 0) === 0;        // vuelo programado sin maletas
             const clamp    = pct == null ? 0 : Math.min(100, pct);
-            const color    = pct == null ? null : getWarehouseColor(pct);
+            const color    = empty || pct == null ? null : getWarehouseColor(pct);
             const barColor = color === "green" ? "bg-green-500"
                            : color === "amber" ? "bg-yellow-500"
                            : color === "red"   ? "bg-red-500"
-                           : "bg-gray-600";
+                           : "bg-gray-600";       // gris = vacío
             const txtColor = color === "green" ? "text-green-400"
                            : color === "amber" ? "text-yellow-400"
                            : color === "red"   ? "text-red-400"
@@ -110,6 +112,32 @@ export default function FlightsCapacity({ flights = [], routes = [], running = f
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* ── Vuelos planificados (próximos, aún sin despegar) ──────────────── */}
+      {plannedFlights.length > 0 && (
+        <div className="mt-3 pt-2 border-t border-white/10">
+          <p className="text-gray-500 text-[10px] font-bold uppercase mb-1">
+            Planificados (próximos)
+          </p>
+          <div className="flex flex-col gap-1 max-h-40 overflow-y-auto">
+            {plannedFlights.map(f => (
+              <div key={f.key} className="flex items-center justify-between text-[10px]">
+                <span className="flex items-center gap-1 min-w-0">
+                  <span className="text-blue-400">⌛</span>
+                  <span className="text-teal">{f.from}</span>
+                  <span className="text-gray-600">→</span>
+                  <span className="text-gray-200">{f.to}</span>
+                  <span className="text-gray-600 font-mono ml-1">{f.departure}</span>
+                </span>
+                <span className="text-gray-400 tabular-nums flex-shrink-0">
+                  {f.bags.toLocaleString()}/{f.capacity.toLocaleString()}
+                  {f.pct != null && <span className="text-gray-600 ml-1">({f.pct}%)</span>}
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>

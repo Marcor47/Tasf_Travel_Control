@@ -58,6 +58,8 @@ public class SimulationService {
     private final ShipmentRepository repoShipments = new ShipmentRepository();
     private volatile Map<String, Airport> cachedAirports = null;
     private volatile List<FlightInfo>     cachedFlights  = null;
+    private volatile Map<String, Integer> flightCapacityById = Map.of();
+    private volatile List<FlightInstance> scheduledFlights   = List.of();
 
     private volatile SimulationState state = SimulationState.initial();
 
@@ -278,6 +280,9 @@ public class SimulationService {
             List<FlightInstance> flights  = repoFlights.loadFlights("data/planes_vuelo.txt", airports);
             PlanningContext      context  = new PlanningContext(airports, flights,
                                                                 ScenarioConfig.defaultWeek4());
+            flightCapacityById = flights.stream().collect(Collectors.toMap(
+                    FlightInstance::getId, FlightInstance::getCapacity, (a, b) -> a));
+            scheduledFlights = flights;
 
             // 2. Encontrar ventana de días
             int daysToLoad = daysForMode(request.mode(), request.numDaysOrDefault(5));
@@ -527,7 +532,7 @@ public class SimulationService {
                             })
                             .mapToInt(BaggageLot::getQuantity).sum();
 
-                    int                activeFlights = countActiveFlights(events, simulatedNow);
+                    int                activeFlights = countActiveFlights(simulatedNow);
                     List<AirportState> airportStates = airportStates(airports, solution, simulatedNow);
                     Kpis               kpis          = buildKpis(
                             prevBlockTotal   + dynTotal,
@@ -554,9 +559,11 @@ public class SimulationService {
                             : storageCollapse ? "⚠ Capacidad de almacén excedida"
                             : "⚠ Maletas sin ruta viable dentro del plazo";
 
-                    List<UpcomingFlight> upcoming = "diadia".equals(request.mode())
-                            ? buildUpcomingFlights(context, solution, simulatedNow)
-                            : List.of();
+                    // Vuelos planificados próximos (con sus maletas asignadas) —
+                    // el "registro de lo que el sistema planea". Se calcula en
+                    // todos los modos para alimentar las tarjetas de planificados.
+                    List<UpcomingFlight> upcoming =
+                            buildUpcomingFlights(context, solution, simulatedNow);
 
                     state = new SimulationState(
                             true, request.mode(),
@@ -852,13 +859,17 @@ public class SimulationService {
         return context.getFlights().stream()
                 .filter(f -> !f.isCancelled() && f.getDepartureHour() > minuteOfDay)
                 .sorted(Comparator.comparingInt(FlightInstance::getDepartureHour))
-                .limit(15)
+                .limit(30)
                 .map(f -> {
                     int depAbs   = dayStart + f.getDepartureHour();
+                    int dur      = f.getArrivalHour() - f.getDepartureHour();
+                    if (dur < 0) dur += 1440;
+                    int arrAbs   = depAbs + dur;
                     int assigned = f.getCapacity() - solution.residualFor(f.getId());
                     return new UpcomingFlight(
                             f.getId(), f.getOrigin(), f.getDestination(),
                             depAbs, fmtClock(depAbs),
+                            arrAbs, fmtClock(arrAbs),
                             f.getCapacity(), Math.max(0, assigned));
                 })
                 .collect(Collectors.toList());
@@ -917,16 +928,19 @@ public class SimulationService {
                .bags += bags;
     }
 
-    private int countActiveFlights(List<SimEvent> events, int minute) {
-        Set<String> departed = events.stream()
-                .filter(e -> "departed".equals(e.type()) && e.minute() <= minute)
-                .map(SimEvent::flightId)
-                .collect(Collectors.toSet());
-        events.stream()
-                .filter(e -> "landed".equals(e.type()) && e.minute() <= minute)
-                .map(SimEvent::flightId)
-                .forEach(departed::remove);
-        return departed.size();
+    /** Vuelos en el aire ahora mismo según el horario (con o sin maletas). */
+    private int countActiveFlights(int minute) {
+        int dayStart = (minute / 1440) * 1440;
+        int count = 0;
+        for (FlightInstance f : scheduledFlights) {
+            if (f.isCancelled()) continue;
+            int dep = dayStart + f.getDepartureHour();
+            if (dep > minute) dep -= 1440;
+            int dur = f.getArrivalHour() - f.getDepartureHour();
+            if (dur < 0) dur += 1440;
+            if (dep <= minute && minute < dep + dur) count++;
+        }
+        return count;
     }
 
     private List<RouteState> recentRoutes(List<SimEvent> events, int minute) {
@@ -935,42 +949,42 @@ public class SimulationService {
                 .map(SimEvent::flightId)
                 .collect(Collectors.toSet());
 
-        Map<String, Integer> departureByFlight = events.stream()
-                .filter(e -> "departed".equals(e.type()))
-                .collect(Collectors.toMap(
-                        SimEvent::flightId,
-                        SimEvent::minute,
-                        (a, b) -> a));
-
-        Map<String, Integer> arrivalByFlight = events.stream()
-                .filter(e -> "landed".equals(e.type()))
-                .collect(Collectors.toMap(
-                        SimEvent::flightId,
-                        SimEvent::minute,
-                        (a, b) -> a));
-
-        List<RouteState> active = events.stream()
+        // Carga (maletas) por vuelo en el aire: un vuelo puede llevar varios
+        // grupos de lotes (eventos), así que sumamos todas sus maletas.
+        Map<String, Integer> bagsByFlight = new HashMap<>();
+        events.stream()
             .filter(e -> "departed".equals(e.type()) && e.minute() <= minute)
             .filter(e -> !landedIds.contains(e.flightId()))
-            // ✅ un solo RouteState por flightId — el primero que aparezca
-            .collect(Collectors.toMap(
-                    SimEvent::flightId,
-                    e -> e,
-                    (a, b) -> a))          // si hay duplicados, queda el primero
-            .values().stream()
-            .map(e -> new RouteState(
-                    e.from(), e.to(), e.bags(), "departed",
-                    departureByFlight.getOrDefault(e.flightId(), e.minute()),
-                    arrivalByFlight.getOrDefault(e.flightId(), e.minute() + 60)))
-            .sorted(Comparator.comparingInt(RouteState::bags).reversed())
-            .collect(Collectors.toList());
+            .forEach(e -> bagsByFlight.merge(e.flightId(), e.bags(), Integer::sum));
+
+        // Vuelos EN EL AIRE según el HORARIO, no solo los que llevan maletas: un
+        // vuelo está volando si la instancia diaria de su horario ya despegó y
+        // aún no aterriza. Los que no tienen maletas asignadas se incluyen igual
+        // (bags = 0) → el frontend los pinta en gris.
+        int dayStart = (minute / 1440) * 1440;
+        List<RouteState> active = new ArrayList<>();
+        for (FlightInstance f : scheduledFlights) {
+            if (f.isCancelled()) continue;
+            int dep = dayStart + f.getDepartureHour();
+            if (dep > minute) dep -= 1440;            // usar la instancia ya despegada
+            int dur = f.getArrivalHour() - f.getDepartureHour();
+            if (dur < 0) dur += 1440;
+            int arr = dep + dur;
+            if (!(dep <= minute && minute < arr)) continue;   // no está en el aire
+            active.add(new RouteState(
+                    f.getId(), f.getOrigin(), f.getDestination(),
+                    bagsByFlight.getOrDefault(f.getId(), 0),
+                    f.getCapacity(), "departed", dep, arr));
+        }
+        active.sort(Comparator.comparingInt(RouteState::bags).reversed());
 
         List<RouteState> justLanded = events.stream()
                 .filter(e -> "landed".equals(e.type()))
                 .filter(e -> e.minute() <= minute && e.minute() >= minute - 2)
                 .map(e -> new RouteState(
-                        e.from(), e.to(), e.bags(), "just_landed",
-                        e.minute(), e.minute()))
+                        e.flightId(), e.from(), e.to(), e.bags(),
+                        flightCapacityById.getOrDefault(e.flightId(), 0),
+                        "just_landed", e.minute(), e.minute()))
                 .collect(Collectors.toList());
 
         List<RouteState> result = new ArrayList<>(active);
@@ -1101,7 +1115,8 @@ public class SimulationService {
     public record AirportState(String code, String name,
                                 double lat, double lng,
                                 int capacity, int current) {}
-    public record RouteState(String from, String to, int bags, String status,
+    public record RouteState(String flightId, String from, String to,
+                          int bags, int capacity, String status,
                           int departureMinute, int arrivalMinute) {}
     public record SimEvent(int minute, String type, String from, String to,
                            String flightId, int bags, boolean finalDestination,
@@ -1135,6 +1150,7 @@ public class SimulationService {
 
     public record UpcomingFlight(String flightId, String origin, String destination,
                                 int departureMinute, String departureClock,
+                                int arrivalMinute, String arrivalClock,
                                 int capacity, int assigned) {}
 
     private record BlockResult(WorkingSolution solution, List<BaggageLot> lots) {}

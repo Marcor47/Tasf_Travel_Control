@@ -9,13 +9,10 @@ import FlightCancelPanel from "../components/panels/FlightCancelPanel";
 import { STATIC_AIRPORTS, airportMatches } from "../data/staticAirports";
 
 const MODE_CONFIG = {
-  diadia:  { selector: "Día a simular",  suffix: "(1 día — tiempo real)", showDays: false },
-  periodo: { selector: "Día de inicio",  suffix: null,                    showDays: true  },
-  colapso: { selector: "Día de inicio",  suffix: "(hasta colapso)",       showDays: false },
+  diadia:  { selector: "Día a simular",  suffix: "(1 día — tiempo real)" },
+  periodo: { selector: "Día de inicio",  suffix: "(5 días)"              },
+  colapso: { selector: "Día de inicio",  suffix: "(hasta colapso)"       },
 };
-
-// Periodo permitido por el caso: 3, 4, 5 o 7 días
-const NUM_DAYS_OPTIONS = [3, 4, 5, 7];
 
 // Formatea segundos totales → "Xd Hh Mm Ss" o "Hh Mm Ss"
 function formatRealTime(seconds) {
@@ -40,7 +37,6 @@ function formatSimTime(totalMinutes) {
 export default function Dashboard({
   mode, simulation, onStop,
   availableDates = [], selectedDate = "", onDateChange,
-  selectedNumDays = 5, onNumDaysChange,
   selectedStartMinute = 0, onStartMinuteChange,
   cancelFlight,
   realSeconds = 0, // ← nuevo, viene del hook vía App
@@ -60,9 +56,9 @@ export default function Dashboard({
   const [storageFilter, setStorageFilter] = useState("");
   // Aeropuerto enfocado por clic (mapa o tarjeta de almacenes)
   const [selectedAirport, setSelectedAirport] = useState(null);
-  // Paneles laterales colapsables
-  const [leftOpen,  setLeftOpen]  = useState(true);
-  const [rightOpen, setRightOpen] = useState(true);
+  // Paneles laterales colapsables — al inicio ambos cerrados para ver el mapa
+  const [leftOpen,  setLeftOpen]  = useState(false);
+  const [rightOpen, setRightOpen] = useState(false);
 
 
   const kpis         = simulation?.kpis ?? {};
@@ -163,26 +159,6 @@ export default function Dashboard({
                      disabled:opacity-40 disabled:cursor-not-allowed"
         />
 
-        {cfg.showDays && (
-          <>
-            <span className="text-gray-500 text-xs">durante</span>
-            <select
-              value={selectedNumDays}
-              onChange={e => onNumDaysChange?.(Number(e.target.value))}
-              disabled={running}
-              className="bg-[#021020] border border-white/10 rounded px-2 py-1
-                         text-xs text-gray-300 focus:outline-none focus:border-teal
-                         disabled:opacity-40 disabled:cursor-not-allowed">
-              {NUM_DAYS_OPTIONS.map(n => (
-                <option key={n} value={n}>{n} días</option>
-              ))}
-            </select>
-            <span className="text-gray-500 text-xs">
-              (~{selectedNumDays * 12} min simulación)
-            </span>
-          </>
-        )}
-
         {cfg.suffix && (
           <span className="text-gray-500 text-xs">{cfg.suffix}</span>
         )}
@@ -237,8 +213,8 @@ export default function Dashboard({
             focusCodes={focusCodes}
           />
           <FlightsCapacity
-            flights={simulation?.flights ?? []}
             routes={simulation?.routes ?? []}
+            upcoming={simulation?.upcomingFlights ?? []}
             focusCodes={focusCodes}
             running={running} />
         </SidePanel>
@@ -295,6 +271,7 @@ export default function Dashboard({
             onAirportClick={handleAirportClick}/>
           <StorageMovements
             history={simulation?.history ?? []}
+            upcoming={simulation?.upcomingFlights ?? []}
             focusCodes={focusCodes}
             airports={simulation?.airports ?? []}/>
         </SidePanel>

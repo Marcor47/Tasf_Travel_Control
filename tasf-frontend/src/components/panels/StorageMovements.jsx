@@ -15,15 +15,17 @@ const MAX_ROWS_PER_STORAGE   = 8;
  * uno o varios aeropuertos enfocados (por clic o filtro), solo muestra esos.
  * Mismo estilo de tarjeta; vive dentro de un panel lateral colapsable.
  */
-export default function StorageMovements({ history = [], focusCodes = [], airports = [] }) {
+export default function StorageMovements({ history = [], upcoming = [], focusCodes = [], airports = [] }) {
   const nameByCode = useMemo(() => {
     const m = {};
     airports.forEach(a => { if (a.code) m[a.code] = a.name; });
     return m;
   }, [airports]);
 
-  // Agrupar eventos por almacén: 'landed' = entrada al destino,
-  // 'departed' = salida desde el origen.
+  // Agrupar por almacén:
+  //  · historial: 'landed' = entrada al destino, 'departed' = salida del origen.
+  //  · planificado (upcoming, aún sin despegar): salida planeada desde el origen
+  //    y entrada planeada en el destino — el registro de lo que el sistema planea.
   const byAirport = useMemo(() => {
     const acc = {};
     for (const e of history) {
@@ -33,12 +35,23 @@ export default function StorageMovements({ history = [], focusCodes = [], airpor
         (acc[e.to] ??= []).push({ ...e, dir: "in" });
       }
     }
-    // Ordenar cada almacén por minuto descendente (lo más reciente primero)
+    for (const u of upcoming) {
+      if (!u.assigned) continue;          // solo vuelos planeados con maletas
+      if (u.origin)
+        (acc[u.origin] ??= []).push({
+          dir: "out", planned: true, flightId: u.flightId, to: u.destination,
+          bags: u.assigned, minute: u.departureMinute, clock: u.departureClock });
+      if (u.destination)
+        (acc[u.destination] ??= []).push({
+          dir: "in", planned: true, finalDestination: false, flightId: u.flightId,
+          from: u.origin, bags: u.assigned, minute: u.arrivalMinute, clock: u.arrivalClock });
+    }
+    // Ordenar por minuto descendente: lo planeado (futuro) queda arriba.
     for (const code of Object.keys(acc)) {
       acc[code].sort((a, b) => (b.minute || 0) - (a.minute || 0));
     }
     return acc;
-  }, [history]);
+  }, [history, upcoming]);
 
   const focus     = useMemo(() => new Set(focusCodes), [focusCodes]);
   const hasFilter = focus.size > 0;
@@ -61,7 +74,7 @@ export default function StorageMovements({ history = [], focusCodes = [], airpor
         )}
       </p>
 
-      {history.length === 0 ? (
+      {history.length === 0 && upcoming.length === 0 ? (
         <p className="text-gray-600 text-center py-4 text-[10px]">
           Inicia la simulación para ver movimientos
         </p>
@@ -105,20 +118,22 @@ export default function StorageMovements({ history = [], focusCodes = [], airpor
 }
 
 function MovementRow({ e }) {
-  const isIn   = e.dir === "in";
-  const time   = (e.clock && e.clock.split("  ")[1]) || e.clock || "--:--";
-  const tag    = isIn
-    ? (e.finalDestination ? "Final" : "Transbordo")
-    : "Salida";
-  const tagColor = !isIn
-    ? "text-yellow-400"
+  const isIn    = e.dir === "in";
+  const planned = !!e.planned;
+  const time    = (e.clock && e.clock.split("  ")[1]) || e.clock || "--:--";
+  const tag     = planned
+    ? "Planificado"
+    : isIn ? (e.finalDestination ? "Final" : "Transbordo") : "Salida";
+  const tagColor = planned
+    ? "text-blue-300"
+    : !isIn ? "text-yellow-400"
     : e.finalDestination ? "text-green-400" : "text-blue-400";
 
   return (
-    <div className="flex items-center justify-between text-[10px]">
+    <div className={`flex items-center justify-between text-[10px] ${planned ? "opacity-70" : ""}`}>
       <span className="flex items-center gap-1 min-w-0">
         <span className={isIn ? "text-green-400" : "text-yellow-400"}>
-          {isIn ? "↓" : "↑"}
+          {planned ? "⌛" : isIn ? "↓" : "↑"}
         </span>
         <span className="text-gray-300 font-mono truncate">
           {e.flightId || "—"}
@@ -126,6 +141,9 @@ function MovementRow({ e }) {
         <span className="text-gray-600">
           {isIn ? `← ${e.from}` : `→ ${e.to}`}
         </span>
+        {e.bags != null && (
+          <span className="text-gray-500">· {e.bags}</span>
+        )}
       </span>
       <span className="flex items-center gap-1.5 flex-shrink-0">
         <span className="text-gray-500 font-mono">{time}</span>

@@ -17,7 +17,7 @@ function injectAnimation() {
       to   { stroke-dashoffset: 0; }
     }
     .route-active { animation: dashMove 1.4s linear infinite; }
-    .route-plane  { filter: drop-shadow(0 0 5px rgba(244,162,97,0.85)); }
+    .route-plane  { filter: drop-shadow(0 0 3px rgba(0,0,0,0.7)); }
   `;
   document.head.appendChild(style);
 }
@@ -71,7 +71,9 @@ function useSmoothMinute(targetMinute, running) {
   // muestra (reiniciar rAF cada 800 ms provocaba microcortes).
   useEffect(() => {
     if (!running) return;
-    const NOMINAL_MS = 850; // no extrapolar más de ~1 intervalo si se atasca
+    // Extrapolar hasta ~2 intervalos de broadcast antes de detenerse: evita
+    // congelamientos si un broadcast llega con retraso (la cadencia es ~800 ms).
+    const NOMINAL_MS = 1500;
     let raf;
     const tick = () => {
       const r = s.current;
@@ -143,6 +145,23 @@ function planePosition(from, to, route, simulatedMinute) {
 // en la misma ruta no se colapsan, y los eventos duplicados del mismo vuelo sí.
 const routeKey = r => r.flightId || `${r.from}-${r.to}-${r.departureMinute ?? 0}`;
 
+// Vista inicial del mapa: centra y acerca a la franja donde están los
+// aeropuertos del dataset (sin impedir el zoom/arrastre manual posterior).
+const DEFAULT_CENTER = [5, 18];
+const DEFAULT_ZOOM   = 1.35;
+
+// Semáforo de ocupación: verde casi vacío, ámbar a media carga, rojo casi lleno.
+function loadColor(pct) {
+  return pct > 0.85 ? "#ef4444" : pct > 0.6 ? "#f59e0b" : "#22c55e";
+}
+
+// Color de un vuelo: GRIS si va vacío (programado sin maletas), si no semáforo.
+const EMPTY_FLIGHT = "#9ca3af";
+function flightColor(bags, capacity) {
+  if ((bags || 0) === 0) return EMPTY_FLIGHT;
+  return loadColor(capacity > 0 ? bags / capacity : 0);
+}
+
 export default function WorldMap({
   airports = [],
   routes = [],
@@ -159,8 +178,10 @@ export default function WorldMap({
   const [showLines,  setShowLines]  = useState(true);
   const [showPlanes, setShowPlanes] = useState(true);
   const [lineMode,   setLineMode]   = useState("limited");
-  const [zoom,       setZoom]       = useState(1);
-  const [center,     setCenter]     = useState([20, 10]);
+  // Vista inicial enmarcada en la zona de trabajo (Sudamérica–Europa–Asia)
+  // para aprovechar la pantalla sin tener que hacer zoom manual.
+  const [zoom,       setZoom]       = useState(DEFAULT_ZOOM);
+  const [center,     setCenter]     = useState(DEFAULT_CENTER);
   const [dragging,   setDragging]   = useState(false);
   // Ruta resaltada por clic (solo afecta al mapa). El foco de aeropuertos es
   // controlado por el padre vía highlightCodes (así también filtra las tarjetas).
@@ -175,23 +196,23 @@ export default function WorldMap({
   const paused        = message === "Pausado";
   const displayMinute = useSmoothMinute(simulatedMinute, running && !paused);
 
-  // Rutas en el aire: salieron (departed), aún no aterrizan según el backend
-  // y, además, el reloj suavizado todavía no alcanza su minuto de llegada.
-  // Esta última condición hace que el avión desaparezca exactamente al llegar,
-  // sin esperar al siguiente broadcast (~800 ms).
+  // Rutas en el aire según el backend (departed y aún no aterrizadas). El
+  // conjunto SOLO cambia cuando llega un broadcast (no cada frame); la POSICIÓN
+  // de cada avión sí se recalcula cada frame con displayMinute. Así el avión
+  // recorre toda la línea y desaparece justo cuando el backend lo aterriza
+  // (displayMinute ≈ simulatedMinute en ese momento), sin cortes a mitad.
   const allActive = useMemo(() => {
     if (!running || routes.length === 0) return [];
     const seen = new Set();
     return routes
       .filter(r => r.status === "departed")
-      .filter(r => displayMinute < (r.arrivalMinute ?? Infinity))
       .filter(r => {
         const k = routeKey(r);
         if (seen.has(k)) return false;
         seen.add(k);
         return true;
       });
-  }, [running, routes, displayMinute]);
+  }, [running, routes]);
 
   // Si la ruta seleccionada ya aterrizó y desapareció, se ignora (derivado).
   const activeRouteKey = useMemo(() => {
@@ -340,9 +361,9 @@ export default function WorldMap({
         </div>
 
         <div className="flex items-center gap-1 flex-shrink-0">
-          {zoom > 1 && (
+          {(zoom !== DEFAULT_ZOOM || center[0] !== DEFAULT_CENTER[0]) && (
             <button
-              onClick={() => { setZoom(1); setCenter([20, 10]); }}
+              onClick={() => { setZoom(DEFAULT_ZOOM); setCenter(DEFAULT_CENTER); }}
               className="text-[10px] px-2 py-0.5 rounded transition font-medium
                          bg-gray-900/70 text-gray-400 border border-white/10
                          hover:text-white mr-1">
@@ -414,6 +435,8 @@ export default function WorldMap({
           if (!from || !to) return null;
           const hl  = routeIsHighlighted(r);
           const key = routeKey(r);
+          const cap = r.capacity || 0;
+          const col = flightColor(r.bags, cap);
           return (
             <g key={`active-${key}`}>
               {/* Corredor invisible y ancho para que la ruta sea fácil de clicar */}
@@ -424,7 +447,7 @@ export default function WorldMap({
                 onClick={(e) => { e.stopPropagation(); clickRoute(key); }}/>
               <Line
                 from={from} to={to}
-                stroke="#F4A261"
+                stroke={col}
                 strokeWidth={hasFocus && hl ? 1.8 : 1.2}
                 strokeLinecap="round" strokeDasharray="8 4"
                 opacity={hl ? 1 : 0.12}
@@ -440,40 +463,47 @@ export default function WorldMap({
           if (!from || !to) return null;
           const plane = planePosition(from, to, r, displayMinute);
           const hl    = routeIsHighlighted(r);
+          const cap   = r.capacity || 0;
+          const load  = cap > 0 ? (r.bags || 0) / cap : 0;
+          const col   = flightColor(r.bags, cap);   // gris si vacío, si no semáforo
           return (
             <Marker
               key={`plane-${routeKey(r)}`}
               coordinates={plane.coordinates}
               onClick={(e) => { e.stopPropagation(); clickRoute(routeKey(r)); }}>
+              {/* Tooltip nativo al pasar el ratón: ruta y carga/capacidad */}
+              <title>
+                {r.from}→{r.to} · {(r.bags || 0).toLocaleString()}/{cap.toLocaleString()} maletas
+                {cap > 0 ? ` (${Math.round(load * 100)}%)` : ""}
+              </title>
               <g transform={`rotate(${plane.angle})`}
                  className="route-plane"
                  opacity={hl ? 1 : 0.15}
                  style={{ cursor: "pointer" }}>
                 {/* Fuselaje */}
                 <path d="M 10 0 L -6 -1.5 L -8 0 L -6 1.5 Z"
-                      fill="#F4A261" stroke="#F4A261" strokeWidth={0.4}/>
+                      fill={col} stroke={col} strokeWidth={0.4}/>
                 <path d="M 2 -1 L -3 -8 L -6 -7 L -3 -1 Z"
-                      fill="#F4A261" stroke="#F4A261" strokeWidth={0.4}/>
+                      fill={col} stroke={col} strokeWidth={0.4}/>
                 <path d="M 2 1 L -3 8 L -6 7 L -3 1 Z"
-                      fill="#F4A261" stroke="#F4A261" strokeWidth={0.4}/>
+                      fill={col} stroke={col} strokeWidth={0.4}/>
                 <path d="M -5 -1 L -7 -4 L -9 -3.5 L -8 0 Z"
-                      fill="#F4A261" stroke="#F4A261" strokeWidth={0.4}/>
+                      fill={col} stroke={col} strokeWidth={0.4}/>
                 <path d="M -5 1 L -7 4 L -9 3.5 L -8 0 Z"
-                      fill="#F4A261" stroke="#F4A261" strokeWidth={0.4}/>
+                      fill={col} stroke={col} strokeWidth={0.4}/>
               </g>
             </Marker>
           );
         })}
 
-        {/* ✅ key correcto: a.code, sin referencias a variables de otro scope */}
+        {/* Aeropuertos/almacenes: icono tipo bodega (cajón con techo y puerta)
+            coloreado con el semáforo de ocupación; verde casi vacío → rojo lleno. */}
         {shownAirports.map(a => {
-          const pct  = Math.min(1, (a.current || 0) / Math.max(1, a.capacity || 1));
-          const fill = pct > 0.85 ? "#E76F51"
-                     : pct > 0.6  ? "#F4A261"
-                     : "#1C7293";
-          const r    = 3 + Math.round(pct * 4);
+          const pct   = Math.min(1, (a.current || 0) / Math.max(1, a.capacity || 1));
+          const col   = loadColor(pct);
           const hl    = airportIsHighlighted(a.code);
           const isSel = focus.has(a.code);
+          const s     = isSel ? 5.5 : 4.5;          // medio tamaño del cajón
           return (
             <Marker key={a.code}
               coordinates={[a.lng, a.lat]}
@@ -481,13 +511,25 @@ export default function WorldMap({
                 e.stopPropagation();
                 clickAirport(a.code);
               }}>
-              <circle r={isSel ? r + 1.5 : r}
-                fill={fill}
-                stroke={isSel ? "#2dd4bf" : "#fff"}
-                strokeWidth={isSel ? 1.6 : 0.8}
-                opacity={hl ? 1 : 0.25}
-                style={{ cursor: "pointer" }}/>
-              <text textAnchor="middle" y={-(r + 3)}
+              <title>
+                {a.code}{a.name ? ` · ${a.name}` : ""} — almacén{" "}
+                {(a.current || 0).toLocaleString()}/{(a.capacity || 0).toLocaleString()}
+                {a.capacity ? ` (${Math.round(pct * 100)}%)` : ""}
+              </title>
+              <g opacity={hl ? 1 : 0.25} style={{ cursor: "pointer" }}>
+                {/* techo */}
+                <polygon points={`${-s},${-s * 0.2} 0,${-s} ${s},${-s * 0.2}`}
+                         fill={col} stroke={isSel ? "#2dd4bf" : "#0b1f33"}
+                         strokeWidth={isSel ? 0.9 : 0.5}/>
+                {/* cuerpo de la bodega */}
+                <rect x={-s} y={-s * 0.2} width={2 * s} height={s * 1.2} rx={0.6}
+                      fill={col} stroke={isSel ? "#2dd4bf" : "#0b1f33"}
+                      strokeWidth={isSel ? 0.9 : 0.5}/>
+                {/* puerta */}
+                <rect x={-s * 0.4} y={s * 0.3} width={s * 0.8} height={s * 0.7}
+                      fill="#0b1f33" opacity={0.55}/>
+              </g>
+              <text textAnchor="middle" y={-(s + 3)}
                 opacity={hl ? 1 : 0.25}
                 style={{
                   fontSize: Math.max(5, 7 / Math.sqrt(zoom)),
