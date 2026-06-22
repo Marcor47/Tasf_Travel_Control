@@ -91,7 +91,7 @@ function AppContent() {
           <Route path="/registro"  element={<RegisterLot simulation={simulation}/>}/>
           <Route path="/monitoreo" element={<LiveMonitor  simulation={simulation}/>}/>
           <Route path="/reportes"  element={<ReportView   simulation={simulation}/>}/>
-          <Route path="/historial" element={<HistoryView  history={history} running={running}/>}/>
+          <Route path="/historial" element={<HistoryView  history={history} upcoming={simulation?.upcomingFlights ?? []} running={running}/>}/>
         </Routes>
       </main>
 

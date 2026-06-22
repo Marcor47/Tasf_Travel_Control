@@ -35,9 +35,19 @@ public class SimulationService {
 
     // BASE_UTC del ShipmentRepository — ambos deben coincidir
     private static final LocalDateTime BASE_UTC            = LocalDateTime.of(2026, 1, 1, 0, 0);
-    private static final int            BLOCK_HOURS         = 1;
-    private static final int            BLOCK_REAL_SECONDS  = 30;
-    private static final int            ALNS_TIME_BUDGET_SEC = 15;
+    // Tamaño de bloque en horas GMT. Bloques más grandes ⇒ menos llamadas al
+    // ALNS ⇒ el período de 5 días entra en ≤30 min sin que el planificador se
+    // convierta en el cuello de botella. 3 h = 40 bloques para 5 días.
+    private static final int            BLOCK_HOURS         = 3;
+    // ⏱ ÚNICO punto para ajustar la velocidad de Período/Colapso: segundos
+    // reales que dura la animación de UN bloque. Período (5 días) = 40 bloques,
+    // 40 × 45 s = 30 min. Cambiar SOLO este número para acortar/alargar.
+    // (Día a Día va en tiempo real y NO usa este valor.)
+    private static final int            BLOCK_REAL_SECONDS  = 45;
+    // ⏱ ÚNICO punto para la velocidad de Día a Día (modo de pruebas de
+    // registro/cancelación). 24 h / 3 h = 8 bloques; 8 × 113 s ≈ 15 min por día.
+    private static final int            DIADIA_BLOCK_SECONDS = 113;
+    private static final int            ALNS_TIME_BUDGET_SEC = 25;
     private static final int            ALNS_MAX_ITERATIONS  = 0;
     private static final int            BROADCAST_INTERVAL_MS = 800;
 
@@ -52,6 +62,14 @@ public class SimulationService {
         = new ConcurrentLinkedQueue<>();
     private final ConcurrentLinkedQueue<BaggageLot> pendingAdditions
         = new ConcurrentLinkedQueue<>();
+    // Edición de la red en caliente (mid-run): nuevos vuelos/aeropuertos y cierres.
+    private final ConcurrentLinkedQueue<FlightInstance> pendingFlightAdds
+        = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<Airport> pendingAirportAdds
+        = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<String> pendingAirportCloses
+        = new ConcurrentLinkedQueue<>();
+    private final AtomicInteger userFlightSeq = new AtomicInteger(0);
 
     private final AirportRepository  repoAirports  = new AirportRepository();
     private final FlightRepository   repoFlights   = new FlightRepository();
@@ -60,6 +78,7 @@ public class SimulationService {
     private volatile List<FlightInfo>     cachedFlights  = null;
     private volatile Map<String, Integer> flightCapacityById = Map.of();
     private volatile List<FlightInstance> scheduledFlights   = List.of();
+    private volatile PlanningContext      activeContext      = null;
 
     private volatile SimulationState state = SimulationState.initial();
 
@@ -124,9 +143,27 @@ public class SimulationService {
         return emitter;
     }
 
+    /**
+     * Cancela un vuelo. Reglas del caso (por instancia de día):
+     *  · Solo se puede cancelar la salida de HOY si faltan ≥ 60 min para ella;
+     *    si la cancelación llega dentro de la última hora (o tras la salida),
+     *    se cancela la instancia del DÍA SIGUIENTE.
+     *  · Las maletas asignadas a la instancia cancelada se replanifican.
+     */
     public SimulationState cancelFlight(String flightId) {
         if (!running.get()) return state;
-        pendingCancellations.add(flightId);
+        PlanningContext ctx = activeContext;
+        FlightInstance  f   = scheduledFlights.stream()
+                .filter(x -> x.getId().equals(flightId)).findFirst().orElse(null);
+        if (ctx == null || f == null) return state;
+
+        int now      = state.simulatedMinute();
+        int depToday = (now / 1440) * 1440 + f.getDepartureHour();
+        // ≥ 60 min antes de la salida de hoy → cancela hoy; si no, mañana.
+        int targetDep = (now <= depToday - 60) ? depToday : depToday + 1440;
+
+        ctx.cancelInstance(flightId, targetDep);
+        pendingCancellations.add(flightId + "@" + targetDep);
         return state;
     }
 
@@ -222,6 +259,114 @@ public class SimulationService {
                 .findFirst().orElse(0);
     }
 
+    // ── Edición de la red en caliente (solo con simulación en curso) ───────────
+
+    /** Agrega un vuelo (horas LOCALES de origen/destino → se convierten a UTC). */
+    public synchronized SimulationState addFlight(String origin, String destination,
+            String departureLocal, String arrivalLocal, int capacity) {
+        PlanningContext ctx = activeContext;
+        if (!running.get() || ctx == null) return state;
+        try {
+            Airport o = ctx.getAirports().get(origin);
+            Airport d = ctx.getAirports().get(destination);
+            if (o == null || d == null || origin.equals(destination) || capacity <= 0) return state;
+            int depUtc = toUtcMinuteOfDay(departureLocal, o.getGmtOffset());
+            int arrUtc = toUtcMinuteOfDay(arrivalLocal,   d.getGmtOffset());
+            if (arrUtc < depUtc) arrUtc += 1440;
+            pendingFlightAdds.add(new FlightInstance(
+                    "U" + userFlightSeq.incrementAndGet(),
+                    origin, destination, depUtc, arrUtc, capacity, false));
+        } catch (Exception e) {
+            System.err.println("Error agregando vuelo: " + e.getMessage());
+        }
+        return state;
+    }
+
+    /** Agrega un aeropuerto con su almacén (gmtHours en horas, p.ej. -5, +2). */
+    public synchronized SimulationState addAirport(String code, String region,
+            double lat, double lng, int gmtHours, int capacity) {
+        if (!running.get() || activeContext == null
+                || code == null || code.isBlank() || capacity <= 0) return state;
+        pendingAirportAdds.add(new Airport(
+                code.trim().toUpperCase(),
+                (region == null || region.isBlank()) ? "UNKNOWN" : region,
+                capacity, gmtHours * 60, lat, lng));
+        return state;
+    }
+
+    /** Cierra un aeropuerto: deja de usarse para ruteo de nuevas rutas. */
+    public synchronized SimulationState closeAirport(String code) {
+        if (!running.get() || activeContext == null || code == null) return state;
+        pendingAirportCloses.add(code.trim().toUpperCase());
+        return state;
+    }
+
+    /**
+     * Carga masiva desde un archivo arrastrado (mismo formato que el dataset).
+     * type = "planes" | "airports" | "lots". Para lots, `origin` es el código
+     * del aeropuerto de origen (en el dataset va en el nombre del archivo).
+     */
+    public synchronized SimulationState uploadData(String type, String content, String origin) {
+        PlanningContext ctx = activeContext;
+        if (!running.get() || ctx == null || content == null || content.isBlank()) return state;
+        try {
+            if ("planes".equals(type)) {
+                java.io.File tmp = java.io.File.createTempFile("up_planes", ".txt");
+                java.nio.file.Files.writeString(tmp.toPath(), content);
+                for (FlightInstance f : repoFlights.loadFlights(tmp.getAbsolutePath(), ctx.getAirports())) {
+                    pendingFlightAdds.add(new FlightInstance(
+                            "U" + userFlightSeq.incrementAndGet(),
+                            f.getOrigin(), f.getDestination(),
+                            f.getDepartureHour(), f.getArrivalHour(), f.getCapacity(), false));
+                }
+                tmp.delete();
+            } else if ("airports".equals(type)) {
+                java.io.File tmp = java.io.File.createTempFile("up_airports", ".txt");
+                java.nio.file.Files.write(tmp.toPath(),
+                        content.getBytes(java.nio.charset.StandardCharsets.UTF_16));
+                repoAirports.loadAirports(tmp.getAbsolutePath()).values()
+                        .forEach(pendingAirportAdds::add);
+                tmp.delete();
+            } else if ("lots".equals(type) && origin != null) {
+                Airport o = ctx.getAirports().get(origin.trim().toUpperCase());
+                if (o == null) return state;
+                for (String raw : content.split("\\r?\\n")) {
+                    String line = raw.trim();
+                    if (line.isEmpty()) continue;
+                    String[] p = line.split("-");
+                    if (p.length < 6) continue;
+                    try {
+                        String ds = p[1];
+                        int y = Integer.parseInt(ds.substring(0, 4));
+                        int mo = Integer.parseInt(ds.substring(4, 6));
+                        int da = Integer.parseInt(ds.substring(6, 8));
+                        int hh = Integer.parseInt(p[2].trim());
+                        int mm = Integer.parseInt(p[3].trim());
+                        String dest = p[4].trim().toUpperCase();
+                        int qty = Integer.parseInt(p[5].replaceAll("[^0-9]", ""));
+                        Airport d = ctx.getAirports().get(dest);
+                        if (d == null || qty <= 0) continue;
+                        int regUtc = (int) (Duration.between(BASE_UTC,
+                                LocalDateTime.of(y, mo, da, hh, mm)).toMinutes() - o.getGmtOffset());
+                        boolean same = o.getRegion().equals(d.getRegion());
+                        pendingAdditions.add(new BaggageLot("UF-" + userFlightSeq.incrementAndGet(),
+                                origin.trim().toUpperCase(), dest, qty,
+                                regUtc, regUtc + (same ? 1440 : 2880), false));
+                    } catch (Exception ignored) {}
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Error cargando archivo (" + type + "): " + e.getMessage());
+        }
+        return state;
+    }
+
+    private int toUtcMinuteOfDay(String hhmm, int gmtOffsetMin) {
+        String[] p = hhmm.split(":");
+        int local = Integer.parseInt(p[0].trim()) * 60 + Integer.parseInt(p[1].trim());
+        return (((local - gmtOffsetMin) % 1440) + 1440) % 1440;
+    }
+
     private Map<String, Airport> loadAirports() throws IOException {
         if (cachedAirports == null) {
             synchronized (this) {
@@ -282,23 +427,26 @@ public class SimulationService {
                                                                 ScenarioConfig.defaultWeek4());
             flightCapacityById = flights.stream().collect(Collectors.toMap(
                     FlightInstance::getId, FlightInstance::getCapacity, (a, b) -> a));
-            scheduledFlights = flights;
+            scheduledFlights = context.getFlights();   // lista viva (incluye altas)
+            activeContext    = context;                // cancelaciones + edición de red
 
-            // 2. Encontrar ventana de días
+            // 2. Encontrar ventana de días: desde la fecha elegida (o la primera
+            //    disponible si no hay/ es inválida), tomando daysToLoad días
+            //    consecutivos (0 = hasta el final del dataset, modo colapso).
             int daysToLoad = daysForMode(request.mode(), request.numDaysOrDefault(5));
-            List<LocalDate> days;
-
+            LocalDate startDate = null;
             if (request.startDate() != null && !request.startDate().isBlank()) {
-                try {
-                    LocalDate startDate = LocalDate.parse(request.startDate());
-                    days = repoShipments.getDaysFrom("data/envios/", airports, startDate, daysToLoad);
-                } catch (Exception e) {
+                try { startDate = LocalDate.parse(request.startDate()); }
+                catch (Exception e) {
                     System.err.println("Fecha inválida '" + request.startDate() + "' — usando primera disponible.");
-                    days = repoShipments.findConsecutiveDaysWithK("data/envios/", airports, 10000, daysToLoad);
                 }
-            } else {
-                days = repoShipments.findConsecutiveDaysWithK("data/envios/", airports, 10000, daysToLoad);
             }
+            if (startDate == null) {
+                List<LocalDate> avail = repoShipments.getAvailableDatesLightweight("data/envios/");
+                startDate = avail.isEmpty() ? null : avail.get(0);
+            }
+            List<LocalDate> days = startDate == null ? List.of()
+                    : repoShipments.getDaysFrom("data/envios/", airports, startDate, daysToLoad);
 
             if (days == null || days.isEmpty()) {
                 running.set(false);
@@ -346,7 +494,7 @@ public class SimulationService {
 
                 int blockEnd = Math.min(blockStart + blockMinutes, simulationEnd);
 
-                // Recoger resultado del bloque actual (carga + ALNS ya en paralelo)
+                // Recoger resultado del bloque actual (carga + ALNS paralelo)
                 BlockResult blockResult;
                 try {
                     blockResult = nextFuture.get();
@@ -419,8 +567,12 @@ public class SimulationService {
                 // Animar bloque actual
                 List<SimEvent> events  = allEvents;
                 long realStart         = System.currentTimeMillis();
-                long realDurationMs    = Math.max(1,
-                        request.blockSecondsOrDefault(BLOCK_REAL_SECONDS)) * 1000L;
+                // Duración real de la animación de este bloque (paso fijo por modo):
+                //  · diadia → DIADIA_BLOCK_SECONDS (≈15 min/día, modo de pruebas)
+                //  · periodo / colapso → BLOCK_REAL_SECONDS
+                long realDurationMs = "diadia".equals(request.mode())
+                        ? DIADIA_BLOCK_SECONDS * 1000L
+                        : BLOCK_REAL_SECONDS * 1000L;
 
                 final int fBlockStart = blockStart;
                 int nextEvent = 0;
@@ -468,24 +620,54 @@ public class SimulationService {
                         }
                     }
 
-                    // Adiciones pendientes (registro día a día): inyectar el lote,
-                    // planearlo de forma greedy sobre la solución actual (sin gastar
-                    // los 15 s de ALNS para no congelar la animación) y reconstruir
-                    // los eventos del bloque.
-                    BaggageLot added = pendingAdditions.poll();
-                    if (added != null) {
+                    // ── Adiciones y edición de la red (registro / carga de txt) ──
+                    // Drena TODOS los lotes encolados (registro o archivo de lotes),
+                    // los planea greedy, y aplica altas de vuelos/aeropuertos y
+                    // cierres. Todo en el hilo del bucle ⇒ sin condiciones de
+                    // carrera con el planificador.
+                    boolean networkChanged = false;
+                    List<BaggageLot> newLots = new ArrayList<>();
+                    BaggageLot added;
+                    while ((added = pendingAdditions.poll()) != null && newLots.size() < 2000) {
+                        newLots.add(added);
+                    }
+                    if (!newLots.isEmpty()) {
                         List<BaggageLot> mergedLots = new ArrayList<>(blockLots);
-                        mergedLots.add(added);
+                        mergedLots.addAll(newLots);
                         blockLots = mergedLots;
-                        try {
-                            WorkingSolution next = solution.copy();
-                            for (RoutePlan p : new RouteEvaluator(context).enumerateCandidates(added)) {
-                                if (next.canAssign(added, p)) { next.assign(added, p); break; }
+                        WorkingSolution next = solution.copy();
+                        RouteEvaluator ev = new RouteEvaluator(context);
+                        for (BaggageLot lot : newLots) {
+                            try {
+                                for (RoutePlan p : ev.enumerateCandidates(lot)) {
+                                    if (next.canAssign(lot, p)) { next.assign(lot, p); break; }
+                                }
+                            } catch (Exception e) {
+                                System.err.println("Error planificando lote: " + e.getMessage());
                             }
-                            solution = next;
-                        } catch (Exception e) {
-                            System.err.println("Error planificando lote agregado: " + e.getMessage());
                         }
+                        solution = next;
+                        networkChanged = true;
+                    }
+
+                    FlightInstance newFlight;
+                    while ((newFlight = pendingFlightAdds.poll()) != null) {
+                        context.addFlight(newFlight);
+                        flightCapacityById.put(newFlight.getId(), newFlight.getCapacity());
+                        networkChanged = true;
+                    }
+                    Airport newAirport;
+                    while ((newAirport = pendingAirportAdds.poll()) != null) {
+                        context.addAirport(newAirport);
+                        networkChanged = true;
+                    }
+                    String closeCode;
+                    while ((closeCode = pendingAirportCloses.poll()) != null) {
+                        context.closeAirport(closeCode);
+                        networkChanged = true;
+                    }
+
+                    if (networkChanged) {
                         List<SimEvent> addBlock  = buildEvents(solution, blockLots, blockStart, blockEnd);
                         List<SimEvent> addMerged = new ArrayList<>(carryoverEvents.size() + addBlock.size());
                         addMerged.addAll(carryoverEvents);
@@ -817,30 +999,34 @@ public class SimulationService {
     }
 
     private WorkingSolution processCancellation(
-            String flightId,
+            String cancelKey,
             PlanningContext context,
             List<BaggageLot> blockLots,
             WorkingSolution solution) {
 
-        context.getFlights().stream()
-                .filter(f -> f.getId().equals(flightId))
-                .findFirst()
-                .ifPresent(f -> f.setCancelled(true));
+        // cancelKey = "flightId@minutoAbsolutoDeSalida". La instancia ya quedó
+        // marcada como cancelada en el context por cancelFlight(), así que el
+        // replanificador no volverá a usarla.
+        String[] parts    = cancelKey.split("@");
+        String   flightId = parts[0];
+        int      targetDep = parts.length > 1 ? Integer.parseInt(parts[1]) : -1;
 
         List<BaggageLot> affected = blockLots.stream()
                 .filter(lot -> {
                     RoutePlan plan = solution.getPlan(lot.getId());
-                    return plan != null && plan.touchesFlight(flightId);
+                    return plan != null && (targetDep < 0
+                            ? plan.touchesFlight(flightId)
+                            : plan.touchesFlightInstance(flightId, targetDep));
                 })
                 .collect(Collectors.toList());
 
         if (affected.isEmpty()) {
-            System.out.printf("Vuelo %s cancelado — sin lotes afectados.%n", flightId);
+            System.out.printf("Vuelo %s cancelado — sin lotes afectados.%n", cancelKey);
             return solution;
         }
 
         System.out.printf("Vuelo %s cancelado — replanificando %d lotes.%n",
-                flightId, affected.size());
+                cancelKey, affected.size());
 
         affected.forEach(solution::remove);
 
@@ -858,6 +1044,8 @@ public class SimulationService {
 
         return context.getFlights().stream()
                 .filter(f -> !f.isCancelled() && f.getDepartureHour() > minuteOfDay)
+                .filter(f -> !context.isInstanceCancelled(
+                        f.getId(), dayStart + f.getDepartureHour()))
                 .sorted(Comparator.comparingInt(FlightInstance::getDepartureHour))
                 .limit(30)
                 .map(f -> {
@@ -936,6 +1124,7 @@ public class SimulationService {
             if (f.isCancelled()) continue;
             int dep = dayStart + f.getDepartureHour();
             if (dep > minute) dep -= 1440;
+            if (activeContext != null && activeContext.isInstanceCancelled(f.getId(), dep)) continue;
             int dur = f.getArrivalHour() - f.getDepartureHour();
             if (dur < 0) dur += 1440;
             if (dep <= minute && minute < dep + dur) count++;
@@ -967,6 +1156,7 @@ public class SimulationService {
             if (f.isCancelled()) continue;
             int dep = dayStart + f.getDepartureHour();
             if (dep > minute) dep -= 1440;            // usar la instancia ya despegada
+            if (activeContext != null && activeContext.isInstanceCancelled(f.getId(), dep)) continue;
             int dur = f.getArrivalHour() - f.getDepartureHour();
             if (dur < 0) dur += 1440;
             int arr = dep + dur;
@@ -1147,6 +1337,18 @@ public class SimulationService {
     public record LotRequest(String origin, String destination, Integer quantity) {
         int qty() { return quantity == null ? 0 : quantity; }
     }
+
+    public record FlightRequest(String origin, String destination,
+                                String departureLocal, String arrivalLocal, Integer capacity) {
+        int cap() { return capacity == null ? 0 : capacity; }
+    }
+
+    public record AirportRequest(String code, String region, Double lat, Double lng,
+                                 Integer gmtHours, Integer capacity) {}
+
+    public record CloseRequest(String code) {}
+
+    public record UploadRequest(String type, String content, String origin) {}
 
     public record UpcomingFlight(String flightId, String origin, String destination,
                                 int departureMinute, String departureClock,

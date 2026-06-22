@@ -27,7 +27,11 @@ public class ScenarioConfig {
     }
  
     public static ScenarioConfig defaultWeek4() {
-        return new ScenarioConfig(2, 10, 30.0, 4.0, 0.8, 500.0, 100.0);
+        // Parámetros del caso. El 2º (minConnectionHours, en MINUTOS) es el
+        // tiempo mínimo que una maleta debe esperar en un almacén antes de
+        // poder tomar el vuelo de transbordo. Cambiar SOLO aquí.
+        //              maxLegs, minTransferMin, tardiness, transfer, waiting, unplanned, warehouse
+        return new ScenarioConfig(2,       10,            30.0,      4.0,      0.8,     500.0,     100.0);
     }
  
     public int getMaxLegs() {

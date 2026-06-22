@@ -83,6 +83,13 @@ public class RoutePlan {
     public boolean touchesFlight(String flightId) {
         return segments.stream().anyMatch(s -> s.getFlightId().equals(flightId));
     }
+
+    /** ¿Usa este plan la instancia del vuelo que sale en ese minuto absoluto? */
+    public boolean touchesFlightInstance(String flightId, int departureAbsMinute) {
+        return segments.stream().anyMatch(s ->
+                s.getFlightId().equals(flightId)
+                && s.getDepartureHour() == departureAbsMinute);
+    }
  
     public String compactPath() {
         if (segments.isEmpty()) {

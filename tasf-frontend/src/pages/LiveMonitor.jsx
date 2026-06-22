@@ -6,6 +6,7 @@ export default function LiveMonitor({ simulation }) {
   const kpis     = simulation?.kpis     ?? {};
   const routes   = simulation?.routes   ?? [];
   const clock    = simulation?.clock    ?? "Dia --  00:00";
+  const alerts   = simulation?.alerts   ?? [];
 
   // Aeropuertos: usar datos reales del backend ordenados por ocupación desc
   // Si aún no hay simulación, mostrar los estáticos con current=0
@@ -193,6 +194,35 @@ export default function LiveMonitor({ simulation }) {
             </p>
           </div>
         </div>
+      </div>
+
+      {/* ── Alertas de operación: registros de lotes y cancelaciones ──────── */}
+      <div className="mt-4 bg-[#031525] border border-teal/20 rounded p-3">
+        <p className="text-teal text-xs font-bold uppercase mb-2">
+          Alertas de Operación
+        </p>
+        {alerts.length === 0 ? (
+          <p className="text-gray-600 text-xs text-center py-6">
+            Aquí aparecerán las altas de lotes (registro) y las cancelaciones de
+            vuelos a medida que ocurran.
+          </p>
+        ) : (
+          <div className="flex flex-col gap-1 max-h-72 overflow-y-auto">
+            {alerts.map(a => (
+              <div key={a.id}
+                   className="flex items-start gap-2 text-xs bg-[#021020] rounded px-2 py-1.5">
+                <span className={`flex-shrink-0 font-bold ${
+                  a.type === "cancel" ? "text-red-400" : "text-green-400"}`}>
+                  {a.type === "cancel" ? "✕" : "＋"}
+                </span>
+                <span className="text-gray-300 flex-1">{a.text}</span>
+                <span className="text-gray-600 font-mono text-[10px] flex-shrink-0">
+                  {a.time instanceof Date ? a.time.toLocaleTimeString("es-ES") : ""}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

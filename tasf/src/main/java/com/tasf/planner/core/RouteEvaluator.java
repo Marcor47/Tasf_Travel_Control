@@ -60,11 +60,18 @@ public class RouteEvaluator {
 
             if (flight.isCancelled()) continue;
 
+            // No usar vuelos que toquen un aeropuerto cerrado.
+            if (context.isAirportClosed(flight.getOrigin())
+                    || context.isAirportClosed(flight.getDestination())) continue;
+
             int dep = adjustToNextAvailableDeparture(
                     flight.getDepartureHour(),
                     currentTime
             );
             if (dep == -1) continue;
+
+            // No usar una instancia (día concreto) cancelada por el operador.
+            if (context.isInstanceCancelled(flight.getId(), dep)) continue;
 
             int flightDuration = flight.getArrivalHour() - flight.getDepartureHour();
             if (flightDuration < 0) {

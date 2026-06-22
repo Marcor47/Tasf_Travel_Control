@@ -23,10 +23,74 @@ export default function RegisterLot({ simulation }) {
   const [adding,     setAdding]     = useState(false);
   const [status,     setStatus]     = useState(null); // "added" | "error" | null
 
+  // Edición de la red: vuelos / aeropuertos / carga de archivos
+  const [flightForm, setFlightForm] = useState({
+    origin: "", destination: "", departureLocal: "08:00", arrivalLocal: "09:00", capacity: 300,
+  });
+  const [airportForm, setAirportForm] = useState({
+    code: "", region: "Europa", lat: 0, lng: 0, gmtHours: 0, capacity: 400,
+  });
+  const [closeCode, setCloseCode] = useState("");
+  const [dropType,  setDropType]  = useState("planes");
+  const [netMsg,    setNetMsg]    = useState(null);
+
   const handle = e => {
     setForm(f => ({ ...f, [e.target.name]: e.target.value }));
     setReport(null);
     setStatus(null);
+  };
+
+  const hf = e => setFlightForm(f => ({ ...f, [e.target.name]: e.target.value }));
+  const ha = e => setAirportForm(f => ({ ...f, [e.target.name]: e.target.value }));
+
+  const flash = (text) => { setNetMsg(text); setTimeout(() => setNetMsg(null), 4000); };
+
+  const submitFlight = async () => {
+    const ok = await simulation?.addFlight(
+      flightForm.origin, flightForm.destination,
+      flightForm.departureLocal, flightForm.arrivalLocal, Number(flightForm.capacity) || 0);
+    flash(ok ? "✓ Vuelo agregado" : "✕ No se pudo agregar el vuelo (¿simulación en curso?)");
+  };
+  const submitAirport = async () => {
+    const ok = await simulation?.addAirport(
+      airportForm.code, airportForm.region,
+      Number(airportForm.lat) || 0, Number(airportForm.lng) || 0,
+      Number(airportForm.gmtHours) || 0, Number(airportForm.capacity) || 0);
+    flash(ok ? "✓ Aeropuerto agregado" : "✕ No se pudo agregar el aeropuerto");
+  };
+  const submitClose = async () => {
+    const ok = await simulation?.closeAirport(closeCode);
+    flash(ok ? `✓ Aeropuerto ${closeCode.toUpperCase()} cerrado` : "✕ No se pudo cerrar");
+  };
+
+  // Drag-drop de archivo txt (el usuario elige el tipo). Aeropuertos en UTF-16
+  // (formato del dataset), vuelos y lotes en UTF-8.
+  const onDropFile = async (e) => {
+    e.preventDefault();
+    const file = e.dataTransfer?.files?.[0];
+    if (!file) return;
+    const enc = dropType === "airports" ? "UTF-16" : "UTF-8";
+    const content = await file.text().catch(async () => {
+      // file.text() asume UTF-8; para UTF-16 leemos con FileReader
+      return await new Promise((res) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result);
+        r.readAsText(file, enc);
+      });
+    });
+    let body = content;
+    if (dropType === "airports") {
+      body = await new Promise((res) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result);
+        r.readAsText(file, "UTF-16");
+      });
+    }
+    // Para lotes, el origen va en el nombre _envios_XXXX_
+    const m = /_envios_([A-Za-z0-9]+)_/.exec(file.name);
+    const origin = m ? m[1].toUpperCase() : "";
+    const ok = await simulation?.uploadData(dropType, body, origin);
+    flash(ok ? `✓ Archivo de ${dropType} cargado` : "✕ No se pudo cargar el archivo");
   };
 
   const payload = () => ({
@@ -55,12 +119,12 @@ export default function RegisterLot({ simulation }) {
   const addLot = async () => {
     setAdding(true);
     try {
-      const r = await fetch(`${API_BASE}/api/simulation/addLot`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload()),
-      });
-      setStatus(r.ok ? "added" : "error");
+      // Pasa por el hook para que quede registrada la alerta en Monitoreo.
+      const ok = simulation?.addLot
+        ? await simulation.addLot(form.origin, form.destination,
+                                  Number(form.quantity) || 0, form.client)
+        : false;
+      setStatus(ok ? "added" : "error");
     } catch {
       setStatus("error");
     } finally {
@@ -247,6 +311,111 @@ export default function RegisterLot({ simulation }) {
               )}
             </>
           )}
+        </div>
+      </div>
+
+      {/* ── Edición de la red (vuelos / aeropuertos / carga de archivos) ───── */}
+      <h2 className="text-teal font-bold text-lg mt-6 mb-1">RED Y CARGA DE DATOS</h2>
+      <p className="text-gray-500 text-xs mb-3">
+        Agrega vuelos y aeropuertos, cierra aeropuertos o carga archivos txt
+        (mismo formato del dataset) sobre la simulación en curso.
+        {netMsg && <span className="text-teal ml-2">{netMsg}</span>}
+      </p>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Agregar vuelo */}
+        <div className="bg-[#031525] border border-teal/20 rounded p-3">
+          <p className="text-teal text-xs font-bold uppercase mb-2">Agregar Vuelo</p>
+          <div className="grid grid-cols-2 gap-2 mb-2">
+            {[["origin", "Origen"], ["destination", "Destino"]].map(([n, l]) => (
+              <select key={n} name={n} value={flightForm[n]} onChange={hf}
+                className="bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300">
+                <option value="">{l}</option>
+                {airports.map(a => <option key={a.code} value={a.code}>{a.code}</option>)}
+              </select>
+            ))}
+            <label className="text-gray-500 text-[10px]">Salida (local)
+              <input name="departureLocal" type="time" value={flightForm.departureLocal} onChange={hf}
+                className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300"/>
+            </label>
+            <label className="text-gray-500 text-[10px]">Llegada (local)
+              <input name="arrivalLocal" type="time" value={flightForm.arrivalLocal} onChange={hf}
+                className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300"/>
+            </label>
+            <label className="text-gray-500 text-[10px] col-span-2">Capacidad
+              <input name="capacity" type="number" min="1" value={flightForm.capacity} onChange={hf}
+                className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300"/>
+            </label>
+          </div>
+          <button onClick={submitFlight} disabled={!canAdd}
+            className="w-full bg-teal hover:bg-teal/80 text-white text-xs py-1.5 rounded transition
+                       disabled:opacity-40 disabled:cursor-not-allowed">
+            Agregar Vuelo
+          </button>
+        </div>
+
+        {/* Aeropuertos: agregar / cerrar */}
+        <div className="bg-[#031525] border border-teal/20 rounded p-3">
+          <p className="text-teal text-xs font-bold uppercase mb-2">Aeropuertos</p>
+          <div className="grid grid-cols-2 gap-2 mb-2">
+            <input name="code" value={airportForm.code} onChange={ha} placeholder="Código ICAO"
+              className="bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300 uppercase"/>
+            <input name="region" value={airportForm.region} onChange={ha} placeholder="Región"
+              className="bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300"/>
+            <input name="lat" type="number" value={airportForm.lat} onChange={ha} placeholder="Lat"
+              className="bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300"/>
+            <input name="lng" type="number" value={airportForm.lng} onChange={ha} placeholder="Lng"
+              className="bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300"/>
+            <input name="gmtHours" type="number" value={airportForm.gmtHours} onChange={ha} placeholder="GMT (h)"
+              className="bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300"/>
+            <input name="capacity" type="number" min="1" value={airportForm.capacity} onChange={ha} placeholder="Capacidad"
+              className="bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300"/>
+          </div>
+          <button onClick={submitAirport} disabled={!canAdd}
+            className="w-full bg-teal hover:bg-teal/80 text-white text-xs py-1.5 rounded transition mb-2
+                       disabled:opacity-40 disabled:cursor-not-allowed">
+            Agregar Aeropuerto
+          </button>
+          <div className="flex gap-1">
+            <select value={closeCode} onChange={e => setCloseCode(e.target.value)}
+              className="flex-1 bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300">
+              <option value="">Cerrar aeropuerto…</option>
+              {airports.map(a => <option key={a.code} value={a.code}>{a.code}</option>)}
+            </select>
+            <button onClick={submitClose} disabled={!canAdd || !closeCode}
+              className="bg-red-800/60 hover:bg-red-700 text-red-200 text-xs px-3 py-1 rounded transition
+                         disabled:opacity-40 disabled:cursor-not-allowed">
+              Cerrar
+            </button>
+          </div>
+        </div>
+
+        {/* Carga de archivo (drag & drop) */}
+        <div className="bg-[#031525] border border-teal/20 rounded p-3">
+          <p className="text-teal text-xs font-bold uppercase mb-2">Cargar Archivo (txt)</p>
+          <div className="flex gap-1 mb-2">
+            {[["planes", "Vuelos"], ["airports", "Aeropuertos"], ["lots", "Lotes"]].map(([k, l]) => (
+              <button key={k} onClick={() => setDropType(k)}
+                className={`flex-1 text-[10px] px-2 py-1 rounded transition
+                  ${dropType === k ? "bg-teal text-white" : "bg-[#021020] text-gray-400 border border-white/10"}`}>
+                {l}
+              </button>
+            ))}
+          </div>
+          <div
+            onDragOver={e => e.preventDefault()}
+            onDrop={onDropFile}
+            className="border-2 border-dashed border-teal/30 rounded p-6 text-center
+                       text-gray-500 text-xs hover:border-teal/60 transition">
+            Arrastra aquí un archivo de <span className="text-teal">{
+              dropType === "planes" ? "vuelos" : dropType === "airports" ? "aeropuertos" : "lotes"
+            }</span><br/>
+            (mismo formato del dataset)
+          </div>
+          <p className="text-gray-600 text-[10px] mt-2">
+            Lotes: el origen se toma del nombre del archivo (_envios_XXXX_).
+            {!canAdd && <span className="text-yellow-400"> Requiere Día a Día en curso.</span>}
+          </p>
         </div>
       </div>
     </div>

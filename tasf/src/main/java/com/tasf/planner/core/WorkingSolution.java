@@ -27,11 +27,12 @@ import java.util.*;
 public class WorkingSolution {
 
     /**
-     * Tiempo que una maleta ocupa el almacén tras llegar (minutos).
-     * Parámetro de restricción del caso: 10 minutos.
-     * Cambiar aquí es suficiente para ajustar el comportamiento de dwell.
+     * Tiempo que una maleta permanece en el almacén de su DESTINO FINAL tras
+     * llegar, antes de considerarse "recogida" por el cliente (minutos).
+     * Parámetro del caso. Cambiar SOLO aquí ajusta todo el comportamiento de
+     * dwell (se usa en warehouseIntervals y en OvernightArrival).
      */
-    public static final int WAREHOUSE_DWELL_MINUTES = 10;
+    public static final int WAREHOUSE_DWELL_MINUTES = 15;
 
     private final PlanningContext context;
     private final Map<String, RoutePlan>              assignments;

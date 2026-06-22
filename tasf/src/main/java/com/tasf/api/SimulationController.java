@@ -77,4 +77,34 @@ public class SimulationController {
         return simulationService.addLot(
                 request.origin(), request.destination(), request.qty());
     }
+
+    @PostMapping("/addFlight")
+    public SimulationService.SimulationState addFlight(
+            @RequestBody SimulationService.FlightRequest r) {
+        return simulationService.addFlight(
+                r.origin(), r.destination(), r.departureLocal(), r.arrivalLocal(), r.cap());
+    }
+
+    @PostMapping("/addAirport")
+    public SimulationService.SimulationState addAirport(
+            @RequestBody SimulationService.AirportRequest r) {
+        return simulationService.addAirport(
+                r.code(), r.region(),
+                r.lat()      == null ? 0 : r.lat(),
+                r.lng()      == null ? 0 : r.lng(),
+                r.gmtHours() == null ? 0 : r.gmtHours(),
+                r.capacity() == null ? 0 : r.capacity());
+    }
+
+    @PostMapping("/closeAirport")
+    public SimulationService.SimulationState closeAirport(
+            @RequestBody SimulationService.CloseRequest r) {
+        return simulationService.closeAirport(r.code());
+    }
+
+    @PostMapping("/uploadData")
+    public SimulationService.SimulationState uploadData(
+            @RequestBody SimulationService.UploadRequest r) {
+        return simulationService.uploadData(r.type(), r.content(), r.origin());
+    }
 }

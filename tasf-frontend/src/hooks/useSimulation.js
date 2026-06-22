@@ -137,29 +137,14 @@ const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
   try {
     setHistory([]);
     prevEventsRef.current = [];
-    setState(prev => ({ ...prev, clock: "Dia --  00:00" })); // ← línea nueva
-    // Velocidad por bloque:
-    //  · diadia  → 3600 s (tiempo real: 1 h sim = 1 h real)
-    //  · periodo → adaptable a numDays para que la animación quepa en ≤30 min
-    //              (1800 s objetivo / nº de bloques = numDays·24). Mínimo 8 s.
-    //              Nota: el presupuesto ALNS por bloque puede seguir dominando
-    //              el tiempo real total y requerir ajuste aparte.
-    //  · colapso → 30 s (duración abierta, no se puede acotar a 30 min)
-    let blockSeconds;
-    if (mode === "diadia") {
-      blockSeconds = 3600;
-    } else if (mode === "periodo") {
-      const days = numDays || 5;
-      blockSeconds = Math.max(8, Math.min(30, Math.floor(1800 / (days * 24))));
-    } else {
-      blockSeconds = 30;
-    }
+    setState(prev => ({ ...prev, clock: "Dia --  00:00" }));
+    // La velocidad de la simulación la controla el backend (BLOCK_REAL_SECONDS);
+    // aquí solo enviamos qué simular y desde cuándo.
     const response = await fetch(`${API_BASE}/api/simulation/start`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         mode,
-        blockSeconds,
         startDate:        startDate || null,
         numDays:          numDays   || null,
         startMinuteOfDay: startMinute || 0,
@@ -206,7 +191,16 @@ const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
     }
   }, []);
 
-  const cancelFlight = useCallback(async (flightId) => {
+  // ── Alertas (registro de lotes y cancelaciones) para la pestaña Monitoreo ──
+  const [alerts, setAlerts] = useState([]);
+  const pushAlert = useCallback((type, text) => {
+    setAlerts(a => [
+      { id: Date.now() + Math.random(), type, text, time: new Date() },
+      ...a,
+    ].slice(0, 50));
+  }, []);
+
+  const cancelFlight = useCallback(async (flightId, info = {}) => {
     try {
       const response = await fetch(`${API_BASE}/api/simulation/cancelFlight`, {
         method: "POST",
@@ -214,13 +208,77 @@ const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
         body: JSON.stringify({ flightId }),
       });
       if (response.ok) {
-        const data = await response.json();
-        setState(data);
+        setState(await response.json());
+        const ruta = (info.from && info.to) ? ` ${info.from}→${info.to}` : "";
+        pushAlert("cancel",
+          `Vuelo ${flightId}${ruta} cancelado — ${info.bags || 0} maletas a replanificar`);
       }
     } catch (e) {
       console.error("Error al cancelar vuelo:", e);
     }
+  }, [pushAlert]);
+
+  // Alta de lote (registro). Devuelve true si se agregó; registra una alerta.
+  const addLot = useCallback(async (origin, destination, quantity, client) => {
+    try {
+      const r = await fetch(`${API_BASE}/api/simulation/addLot`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ origin, destination, quantity }),
+      });
+      if (!r.ok) return false;
+      setState(await r.json());
+      pushAlert("register",
+        `${quantity} maletas ${origin}→${destination} registradas${client ? ` · ${client}` : ""}`);
+      return true;
+    } catch (e) {
+      console.error("Error al registrar lote:", e);
+      return false;
+    }
+  }, [pushAlert]);
+
+  // ── Edición de la red en caliente ─────────────────────────────────────────
+  const postJson = useCallback(async (path, body) => {
+    try {
+      const r = await fetch(`${API_BASE}/api/simulation/${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) return false;
+      setState(await r.json());
+      return true;
+    } catch (e) {
+      console.error(`Error en ${path}:`, e);
+      return false;
+    }
   }, []);
+
+  const addFlight = useCallback(async (origin, destination, departureLocal, arrivalLocal, capacity) => {
+    const ok = await postJson("addFlight", { origin, destination, departureLocal, arrivalLocal, capacity });
+    if (ok) pushAlert("register",
+      `Vuelo ${origin}→${destination} ${departureLocal} agregado (cap ${capacity})`);
+    return ok;
+  }, [postJson, pushAlert]);
+
+  const addAirport = useCallback(async (code, region, lat, lng, gmtHours, capacity) => {
+    const ok = await postJson("addAirport", { code, region, lat, lng, gmtHours, capacity });
+    if (ok) pushAlert("register", `Aeropuerto ${code} agregado (cap ${capacity})`);
+    return ok;
+  }, [postJson, pushAlert]);
+
+  const closeAirport = useCallback(async (code) => {
+    const ok = await postJson("closeAirport", { code });
+    if (ok) pushAlert("cancel", `Aeropuerto ${code} cerrado`);
+    return ok;
+  }, [postJson, pushAlert]);
+
+  const uploadData = useCallback(async (type, content, origin) => {
+    const ok = await postJson("uploadData", { type, content, origin });
+    const label = type === "planes" ? "vuelos" : type === "airports" ? "aeropuertos" : "lotes";
+    if (ok) pushAlert("register", `Archivo de ${label} cargado`);
+    return ok;
+  }, [postJson, pushAlert]);
 
 
 
@@ -273,6 +331,12 @@ const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
     resume,
     paused,
     cancelFlight,
+    addLot,
+    addFlight,
+    addAirport,
+    closeAirport,
+    uploadData,
+    alerts,
     realSeconds, // ← nuevo
   };
 }

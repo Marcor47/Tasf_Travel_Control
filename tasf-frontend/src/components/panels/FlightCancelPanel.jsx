@@ -58,7 +58,12 @@ export default function FlightCancelPanel({ flights = [], onCancel }) {
                       {confirming === f.flightId ? (
                         <div className="flex gap-1">
                           <button
-                            onClick={() => { onCancel(f.flightId); setConfirming(null); }}
+                            onClick={() => {
+                              onCancel(f.flightId, {
+                                from: f.origin, to: f.destination, bags: f.assigned,
+                              });
+                              setConfirming(null);
+                            }}
                             className="bg-red-700 hover:bg-red-600 text-white
                                        text-[10px] px-1.5 py-0.5 rounded transition">
                             Sí

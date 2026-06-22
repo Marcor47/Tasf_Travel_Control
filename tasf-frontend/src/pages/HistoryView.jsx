@@ -12,6 +12,11 @@ const MAX_HISTORY = 300;
 //   · landed + !finalDestination → esas maletas toman otro vuelo
 
 function eventLabel(type, finalDestination) {
+  if (type === "planned") return {
+    text: "Planeado",
+    sub:  "Vuelo planificado (aún sin despegar)",
+    bg:   "bg-gray-600",
+  };
   if (type === "departed") return {
     text: "En Vuelo",
     sub:  "Vuelo en tránsito",
@@ -40,6 +45,7 @@ function StatusBadge({ type, finalDestination }) {
 
 const FILTERS = [
   { key: "all",        label: "Todos"      },
+  { key: "planned",    label: "Planeado"   },
   { key: "departed",   label: "En Vuelo"   },
   { key: "transbordo", label: "Transbordo" },
   { key: "entregado",  label: "Entregado"  },
@@ -47,17 +53,36 @@ const FILTERS = [
 
 function matchFilter(filter, e) {
   if (filter === "all")        return true;
+  if (filter === "planned")    return e.type === "planned";
   if (filter === "departed")   return e.type === "departed";
   if (filter === "transbordo") return e.type === "landed" && !e.finalDestination;
   if (filter === "entregado")  return e.type === "landed" &&  e.finalDestination;
   return true;
 }
 
-export default function HistoryView({ history = [], running = false }) {
+export default function HistoryView({ history = [], upcoming = [], running = false }) {
   const [filter,  setFilter]  = useState("all");
   const [search,  setSearch]  = useState("");
 
-  const filtered = history.filter(e => {
+  // Vuelos planificados (aún sin despegar, con maletas asignadas) como filas
+  // sintéticas "planned" — el registro de lo que el sistema planea, en formato
+  // de historial.
+  const plannedRows = upcoming
+    .filter(u => (u.assigned || 0) > 0)
+    .map(u => ({
+      type: "planned",
+      flightId: u.flightId,
+      from: u.origin, to: u.destination,
+      bags: u.assigned,
+      clock: u.departureClock,
+      minute: u.departureMinute,
+      finalDestination: false,
+    }));
+
+  // Planeados (futuro) primero, luego el historial real.
+  const allRows = [...plannedRows, ...history];
+
+  const filtered = allRows.filter(e => {
     if (!matchFilter(filter, e)) return false;
     if (search) {
       const s = search.toLowerCase();
@@ -75,6 +100,7 @@ export default function HistoryView({ history = [], running = false }) {
   // al operador le interesa saber cuántos vuelos están en el aire,
   // pero cuántas maletas están pendientes o ya entregadas.
   const counts = {
+    planeado:   plannedRows.reduce((sum, e) => sum + (e.bags || 0), 0),
     enVuelo:    history.filter(e => e.type === "departed").length,
     transbordo: history
       .filter(e => e.type === "landed" && !e.finalDestination)
@@ -108,7 +134,7 @@ export default function HistoryView({ history = [], running = false }) {
                      text-xs text-gray-300 focus:outline-none focus:border-teal w-56"
         />
         <span className="ml-auto text-gray-600 text-xs">
-          {filtered.length} / {history.length} eventos
+          {filtered.length} / {allRows.length} eventos
         </span>
       </div>
 
@@ -128,7 +154,7 @@ export default function HistoryView({ history = [], running = false }) {
       </div>
 
       <div className="flex-1 overflow-y-auto bg-[#031525] border border-teal/20 rounded">
-        {history.length === 0 ? (
+        {allRows.length === 0 ? (
           <div className="flex items-center justify-center h-full">
             <p className="text-gray-600 text-sm text-center px-4">
               {running
@@ -159,6 +185,7 @@ export default function HistoryView({ history = [], running = false }) {
                 <tr
                   key={`${e.minute}-${e.flightId}-${e.type}-${e.finalDestination}-${i}`}
                   className={`border-b border-white/5 hover:bg-white/5 transition
+                    ${e.type === "planned" ? "bg-gray-500/10" : ""}
                     ${e.type === "landed" &&  e.finalDestination ? "bg-green-900/10" : ""}
                     ${e.type === "landed" && !e.finalDestination ? "bg-blue-900/10"  : ""}`}
                 >
@@ -192,9 +219,10 @@ export default function HistoryView({ history = [], running = false }) {
         )}
       </div>
 
-      {history.length > 0 && (
-        <div className="mt-2 grid grid-cols-3 gap-2">
+      {allRows.length > 0 && (
+        <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2">
           {[
+            ["Planeado",   counts.planeado,   "text-gray-300",   "maletas planificadas (sin despegar)"],
             ["En Vuelo",   counts.enVuelo,    "text-yellow-400", "vuelos en el aire"],
             ["Transbordo", counts.transbordo, "text-blue-400",   "maletas conectando con otro vuelo"],
             ["Entregado",  counts.entregado,  "text-green-400",  "maletas en destino final"],
