@@ -222,7 +222,7 @@ export default function Dashboard({
               kpis={kpis}/>
           )}
 
-          {mode === "diadia" && simulation?.running && (
+          {(mode === "diadia" || mode === "periodo") && simulation?.running && (
             <FlightCancelPanel
               flights={simulation?.upcomingFlights ?? []}
               onCancel={cancelFlight}
