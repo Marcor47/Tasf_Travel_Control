@@ -47,9 +47,12 @@ export default function ReportView({ simulation }) {
     activeFlights:    kpis.activeFlights    ?? 0,
   };
 
-  const fleetUsage = safeKpis.totalBags > 0
-      ? Math.round(safeKpis.routedBags / safeKpis.totalBags * 100)
-      : 0;
+  // Llenado real de la flota = maletas en el aire / capacidad en el aire
+  // (incluye aviones vacíos, así no se queda clavado en 100%).
+  const activeRoutes = (simulation?.routes ?? []).filter(r => r.status === "departed");
+  const fleetCapTot  = activeRoutes.reduce((s, r) => s + (r.capacity || 0), 0);
+  const fleetBagsTot = activeRoutes.reduce((s, r) => s + (r.bags     || 0), 0);
+  const fleetUsage   = fleetCapTot > 0 ? Math.round(fleetBagsTot / fleetCapTot * 100) : 0;
 
   const onTimePct = safeKpis.routedBags > 0
       ? Math.round(safeKpis.deliveredOnTime / safeKpis.routedBags * 100)
@@ -95,12 +98,12 @@ export default function ReportView({ simulation }) {
             color: safeKpis.replanifications > 0 ? "text-yellow-400" : "text-green-400",
           },
           {
-            label: "Uso de Flota",
+            label: "Llenado de Flota",
             val:   `${fleetUsage}%`,
             sub:   `Ocupación red: ${safeKpis.occupancyPercent}%`,
-            color: fleetUsage > 80 ? "text-green-400"
-                 : fleetUsage > 50 ? "text-yellow-400"
-                 : "text-red-400",
+            color: fleetUsage > 85 ? "text-red-400"
+                 : fleetUsage > 60 ? "text-yellow-400"
+                 : "text-green-400",
           },
         ].map(k => (
           <div key={k.label}

@@ -61,6 +61,9 @@ export default function Dashboard({
   const [rightOpen, setRightOpen] = useState(false);
   // Barra de configuración (fecha/hora) — cerrada al inicio
   const [configOpen, setConfigOpen] = useState(false);
+  // Panel de información derecho: pestaña activa + sub-vista de almacenes
+  const [infoTab, setInfoTab] = useState("almacenes"); // almacenes/vuelos/envios/sla
+  const [whSub,   setWhSub]   = useState("capacidad");  // capacidad/movimientos
 
 
   const kpis         = simulation?.kpis ?? {};
@@ -128,22 +131,18 @@ export default function Dashboard({
       {/* ── Paneles principales ───────────────────────────────────────────── */}
       <div className="flex flex-col md:flex-row gap-2 flex-1 min-h-0">
 
-        {/* Panel izquierdo — SLA (colapsable) */}
-        <SidePanel title="Plazos / SLA" side="left"
+        {/* Panel izquierdo — Resumen (contadores + KPIs) */}
+        <SidePanel title="Resumen" side="left"
                    open={leftOpen} onToggle={() => setLeftOpen(o => !o)}
-                   widthClass="md:w-72">
+                   widthClass="md:w-56">
           <SLAMonitor
             kpis={kpis}
             events={simulation?.history ?? []}
             running={running}
             simulatedNow={simulatedNow}
             focusCodes={focusCodes}
+            view="resumen"
           />
-          <FlightsCapacity
-            routes={simulation?.routes ?? []}
-            upcoming={simulation?.upcomingFlights ?? []}
-            focusCodes={focusCodes}
-            running={running} />
         </SidePanel>
 
         {/* Mapa central */}
@@ -262,22 +261,75 @@ export default function Dashboard({
           )}
         </div>
 
-        {/* Panel derecho — Almacenes (colapsable) */}
-        <SidePanel title="Almacenes" side="right"
+        {/* Panel derecho — Información en pestañas (Almacenes/Vuelos/Envíos/SLA) */}
+        <SidePanel title="Información" side="right"
                    open={rightOpen} onToggle={() => setRightOpen(o => !o)}
-                   widthClass="md:w-64">
-          <WarehouseCapacity
-            airports={simulation?.airports ?? []}
-            kpis={kpis}
-            filter={storageFilter}
-            onFilterChange={handleFilterChange}
-            selectedCode={selectedAirport}
-            onAirportClick={handleAirportClick}/>
-          <StorageMovements
-            history={simulation?.history ?? []}
-            upcoming={simulation?.upcomingFlights ?? []}
-            focusCodes={focusCodes}
-            airports={simulation?.airports ?? []}/>
+                   widthClass="md:w-72">
+          <div className="flex gap-1 mb-2 sticky top-0 z-10">
+            {[
+              ["almacenes", "Almacenes"], ["vuelos", "Vuelos"],
+              ["envios", "Envíos"], ["sla", "SLA"],
+            ].map(([k, l]) => (
+              <button key={k} onClick={() => setInfoTab(k)}
+                className={`flex-1 text-[10px] px-1 py-1 rounded transition font-medium
+                  ${infoTab === k ? "bg-teal text-white"
+                                  : "bg-[#021020] text-gray-400 border border-white/10 hover:text-white"}`}>
+                {l}
+              </button>
+            ))}
+          </div>
+
+          {infoTab === "almacenes" && (
+            <>
+              <div className="flex gap-1 mb-2">
+                {[["capacidad", "Capacidad"], ["movimientos", "Movimientos"]].map(([k, l]) => (
+                  <button key={k} onClick={() => setWhSub(k)}
+                    className={`flex-1 text-[10px] px-1 py-0.5 rounded transition
+                      ${whSub === k ? "bg-teal/20 text-teal border border-teal/40"
+                                    : "bg-[#021020] text-gray-500 border border-white/10"}`}>
+                    {l}
+                  </button>
+                ))}
+              </div>
+              {whSub === "capacidad" ? (
+                <WarehouseCapacity
+                  airports={simulation?.airports ?? []}
+                  kpis={kpis}
+                  filter={storageFilter}
+                  onFilterChange={handleFilterChange}
+                  selectedCode={selectedAirport}
+                  onAirportClick={handleAirportClick}/>
+              ) : (
+                <StorageMovements
+                  history={simulation?.history ?? []}
+                  upcoming={simulation?.upcomingFlights ?? []}
+                  focusCodes={focusCodes}
+                  airports={simulation?.airports ?? []}/>
+              )}
+            </>
+          )}
+
+          {infoTab === "vuelos" && (
+            <FlightsCapacity
+              routes={simulation?.routes ?? []}
+              upcoming={simulation?.upcomingFlights ?? []}
+              focusCodes={focusCodes}
+              running={running}/>
+          )}
+
+          {infoTab === "envios" && (
+            <SLAMonitor
+              kpis={kpis} events={simulation?.history ?? []}
+              running={running} simulatedNow={simulatedNow}
+              focusCodes={focusCodes} view="envios"/>
+          )}
+
+          {infoTab === "sla" && (
+            <SLAMonitor
+              kpis={kpis} events={simulation?.history ?? []}
+              running={running} simulatedNow={simulatedNow}
+              focusCodes={focusCodes} view="sla"/>
+          )}
         </SidePanel>
       </div>
     </div>

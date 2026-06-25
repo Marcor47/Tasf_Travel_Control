@@ -1,5 +1,19 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { getWarehouseColor } from "../../hooks/useStatusColor";
+
+// Categoría de semáforo de un vuelo (incluye "vacío").
+function flightSem(bags, capacity) {
+  if ((bags || 0) === 0) return "empty";
+  return getWarehouseColor(capacity > 0 ? Math.round((bags / capacity) * 100) : 0);
+}
+
+const SEM_CHIPS = [
+  { key: "all",   label: "Todos", dot: "bg-gray-400" },
+  { key: "green", label: "",      dot: "bg-green-500" },
+  { key: "amber", label: "",      dot: "bg-yellow-500" },
+  { key: "red",   label: "",      dot: "bg-red-500" },
+  { key: "empty", label: "Vacío", dot: "bg-gray-500" },
+];
 
 // Minuto absoluto → "HH:MM" del día (igual que el backend para casar capacidades)
 function hhmm(minute) {
@@ -18,13 +32,23 @@ function hhmm(minute) {
  * puede llevar varios grupos de lotes).
  */
 export default function FlightsCapacity({ routes = [], upcoming = [], running = false, focusCodes = [] }) {
+  const [search, setSearch] = useState("");
+  const [sem,    setSem]    = useState("all");   // semáforo: all/green/amber/red/empty
+
   // Cada ruta activa del backend ya es un vuelo con su capacidad y carga total.
-  // Si hay un aeropuerto en foco, mostrar solo los vuelos que entran o salen.
+  // Filtros: foco de aeropuerto, búsqueda por código/tramo y semáforo de carga.
   const activeFlights = useMemo(() => {
     const focus = new Set(focusCodes);
+    const q = search.trim().toLowerCase();
     return routes
       .filter(r => r.status === "departed")
       .filter(r => focus.size === 0 || focus.has(r.from) || focus.has(r.to))
+      .filter(r => sem === "all" || flightSem(r.bags, r.capacity || 0) === sem)
+      .filter(r => !q
+        || (r.flightId || "").toLowerCase().includes(q)
+        || `${r.from}-${r.to}`.toLowerCase().includes(q)
+        || (r.from || "").toLowerCase().includes(q)
+        || (r.to   || "").toLowerCase().includes(q))
       .map(r => {
         const cap = r.capacity || 0;
         return {
@@ -35,7 +59,7 @@ export default function FlightsCapacity({ routes = [], upcoming = [], running = 
         };
       })
       .sort((a, b) => (b.pct ?? -1) - (a.pct ?? -1));
-  }, [routes, focusCodes]);
+  }, [routes, focusCodes, search, sem]);
 
   // Vuelos PLANIFICADOS próximos (aún no despegan) con maletas asignadas —
   // el registro de lo que el sistema planea. Respeta el foco de aeropuertos.
@@ -58,16 +82,32 @@ export default function FlightsCapacity({ routes = [], upcoming = [], running = 
     <div className="bg-[#031525] border border-teal/20 rounded p-2 mt-2">
       <p className="text-teal font-bold mb-2 uppercase tracking-wide text-[10px]">
         Vuelos Activos y Capacidad
-        {activeFlights.length > 0 && (
-          <span className="text-gray-500 normal-case ml-1">
-            ({activeFlights.length})
-          </span>
-        )}
+        <span className="text-gray-500 normal-case ml-1">({activeFlights.length})</span>
       </p>
+
+      {/* Búsqueda por código/tramo + filtro por semáforo (incluye vacío) */}
+      <input
+        value={search}
+        onChange={e => setSearch(e.target.value)}
+        placeholder="Buscar vuelo o tramo (LIM-MAD)…"
+        className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1
+                   text-[11px] text-gray-300 mb-1.5 focus:outline-none focus:border-teal"
+      />
+      <div className="flex gap-1 mb-2">
+        {SEM_CHIPS.map(c => (
+          <button key={c.key} onClick={() => setSem(c.key)}
+            title={c.key}
+            className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] transition border
+              ${sem === c.key ? "border-teal/60 bg-teal/10 text-gray-200"
+                              : "border-white/10 text-gray-400 hover:text-white"}`}>
+            <span className={`w-2 h-2 rounded-full ${c.dot}`}/>{c.label}
+          </button>
+        ))}
+      </div>
 
       {activeFlights.length === 0 ? (
         <p className="text-gray-600 text-center py-4 text-[10px]">
-          {running ? "Sin vuelos activos en este momento" : "Inicia la simulación"}
+          {running ? "Sin vuelos para el filtro" : "Inicia la simulación"}
         </p>
       ) : (
         <div className="flex flex-col gap-2 max-h-72 overflow-y-auto">

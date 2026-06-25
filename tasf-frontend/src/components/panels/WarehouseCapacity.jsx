@@ -1,31 +1,42 @@
+import { useState } from "react";
 import { getWarehouseColor } from "../../hooks/useStatusColor";
 import { STATIC_AIRPORTS, AIRPORT_META, airportMatches } from "../../data/staticAirports";
+
+const SEM_CHIPS = [
+  { key: "all",   label: "Todos", dot: "bg-gray-400" },
+  { key: "green", label: "",      dot: "bg-green-500" },
+  { key: "amber", label: "",      dot: "bg-yellow-500" },
+  { key: "red",   label: "",      dot: "bg-red-500" },
+  { key: "empty", label: "Vacío", dot: "bg-gray-500" },
+];
+
+function whSem(a) {
+  const cur = a.current || 0;
+  if (cur === 0) return "empty";
+  return getWarehouseColor(Math.round(cur / Math.max(1, a.capacity) * 100));
+}
 
 export default function WarehouseCapacity({
   airports = [], kpis = {},
   filter = "", onFilterChange,
   selectedCode = null, onAirportClick,
 }) {
-  const hasFilter = filter.trim().length > 0;
+  const [sem, setSem] = useState("all");   // semáforo: all/green/amber/red/empty
+  const hasFilter = filter.trim().length > 0 || sem !== "all";
 
-  // Fuente: datos en vivo del backend si existen; si no (antes de iniciar la
-  // simulación) usamos los estáticos del dataset para poder filtrar igualmente.
+  // Fuente: datos en vivo del backend si existen; si no (antes de iniciar)
+  // usamos los estáticos del dataset para poder filtrar igualmente.
   const source = airports.length > 0 ? airports : STATIC_AIRPORTS;
 
-  // Con filtro: todos los aeropuertos que coinciden (código, país o región).
-  // Sin filtro: comportamiento original — top 10 por ocupación de los vivos.
-  const shownAirports = hasFilter
-    ? [...source]
-        .filter(a => airportMatches(a, filter))
-        .sort((a, b) => ((b.current || 0) / Math.max(1, b.capacity)) -
-                        ((a.current || 0) / Math.max(1, a.capacity)))
-    : (airports.length > 0
-        ? [...airports]
-            .filter(a => a.capacity > 0)
-            .sort((a, b) => ((b.current || 0) / Math.max(1, b.capacity)) -
-                            ((a.current || 0) / Math.max(1, a.capacity)))
-            .slice(0, 10)
-        : []);
+  // Filtro por texto (código/país/región) + semáforo, ORDENADO por ocupación.
+  // Sin filtros: top 10 por ocupación (comportamiento original).
+  const matched = [...source]
+    .filter(a => airports.length > 0 ? a.capacity > 0 : true)
+    .filter(a => filter.trim() ? airportMatches(a, filter) : true)
+    .filter(a => sem === "all" || whSem(a) === sem)
+    .sort((a, b) => ((b.current || 0) / Math.max(1, b.capacity)) -
+                    ((a.current || 0) / Math.max(1, a.capacity)));
+  const shownAirports = (hasFilter || airports.length === 0) ? matched : matched.slice(0, 10);
 
   const safeKpis = {
     occupancyPercent:  kpis.occupancyPercent  ?? 0,
@@ -55,7 +66,7 @@ export default function WarehouseCapacity({
                        px-2 py-1 pr-6 text-[11px] text-gray-300
                        focus:outline-none focus:border-teal"
           />
-          {hasFilter && (
+          {filter.trim() && (
             <button
               onClick={() => onFilterChange?.("")}
               title="Limpiar filtro"
@@ -64,6 +75,19 @@ export default function WarehouseCapacity({
               ✕
             </button>
           )}
+        </div>
+
+        {/* Filtro por semáforo de ocupación (incluye vacío) */}
+        <div className="flex gap-1 mb-2">
+          {SEM_CHIPS.map(c => (
+            <button key={c.key} onClick={() => setSem(c.key)}
+              title={c.key}
+              className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] transition border
+                ${sem === c.key ? "border-teal/60 bg-teal/10 text-gray-200"
+                                : "border-white/10 text-gray-400 hover:text-white"}`}>
+              <span className={`w-2 h-2 rounded-full ${c.dot}`}/>{c.label}
+            </button>
+          ))}
         </div>
 
         {hasFilter && (

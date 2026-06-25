@@ -133,8 +133,12 @@ export default function SLAMonitor({
   message = "",
   simulatedMinute = 0,
   focusCodes = [],
+  view = "all",   // "all" | "sla" | "envios" | "resumen"
 }) {
   const [filterText, setFilterText] = useState("");
+  const showSla     = view === "all" || view === "sla";
+  const showEnvios  = view === "all" || view === "envios";
+  const showResumen = view === "all" || view === "resumen";
 
   const safeKpis = { ...EMPTY_KPIS, ...Object.fromEntries(
     Object.entries(kpis).filter(([, v]) => v !== undefined && v !== null)
@@ -209,6 +213,7 @@ export default function SLAMonitor({
   return (
     <div className="flex flex-col gap-2 text-xs">
 
+      {showSla && (<>
       {/* ── Monitor de Plazos (SLA) ─────────────────────────────────────── */}
       <div className="bg-[#031525] border border-teal/20 rounded p-2">
         <p className="text-teal font-bold mb-2 uppercase tracking-wide text-[10px]">
@@ -276,8 +281,10 @@ export default function SLAMonitor({
           ))}
         </div>
       </div>
+      </>)}
 
-      {/* ── Buscador de maleta ───────────────────────────────────────────── */}
+      {/* ── Buscador de maleta (Envíos) ─────────────────────────────────── */}
+      {showEnvios && (
       <div className="bg-[#031525] border border-teal/20 rounded p-2">
         <p className="text-teal font-bold mb-2 uppercase tracking-wide text-[10px]">
           Detalle por Maleta
@@ -326,8 +333,10 @@ export default function SLAMonitor({
           </tbody>
         </table>
       </div>
+      )}
 
-      {/* ── Contadores globales de maletas ───────────────────────────────── */}
+      {/* ── Contadores globales de maletas (Resumen) ────────────────────── */}
+      {showResumen && (<>
       <div className="bg-[#031525] border border-teal/20 rounded p-2">
         <p className="text-teal font-bold mb-2 uppercase tracking-wide text-[10px]">
           Maletas
@@ -368,6 +377,7 @@ export default function SLAMonitor({
           </p>
         </div>
       </div>
+      </>)}
     </div>
   );
 }

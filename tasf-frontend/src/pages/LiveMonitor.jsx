@@ -36,9 +36,12 @@ export default function LiveMonitor({ simulation }) {
     avgDeliveryDays:   kpis.avgDeliveryDays   ?? 0,
   };
 
-  const utilizationPct = safeKpis.totalBags > 0
-      ? Math.round(safeKpis.routedBags / safeKpis.totalBags * 100)
-      : 0;
+  // Llenado real de la flota = maletas en el aire / capacidad en el aire.
+  // Incluye los aviones vacíos (suman capacidad pero 0 maletas), así que ya
+  // no se queda clavado en 100%.
+  const fleetCap  = activeFlights.reduce((s, r) => s + (r.capacity || 0), 0);
+  const fleetBags = activeFlights.reduce((s, r) => s + (r.bags     || 0), 0);
+  const utilizationPct = fleetCap > 0 ? Math.round(fleetBags / fleetCap * 100) : 0;
 
   return (
     <div className="p-4 h-full overflow-y-auto">
@@ -63,7 +66,7 @@ export default function LiveMonitor({ simulation }) {
           ["Vuelos Activos",    safeKpis.activeFlights,           "text-white"],
           ["Ocupación Red",     `${safeKpis.occupancyPercent}%`,  safeKpis.occupancyPercent  > 85 ? "text-red-400" : safeKpis.occupancyPercent  > 60 ? "text-yellow-400" : "text-white"],
           ["Saturación",        `${safeKpis.saturationPercent}%`, safeKpis.saturationPercent > 85 ? "text-red-400" : safeKpis.saturationPercent > 60 ? "text-yellow-400" : "text-white"],
-          ["Uso de Flota",      `${utilizationPct}%`,             utilizationPct > 80 ? "text-green-400" : "text-yellow-400"],
+          ["Llenado de Flota",  `${utilizationPct}%`,             utilizationPct > 85 ? "text-red-400" : utilizationPct > 60 ? "text-yellow-400" : "text-green-400"],
         ].map(([label, val, color]) => (
           <div key={label}
                className="bg-[#031525] border border-teal/20 rounded p-3 text-center">
