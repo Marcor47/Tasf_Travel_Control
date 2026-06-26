@@ -33,6 +33,7 @@ function hhmm(minute) {
  */
 export default function FlightsCapacity({
   routes = [], upcoming = [], running = false, focusCodes = [],
+  focusFlightId = null,   // si está, muestra SOLO ese vuelo
   selectedRouteKey = null, pinnedCodes = null, onFlightClick,
 }) {
   const [search, setSearch] = useState("");
@@ -45,6 +46,7 @@ export default function FlightsCapacity({
     const q = search.trim().toLowerCase();
     return routes
       .filter(r => r.status === "departed")
+      .filter(r => !focusFlightId || r.flightId === focusFlightId)
       .filter(r => focus.size === 0 || focus.has(r.from) || focus.has(r.to))
       .filter(r => sem === "all" || flightSem(r.bags, r.capacity || 0) === sem)
       .filter(r => !q
@@ -63,7 +65,7 @@ export default function FlightsCapacity({
         };
       })
       .sort((a, b) => (b.pct ?? -1) - (a.pct ?? -1));
-  }, [routes, focusCodes, search, sem]);
+  }, [routes, focusCodes, focusFlightId, search, sem]);
 
   // Vuelos PLANIFICADOS próximos (aún no despegan) con maletas asignadas —
   // el registro de lo que el sistema planea. Respeta el foco de aeropuertos.
@@ -71,6 +73,7 @@ export default function FlightsCapacity({
     const focus = new Set(focusCodes);
     return upcoming
       .filter(u => (u.assigned || 0) > 0)
+      .filter(u => !focusFlightId || u.flightId === focusFlightId)
       .filter(u => focus.size === 0 || focus.has(u.origin) || focus.has(u.destination))
       .map(u => ({
         key: u.flightId,
@@ -81,7 +84,7 @@ export default function FlightsCapacity({
         pct: u.capacity ? Math.round(((u.assigned || 0) / u.capacity) * 100) : null,
       }))
       .slice(0, 10);
-  }, [upcoming, focusCodes]);
+  }, [upcoming, focusCodes, focusFlightId]);
 
   return (
     <div className="bg-[#031525] border border-teal/20 rounded p-2 mt-2">
@@ -94,7 +97,7 @@ export default function FlightsCapacity({
       <input
         value={search}
         onChange={e => setSearch(e.target.value)}
-        placeholder="Buscar vuelo o tramo (LIM-MAD)…"
+        placeholder="Buscar por ID, origen o destino (LIM-MAD)…"
         className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1
                    text-[11px] text-gray-300 mb-1.5 focus:outline-none focus:border-teal"
       />

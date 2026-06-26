@@ -133,10 +133,16 @@ export default function SLAMonitor({
   message = "",
   simulatedMinute = 0,
   focusCodes = [],
+  focusFlightId = null,   // si está, filtra a las maletas de ESE vuelo
   view = "all",   // "all" | "sla" | "envios" | "resumen"
   selectedShipment = null, onShipmentClick,
+  searchText, onSearchChange,   // búsqueda de maletas — controlada por el padre si se pasa
 }) {
-  const [filterText, setFilterText] = useState("");
+  const [internalFilter, setInternalFilter] = useState("");
+  // Búsqueda controlada (la eleva el Dashboard para reflejarla en el mapa y los
+  // demás paneles) o interna si no se controla.
+  const filterText    = searchText !== undefined ? searchText : internalFilter;
+  const setFilterText = onSearchChange || setInternalFilter;
   const showSla     = view === "all" || view === "sla";
   const showEnvios  = view === "all" || view === "envios";
   const showResumen = view === "all" || view === "resumen";
@@ -147,13 +153,15 @@ export default function SLAMonitor({
 
   const isPlanning = message.startsWith("Planificando");
 
-  // Si hay aeropuertos en foco, restringir los eventos a los que entran/salen
-  // de ellos (coherente con el mapa y las demás tarjetas).
+  // Foco. Prioridad: si hay un vuelo enfocado (se seleccionó una unidad de
+  // transporte), mostrar SOLO las maletas de ese vuelo. Si no, restringir a los
+  // aeropuertos en foco (entradas/salidas), coherente con el mapa y las tarjetas.
   const focusedEvents = useMemo(() => {
+    if (focusFlightId) return events.filter(e => e.flightId === focusFlightId);
     if (!focusCodes.length) return events;
     const focus = new Set(focusCodes);
     return events.filter(e => focus.has(e.from) || focus.has(e.to));
-  }, [events, focusCodes]);
+  }, [events, focusCodes, focusFlightId]);
 
   // ── Últimos 5 eventos para el monitor de plazos general ───────────────────
   const recentEvents = useMemo(() => {

@@ -3,6 +3,7 @@ import SLAMonitor        from "../components/panels/SLAMonitor";
 import WarehouseCapacity from "../components/panels/WarehouseCapacity";
 import FlightsCapacity   from "../components/panels/FlightsCapacity";
 import StorageMovements  from "../components/panels/StorageMovements";
+import StorageFilterBar  from "../components/panels/StorageFilterBar";
 import WorldMap          from "../components/map/WorldMap";
 import CollapseAlert     from "../components/modals/CollapseAlert";
 import FlightCancelPanel from "../components/panels/FlightCancelPanel";
@@ -13,6 +14,10 @@ const INFO_TABS = [
   ["almacenes", "Almacenes"], ["vuelos", "Vuelos"],
   ["envios", "Envíos"], ["sla", "SLA"],
 ];
+
+// Identidad de una ruta (igual que en WorldMap): por flightId, o por
+// origen-destino-salida si no lo trae.
+const routeKey = r => r.flightId || `${r.from}-${r.to}-${r.departureMinute ?? 0}`;
 import { STATIC_AIRPORTS, airportMatches } from "../data/staticAirports";
 import { getWarehouseColor } from "../hooks/useStatusColor";
 
@@ -93,6 +98,9 @@ export default function Dashboard({
   // Recorrido completo del envío seleccionado (todos los tramos, con color y
   // estado) a dibujar en el mapa.
   const [selectedShipmentPath, setSelectedShipmentPath] = useState(null);
+  // Búsqueda del panel de Envíos (maletas/paquetes): se eleva aquí para
+  // reflejarla también en el mapa y en los paneles de Vuelos y Almacenes.
+  const [bagSearch, setBagSearch] = useState("");
   // Paneles laterales colapsables — al inicio ambos cerrados para ver el mapa
   const [leftOpen,  setLeftOpen]  = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
@@ -179,19 +187,41 @@ export default function Dashboard({
   // se usa el filtro de texto del panel de almacenes (región). Estos códigos
   // resaltan en el mapa Y filtran las tarjetas laterales.
   const liveAirports = simulation?.airports;
+
+  // Aeropuertos implicados por la búsqueda de maletas/paquetes (panel Envíos):
+  // los orígenes/destinos de los eventos del historial que coinciden con el
+  // término. Sirven para reflejar la búsqueda en el mapa y los demás paneles.
+  const bagFocusCodes = useMemo(() => {
+    const q = bagSearch.trim().toLowerCase();
+    if (!q) return null;
+    const codes = new Set();
+    for (const e of (simulation?.history ?? [])) {
+      const pkg = `pkg-${e.from || ""}${e.to || ""}-${e.minute ?? ""}`.toLowerCase();
+      if ((e.flightId || "").toLowerCase().includes(q) ||
+          (e.from || "").toLowerCase().includes(q) ||
+          (e.to   || "").toLowerCase().includes(q) ||
+          pkg.includes(q)) {
+        if (e.from) codes.add(e.from);
+        if (e.to)   codes.add(e.to);
+      }
+    }
+    return [...codes];
+  }, [bagSearch, simulation?.history]);
+
   // Aeropuertos en foco (resaltan en el mapa Y filtran las tarjetas). Prioridad:
   // 1) foco fijado (vuelo planificado/envío), 2) clic en un aeropuerto,
-  // 3) combinación de filtro de texto + semáforo de ocupación.
+  // 3) búsqueda de maletas (panel Envíos), 4) filtro de texto + semáforo.
   const focusCodes = useMemo(() => {
     if (pinnedCodes) return pinnedCodes;
     if (selectedAirport) return [selectedAirport];
+    if (bagSearch.trim()) return bagFocusCodes || [];
     if (!storageFilter.trim() && whSemFilter === "all") return [];
     const src = (liveAirports && liveAirports.length) ? liveAirports : STATIC_AIRPORTS;
     return src
       .filter(a => storageFilter.trim() ? airportMatches(a, storageFilter) : true)
       .filter(a => whSemFilter === "all" ? true : whSemOf(a) === whSemFilter)
       .map(a => a.code);
-  }, [pinnedCodes, selectedAirport, storageFilter, whSemFilter, liveAirports]);
+  }, [pinnedCodes, selectedAirport, bagSearch, bagFocusCodes, storageFilter, whSemFilter, liveAirports]);
 
   // Limpia los focos "de ruta/envío" (los que compiten con un foco de aeropuerto).
   const clearRouteFoci = () => {
@@ -199,6 +229,16 @@ export default function Dashboard({
     setPinnedCodes(null);
     setSelectedShipment(null);
     setSelectedShipmentPath(null);
+    setBagSearch("");
+  };
+
+  // Búsqueda de maletas (panel Envíos): descarta el resto de focos para no
+  // confundir; el término dirige el foco (mapa + paneles) vía bagFocusCodes.
+  const handleBagSearch = (v) => {
+    setStorageFilter(""); setWhSemFilter("all"); setSelectedAirport(null);
+    setSelectedRouteKey(null); setPinnedCodes(null);
+    setSelectedShipment(null); setSelectedShipmentPath(null);
+    setBagSearch(v);
   };
 
   // Filtros de almacén (texto/semáforo) — combinables entre sí; descartan
@@ -215,11 +255,15 @@ export default function Dashboard({
   // si es planificado (aún sin despegar, sin línea dibujada), enfoca sus dos
   // aeropuertos.
   const handleFlightClick = (f) => {
-    setStorageFilter(""); setWhSemFilter("all"); setSelectedAirport(null);
+    setStorageFilter(""); setWhSemFilter("all"); setSelectedAirport(null); setBagSearch("");
     setSelectedShipment(null); setSelectedShipmentPath(null);
     if (f.active) {
-      setPinnedCodes(null);
-      setSelectedRouteKey(prev => (prev === f.key ? null : f.key));
+      // Vuelo en el aire: resaltar su ruta Y enfocar origen/destino (los paneles
+      // se centran en este vuelo: almacén = origen+destino, vuelos = solo este,
+      // envíos = solo sus maletas).
+      const off = selectedRouteKey === f.key;
+      setSelectedRouteKey(off ? null : f.key);
+      setPinnedCodes(off ? null : [f.from, f.to]);
     } else {
       setSelectedRouteKey(null);
       setPinnedCodes(prev =>
@@ -250,7 +294,7 @@ export default function Dashboard({
       setSelectedShipment(null); setSelectedShipmentPath(null); setPinnedCodes(null);
       return;
     }
-    setStorageFilter(""); setWhSemFilter("all"); setSelectedAirport(null);
+    setStorageFilter(""); setWhSemFilter("all"); setSelectedAirport(null); setBagSearch("");
     setSelectedRouteKey(null);
     setSelectedShipment({
       from: bag.from, to: bag.to, minute: bag.minute, bagId: bag.bagId,
@@ -273,12 +317,24 @@ export default function Dashboard({
     setPinnedCodes(Array.from(new Set(colored.flatMap(l => [l.from, l.to]))));
   };
 
-  // Clic en una ruta del mapa: idéntico a clicar un vuelo activo.
+  // Clic en una ruta del mapa: idéntico a clicar un vuelo activo — resalta la
+  // ruta y enfoca los paneles en ese vuelo (origen/destino + sus maletas).
   const handleRouteClick = (key) => {
-    setStorageFilter(""); setWhSemFilter("all"); setSelectedAirport(null);
-    setPinnedCodes(null); setSelectedShipment(null); setSelectedShipmentPath(null);
-    setSelectedRouteKey(prev => (prev === key ? null : key));
+    setStorageFilter(""); setWhSemFilter("all"); setSelectedAirport(null); setBagSearch("");
+    setSelectedShipment(null); setSelectedShipmentPath(null);
+    const off = selectedRouteKey === key;
+    const r   = (simulation?.routes ?? []).find(x => routeKey(x) === key);
+    setSelectedRouteKey(off ? null : key);
+    setPinnedCodes(off || !r ? null : [r.from, r.to]);
   };
+
+  // Vuelo enfocado (al seleccionar una ruta): su flightId, para que los paneles
+  // de Vuelos y Envíos muestren SOLO ese vuelo / sus maletas.
+  const selectedRouteObj = useMemo(() => {
+    if (!selectedRouteKey) return null;
+    return (simulation?.routes ?? []).find(x => routeKey(x) === selectedRouteKey) || null;
+  }, [selectedRouteKey, simulation?.routes]);
+  const focusFlightId = selectedRouteObj?.flightId ?? null;
 
   const clearFocus = () => {
     setStorageFilter(""); setWhSemFilter("all"); setSelectedAirport(null);
@@ -312,6 +368,10 @@ export default function Dashboard({
       case "almacenes":
         return (
           <>
+            {/* Filtro compartido: afecta a Capacidad Y Movimientos (y al mapa). */}
+            <StorageFilterBar
+              filter={storageFilter} onFilterChange={handleFilterChange}
+              sem={whSemFilter} onSemChange={handleSemChange}/>
             <div className="flex gap-1 mb-2">
               {[["capacidad", "Capacidad"], ["movimientos", "Movimientos"]].map(([k, l]) => (
                 <button key={k} onClick={() => setWhSub(k)}
@@ -327,9 +387,7 @@ export default function Dashboard({
                 airports={simulation?.airports ?? []}
                 kpis={kpis}
                 filter={storageFilter}
-                onFilterChange={handleFilterChange}
                 sem={whSemFilter}
-                onSemChange={handleSemChange}
                 focusCodes={focusCodes}
                 selectedCode={selectedAirport}
                 onAirportClick={handleAirportClick}/>
@@ -348,6 +406,7 @@ export default function Dashboard({
             routes={simulation?.routes ?? []}
             upcoming={simulation?.upcomingFlights ?? []}
             focusCodes={focusCodes}
+            focusFlightId={focusFlightId}
             selectedRouteKey={selectedRouteKey}
             pinnedCodes={pinnedCodes}
             onFlightClick={handleFlightClick}
@@ -358,16 +417,17 @@ export default function Dashboard({
           <SLAMonitor
             kpis={kpis} events={simulation?.history ?? []}
             running={running} simulatedNow={simulatedNow}
-            focusCodes={focusCodes} view="envios"
+            focusCodes={focusCodes} focusFlightId={focusFlightId} view="envios"
             selectedShipment={selectedShipment}
-            onShipmentClick={handleShipmentClick}/>
+            onShipmentClick={handleShipmentClick}
+            searchText={bagSearch} onSearchChange={handleBagSearch}/>
         );
       case "sla":
         return (
           <SLAMonitor
             kpis={kpis} events={simulation?.history ?? []}
             running={running} simulatedNow={simulatedNow}
-            focusCodes={focusCodes} view="sla"/>
+            focusCodes={focusCodes} focusFlightId={focusFlightId} view="sla"/>
         );
       default:
         return null;
@@ -391,6 +451,7 @@ export default function Dashboard({
             running={running}
             simulatedNow={simulatedNow}
             focusCodes={focusCodes}
+            focusFlightId={focusFlightId}
             view="resumen"
           />
         </SidePanel>
