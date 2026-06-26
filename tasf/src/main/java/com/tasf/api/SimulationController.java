@@ -75,7 +75,7 @@ public class SimulationController {
     public SimulationService.SimulationState addLot(
             @RequestBody SimulationService.LotRequest request) {
         return simulationService.addLot(
-                request.origin(), request.destination(), request.qty());
+                request.origin(), request.destination(), request.qty(), request.who());
     }
 
     @PostMapping("/addFlight")

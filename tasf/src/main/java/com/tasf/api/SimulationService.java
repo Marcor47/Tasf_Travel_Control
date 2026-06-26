@@ -71,6 +71,15 @@ public class SimulationService {
         = new ConcurrentLinkedQueue<>();
     private final AtomicInteger userFlightSeq = new AtomicInteger(0);
 
+    // Registro COMPARTIDO (server-side) de eventos y alertas: así todos los
+    // clientes —incluido uno que recarga la página— ven el MISMO historial y
+    // las mismas alertas (antes cada navegador acumulaba lo suyo en memoria).
+    private static final int EVENT_LOG_MAX = 300;
+    private static final int ALERT_LOG_MAX = 60;
+    private final List<SimEvent>   eventLog     = new ArrayList<>();  // más nuevo primero
+    private final Set<String>      eventLogKeys = new HashSet<>();    // dedup (guarded by eventLog)
+    private final List<AlertEntry> alertLog     = new ArrayList<>();  // más nuevo primero
+
     private final AirportRepository  repoAirports  = new AirportRepository();
     private final FlightRepository   repoFlights   = new FlightRepository();
     private final ShipmentRepository repoShipments = new ShipmentRepository();
@@ -88,6 +97,7 @@ public class SimulationService {
         StartRequest safeRequest = request == null
                 ? new StartRequest("diadia", null, null, null, null) : request;
         stop();
+        clearLogs();                       // historial/alertas frescos por cada run
         int    runId = generation.incrementAndGet();
         String mode  = normalizeMode(safeRequest.mode());
         running.set(true);
@@ -140,6 +150,7 @@ public class SimulationService {
         emitter.onTimeout(   () -> emitters.remove(emitter));
         emitter.onError(   e -> emitters.remove(emitter));
         send(emitter, state);
+        sendAlerts(emitter, alertSnapshot());   // alertas compartidas al conectar
         return emitter;
     }
 
@@ -164,6 +175,8 @@ public class SimulationService {
 
         ctx.cancelInstance(flightId, targetDep);
         pendingCancellations.add(flightId + "@" + targetDep);
+        pushAlert("cancel", "Vuelo " + flightId + " cancelado ("
+                + (targetDep >= depToday + 1440 ? "mañana" : "hoy") + ")");
         return state;
     }
 
@@ -227,6 +240,11 @@ public class SimulationService {
 
     /** Encola un nuevo lote para inyectarlo en la simulación día a día en curso. */
     public synchronized SimulationState addLot(String origin, String destination, int quantity) {
+        return addLot(origin, destination, quantity, null);
+    }
+
+    public synchronized SimulationState addLot(String origin, String destination,
+                                               int quantity, String client) {
         if (!running.get() || !"diadia".equals(state.mode())) return state;
         try {
             Map<String, Airport> airports = loadAirports();
@@ -238,6 +256,8 @@ public class SimulationService {
             pendingAdditions.add(new BaggageLot(
                     "USER-" + System.currentTimeMillis(),
                     origin, destination, quantity, regMin, dueMin, false));
+            pushAlert("lote", (client == null || client.isBlank() ? "Un cliente" : client)
+                    + " registró " + quantity + " maletas " + origin + "→" + destination);
         } catch (IOException e) {
             System.err.println("Error agregando lote: " + e.getMessage());
         }
@@ -276,6 +296,8 @@ public class SimulationService {
             pendingFlightAdds.add(new FlightInstance(
                     "U" + userFlightSeq.incrementAndGet(),
                     origin, destination, depUtc, arrUtc, capacity, false));
+            pushAlert("vuelo", "Vuelo agregado " + origin + "→" + destination
+                    + " (cap. " + capacity + ")");
         } catch (Exception e) {
             System.err.println("Error agregando vuelo: " + e.getMessage());
         }
@@ -291,6 +313,7 @@ public class SimulationService {
                 code.trim().toUpperCase(),
                 (region == null || region.isBlank()) ? "UNKNOWN" : region,
                 capacity, gmtHours * 60, lat, lng));
+        pushAlert("aeropuerto", "Aeropuerto agregado " + code.trim().toUpperCase());
         return state;
     }
 
@@ -298,6 +321,7 @@ public class SimulationService {
     public synchronized SimulationState closeAirport(String code) {
         if (!running.get() || activeContext == null || code == null) return state;
         pendingAirportCloses.add(code.trim().toUpperCase());
+        pushAlert("aeropuerto", "Aeropuerto cerrado " + code.trim().toUpperCase());
         return state;
     }
 
@@ -355,6 +379,9 @@ public class SimulationService {
                     } catch (Exception ignored) {}
                 }
             }
+            String etiqueta = "planes".equals(type) ? "vuelos"
+                            : "airports".equals(type) ? "aeropuertos" : "lotes";
+            pushAlert("upload", "Archivo de " + etiqueta + " cargado");
         } catch (Exception e) {
             System.err.println("Error cargando archivo (" + type + "): " + e.getMessage());
         }
@@ -551,7 +578,7 @@ public class SimulationService {
                         true, request.mode(),
                         fmtClock(blockStart), blockNo,
                         fmtClock(blockStart), fmtClock(blockEnd),
-                        staticAirports, prevRoutes, List.of(),
+                        staticAirports, prevRoutes, eventLogSnapshot(),
                         buildKpis(prevBlockTotal, prevBlockRouted, prevBlockOverdue,
                                 solution, staticAirports, List.of(),
                                 delivered, replanifications, 0, blockStart),
@@ -747,13 +774,18 @@ public class SimulationService {
                     List<UpcomingFlight> upcoming =
                             buildUpcomingFlights(context, solution, simulatedNow);
 
+                    // Acumular los eventos recién emitidos en el registro compartido
+                    // del servidor para que TODOS los clientes (y los que recargan)
+                    // vean el mismo historial completo.
+                    appendEvents(emitted);
+
                     state = new SimulationState(
                             true, request.mode(),
                             fmtClock(simulatedNow), blockNo,
                             fmtClock(blockStart), fmtClock(blockEnd),
                             airportStates,
                             recentRoutes(events, simulatedNow),
-                            emitted, kpis, collapsed,
+                            eventLogSnapshot(), kpis, collapsed,
                             collapseReason,
                             simulatedNow,
                             upcoming);
@@ -1203,6 +1235,53 @@ public class SimulationService {
         }
     }
 
+    // ── Registro compartido de eventos y alertas ──────────────────────────────
+
+    private void appendEvents(List<SimEvent> emitted) {
+        synchronized (eventLog) {
+            for (SimEvent e : emitted) {
+                String k = e.minute() + "|" + e.flightId() + "|" + e.type() + "|" + e.finalDestination();
+                if (eventLogKeys.add(k)) eventLog.add(0, e);   // más nuevo primero
+            }
+            while (eventLog.size() > EVENT_LOG_MAX) {
+                SimEvent r = eventLog.remove(eventLog.size() - 1);
+                eventLogKeys.remove(r.minute() + "|" + r.flightId() + "|" + r.type() + "|" + r.finalDestination());
+            }
+        }
+    }
+
+    private List<SimEvent> eventLogSnapshot() {
+        synchronized (eventLog) { return new ArrayList<>(eventLog); }
+    }
+
+    /** Registra una alerta compartida y la empuja a todos los clientes. */
+    private void pushAlert(String type, String text) {
+        synchronized (alertLog) {
+            alertLog.add(0, new AlertEntry(type, text, System.currentTimeMillis()));
+            while (alertLog.size() > ALERT_LOG_MAX) alertLog.remove(alertLog.size() - 1);
+        }
+        List<AlertEntry> snap = alertSnapshot();
+        for (SseEmitter emitter : emitters) sendAlerts(emitter, snap);
+    }
+
+    private List<AlertEntry> alertSnapshot() {
+        synchronized (alertLog) { return new ArrayList<>(alertLog); }
+    }
+
+    private void sendAlerts(SseEmitter emitter, List<AlertEntry> alerts) {
+        try {
+            emitter.send(SseEmitter.event().name("alerts").data(alerts));
+        } catch (Exception e) {
+            emitters.remove(emitter);
+            try { emitter.complete(); } catch (Exception ignored) {}
+        }
+    }
+
+    private void clearLogs() {
+        synchronized (eventLog) { eventLog.clear(); eventLogKeys.clear(); }
+        synchronized (alertLog) { alertLog.clear(); }
+    }
+
     private int daysForMode(String mode, int numDays) {
         if ("periodo".equals(mode)) return numDays;
         if ("colapso".equals(mode)) return 0;
@@ -1341,8 +1420,9 @@ public class SimulationService {
         }
     }
 
-    public record LotRequest(String origin, String destination, Integer quantity) {
+    public record LotRequest(String origin, String destination, Integer quantity, String client) {
         int qty() { return quantity == null ? 0 : quantity; }
+        String who() { return client == null || client.isBlank() ? "Un cliente" : client; }
     }
 
     public record FlightRequest(String origin, String destination,
@@ -1356,6 +1436,9 @@ public class SimulationService {
     public record CloseRequest(String code) {}
 
     public record UploadRequest(String type, String content, String origin) {}
+
+    /** Entrada del registro de alertas compartido entre clientes. */
+    public record AlertEntry(String type, String text, long time) {}
 
     public record UpcomingFlight(String flightId, String origin, String destination,
                                 int departureMinute, String departureClock,

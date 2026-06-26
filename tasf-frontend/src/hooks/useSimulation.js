@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const API_BASE = import.meta.env.VITE_API_BASE || ""; // || "http://localhost:8080";
-const MAX_HISTORY = 300;
 
 const emptyState = {
   running: false,
@@ -31,7 +30,7 @@ const emptyState = {
 
 export function useSimulation() {
   const [state, setState]               = useState(emptyState);
-  const [history, setHistory]           = useState([]);
+  const [alerts, setAlerts]             = useState([]);
   const [availableDates, setAvailableDates] = useState([]);
   const [flights, setFlights]               = useState([]);
   const [selectedDate, setSelectedDate] = useState("");
@@ -40,7 +39,6 @@ export function useSimulation() {
   const [selectedStartMinute, setSelectedStartMinute] = useState(0);
 
 
-  const prevEventsRef    = useRef([]);
   const sourceRef        = useRef(null);
   const reconnectTimer   = useRef(null);
 
@@ -61,6 +59,23 @@ export function useSimulation() {
         setState(data);
       } catch {
         // ignorar eventos malformados
+      }
+    });
+
+    // Alertas compartidas por el servidor (registro de lotes, cancelaciones,
+    // ediciones de red). Todos los clientes reciben la MISMA lista; al
+    // conectar/reconectar el backend reenvía el historial completo de alertas.
+    source.addEventListener("alerts", event => {
+      try {
+        const list = JSON.parse(event.data);
+        setAlerts(list.map((a, i) => ({
+          id: `${a.time}-${i}`,
+          type: a.type,
+          text: a.text,
+          time: new Date(a.time),
+        })));
+      } catch {
+        // ignorar
       }
     });
 
@@ -102,41 +117,13 @@ export function useSimulation() {
     };
   }, [connectSSE]);
 
-  // Acumular historial de eventos
-  useEffect(() => {
-    const events = state.events;
-    if (!events || events.length === 0) return;
-
-    const prev   = prevEventsRef.current;
-    const newEvs = events.filter(e =>
-      !prev.some(p =>
-        p.minute           === e.minute           &&
-        p.flightId         === e.flightId         &&
-        p.type             === e.type             &&
-        p.finalDestination === e.finalDestination
-      )
-    );
-    if (newEvs.length === 0) return;
-    prevEventsRef.current = events;
-
-    setHistory(h => {
-      const combined = [...newEvs.slice().reverse(), ...h];
-      const seen = new Set();
-      return combined
-        .filter(e => {
-          const k = `${e.minute}-${e.flightId}-${e.type}-${e.finalDestination}`;
-          if (seen.has(k)) return false;
-          seen.add(k);
-          return true;
-        })
-        .slice(0, MAX_HISTORY);
-    });
-  }, [state.events]);
+  // El historial (Historial/registro) lo mantiene el SERVIDOR y llega dentro de
+  // cada evento de estado (state.events), de modo que TODOS los clientes —y los
+  // que recargan la página— ven exactamente el mismo registro compartido.
+  const history = state.events || [];
 
 const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
   try {
-    setHistory([]);
-    prevEventsRef.current = [];
     setState(prev => ({ ...prev, clock: "Dia --  00:00" }));
     // La velocidad de la simulación la controla el backend (BLOCK_REAL_SECONDS);
     // aquí solo enviamos qué simular y desde cuándo.
@@ -192,50 +179,41 @@ const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
   }, []);
 
   // ── Alertas (registro de lotes y cancelaciones) para la pestaña Monitoreo ──
-  const [alerts, setAlerts] = useState([]);
-  const pushAlert = useCallback((type, text) => {
-    setAlerts(a => [
-      { id: Date.now() + Math.random(), type, text, time: new Date() },
-      ...a,
-    ].slice(0, 50));
-  }, []);
-
+  // Nota: las alertas las genera el SERVIDOR y se reciben por el evento SSE
+  // "alerts" (ver connectSSE). Así son compartidas entre todos los clientes y
+  // persisten al recargar. Aquí solo disparamos la acción; el backend emite la
+  // alerta correspondiente a todos.
   const cancelFlight = useCallback(async (flightId, info = {}) => {
+    void info; // compatibilidad de firma (la alerta la arma el backend)
     try {
       const response = await fetch(`${API_BASE}/api/simulation/cancelFlight`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ flightId }),
       });
-      if (response.ok) {
-        setState(await response.json());
-        const ruta = (info.from && info.to) ? ` ${info.from}→${info.to}` : "";
-        pushAlert("cancel",
-          `Vuelo ${flightId}${ruta} cancelado — ${info.bags || 0} maletas a replanificar`);
-      }
+      if (response.ok) setState(await response.json());
     } catch (e) {
       console.error("Error al cancelar vuelo:", e);
     }
-  }, [pushAlert]);
+  }, []);
 
-  // Alta de lote (registro). Devuelve true si se agregó; registra una alerta.
+  // Alta de lote (registro). Devuelve true si se agregó. `client` viaja al
+  // backend para identificar quién registró en la alerta compartida.
   const addLot = useCallback(async (origin, destination, quantity, client) => {
     try {
       const r = await fetch(`${API_BASE}/api/simulation/addLot`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ origin, destination, quantity }),
+        body: JSON.stringify({ origin, destination, quantity, client }),
       });
       if (!r.ok) return false;
       setState(await r.json());
-      pushAlert("register",
-        `${quantity} maletas ${origin}→${destination} registradas${client ? ` · ${client}` : ""}`);
       return true;
     } catch (e) {
       console.error("Error al registrar lote:", e);
       return false;
     }
-  }, [pushAlert]);
+  }, []);
 
   // ── Edición de la red en caliente ─────────────────────────────────────────
   const postJson = useCallback(async (path, body) => {
@@ -254,31 +232,21 @@ const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
     }
   }, []);
 
-  const addFlight = useCallback(async (origin, destination, departureLocal, arrivalLocal, capacity) => {
-    const ok = await postJson("addFlight", { origin, destination, departureLocal, arrivalLocal, capacity });
-    if (ok) pushAlert("register",
-      `Vuelo ${origin}→${destination} ${departureLocal} agregado (cap ${capacity})`);
-    return ok;
-  }, [postJson, pushAlert]);
+  const addFlight = useCallback(async (origin, destination, departureLocal, arrivalLocal, capacity) =>
+    postJson("addFlight", { origin, destination, departureLocal, arrivalLocal, capacity }),
+  [postJson]);
 
-  const addAirport = useCallback(async (code, region, lat, lng, gmtHours, capacity) => {
-    const ok = await postJson("addAirport", { code, region, lat, lng, gmtHours, capacity });
-    if (ok) pushAlert("register", `Aeropuerto ${code} agregado (cap ${capacity})`);
-    return ok;
-  }, [postJson, pushAlert]);
+  const addAirport = useCallback(async (code, region, lat, lng, gmtHours, capacity) =>
+    postJson("addAirport", { code, region, lat, lng, gmtHours, capacity }),
+  [postJson]);
 
-  const closeAirport = useCallback(async (code) => {
-    const ok = await postJson("closeAirport", { code });
-    if (ok) pushAlert("cancel", `Aeropuerto ${code} cerrado`);
-    return ok;
-  }, [postJson, pushAlert]);
+  const closeAirport = useCallback(async (code) =>
+    postJson("closeAirport", { code }),
+  [postJson]);
 
-  const uploadData = useCallback(async (type, content, origin) => {
-    const ok = await postJson("uploadData", { type, content, origin });
-    const label = type === "planes" ? "vuelos" : type === "airports" ? "aeropuertos" : "lotes";
-    if (ok) pushAlert("register", `Archivo de ${label} cargado`);
-    return ok;
-  }, [postJson, pushAlert]);
+  const uploadData = useCallback(async (type, content, origin) =>
+    postJson("uploadData", { type, content, origin }),
+  [postJson]);
 
 
 
