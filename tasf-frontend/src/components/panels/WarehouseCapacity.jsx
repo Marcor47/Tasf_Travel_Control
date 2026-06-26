@@ -19,18 +19,25 @@ export default function WarehouseCapacity({
   airports = [], kpis = {},
   filter = "", onFilterChange,
   sem = "all", onSemChange,        // semáforo controlado por el padre (resalta en el mapa)
+  focusCodes = [],                 // aeropuertos en foco (clic en mapa / vuelo / envío)
   selectedCode = null, onAirportClick,
 }) {
-  const hasFilter = filter.trim().length > 0 || sem !== "all";
+  // Foco activo = un aeropuerto/clic en el mapa o un vuelo/envío seleccionado.
+  // Restringe la lista a esos almacenes (coherente con el mapa y los demás
+  // paneles). El filtro de texto propio lo produce este mismo panel, así que
+  // intersectar con focusCodes es idempotente cuando el foco viene de aquí.
+  const focusSet  = new Set(focusCodes);
+  const hasFilter = filter.trim().length > 0 || sem !== "all" || focusSet.size > 0;
 
   // Fuente: datos en vivo del backend si existen; si no (antes de iniciar)
   // usamos los estáticos del dataset para poder filtrar igualmente.
   const source = airports.length > 0 ? airports : STATIC_AIRPORTS;
 
-  // Filtro por texto (código/país/región) + semáforo, ORDENADO por ocupación.
-  // Sin filtros: top 10 por ocupación (comportamiento original).
+  // Filtro por foco + texto (código/país/región) + semáforo, ORDENADO por
+  // ocupación. Sin filtros: top 10 por ocupación (comportamiento original).
   const matched = [...source]
     .filter(a => airports.length > 0 ? a.capacity > 0 : true)
+    .filter(a => focusSet.size ? focusSet.has(a.code) : true)
     .filter(a => filter.trim() ? airportMatches(a, filter) : true)
     .filter(a => sem === "all" || whSem(a) === sem)
     .sort((a, b) => ((b.current || 0) / Math.max(1, b.capacity)) -

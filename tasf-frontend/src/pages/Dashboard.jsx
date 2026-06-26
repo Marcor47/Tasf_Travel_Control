@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import SLAMonitor        from "../components/panels/SLAMonitor";
 import WarehouseCapacity from "../components/panels/WarehouseCapacity";
 import FlightsCapacity   from "../components/panels/FlightsCapacity";
@@ -6,6 +6,13 @@ import StorageMovements  from "../components/panels/StorageMovements";
 import WorldMap          from "../components/map/WorldMap";
 import CollapseAlert     from "../components/modals/CollapseAlert";
 import FlightCancelPanel from "../components/panels/FlightCancelPanel";
+import FloatingPanel     from "../components/panels/FloatingPanel";
+
+// Pestañas del panel de Información (también las que pueden flotar).
+const INFO_TABS = [
+  ["almacenes", "Almacenes"], ["vuelos", "Vuelos"],
+  ["envios", "Envíos"], ["sla", "SLA"],
+];
 import { STATIC_AIRPORTS, airportMatches } from "../data/staticAirports";
 import { getWarehouseColor } from "../hooks/useStatusColor";
 
@@ -94,6 +101,60 @@ export default function Dashboard({
   // Panel de información derecho: pestaña activa + sub-vista de almacenes
   const [infoTab, setInfoTab] = useState("almacenes"); // almacenes/vuelos/envios/sla
   const [whSub,   setWhSub]   = useState("capacidad");  // capacidad/movimientos
+
+  // ── Ventanas flotantes (una por pestaña de Información) ───────────────────
+  // floatWins[key] = { x, y, w, h, mode:"normal"|"min"|"max", restore? }.
+  // Estado de sesión: se pierde al recargar (no se persiste).
+  const [floatWins, setFloatWins] = useState({});
+  const [winZ,      setWinZ]      = useState({});   // key -> z-index
+  const zCounter        = useRef(30);
+  const mapContainerRef = useRef(null);
+
+  const focusWin = (key) => {
+    zCounter.current += 1;
+    setWinZ(z => ({ ...z, [key]: zCounter.current }));
+  };
+  const focusRestore = (key) => {           // traer al frente y restaurar si está minimizada
+    focusWin(key);
+    setFloatWins(w => (w[key]?.mode === "min"
+      ? { ...w, [key]: { ...w[key], mode: "normal" } } : w));
+  };
+  const popOut = (key) => {                  // sacar una pestaña a ventana flotante
+    setFloatWins(w => {
+      if (w[key]) return w;                  // ya flota
+      const n = Object.keys(w).length;
+      return { ...w, [key]: { x: 36 + n * 26, y: 44 + n * 26, w: 300, h: 360, mode: "normal" } };
+    });
+    focusWin(key);
+    // Si era la pestaña activa acoplada, mostrar otra que siga acoplada.
+    setInfoTab(prev => prev !== key ? prev
+      : (INFO_TABS.map(d => d[0]).find(k => k !== key && !floatWins[k]) || prev));
+  };
+  const dockWin = (key) => {                 // devolver a las pestañas
+    setFloatWins(w => { const c = { ...w }; delete c[key]; return c; });
+    setInfoTab(key);
+  };
+  const updateWin   = (key, p) => setFloatWins(w => w[key] ? { ...w, [key]: { ...w[key], ...p } } : w);
+  const minimizeWin = (key) => setFloatWins(w => {
+    const win = w[key]; if (!win) return w;
+    return { ...w, [key]: { ...win, mode: win.mode === "min" ? "normal" : "min" } };
+  });
+  const maximizeWin = (key) => setFloatWins(w => {
+    const win = w[key]; if (!win) return w;
+    if (win.mode === "max") return { ...w, [key]: { ...win, ...win.restore, mode: "normal" } };
+    // Maximizar SIN mover la ventana: mantenemos su posición actual y solo
+    // crecemos el tamaño hasta llenar el espacio restante del mapa. (Cambiar
+    // posición y tamaño a la vez de forma externa rompe react-draggable bajo
+    // React 19; cambiar solo el tamaño es seguro.)
+    const r  = mapContainerRef.current?.getBoundingClientRect();
+    const mw = (r ? r.width  : 600) - win.x - 6;
+    const mh = (r ? r.height : 400) - win.y - 6;
+    return { ...w, [key]: {
+      ...win, mode: "max",
+      restore: { w: win.w, h: win.h },
+      w: Math.max(240, mw), h: Math.max(120, mh),
+    } };
+  });
 
 
   const kpis         = simulation?.kpis ?? {};
@@ -244,6 +305,75 @@ export default function Dashboard({
     if (running && !simulation?.collapsed) setShowCollapse(false);
   }, [running, simulation?.collapsed]);
 
+  // Cuerpo de una pestaña de Información. Se reutiliza tal cual en el panel
+  // acoplado y dentro de cada ventana flotante (mismo contenido y filtros).
+  const infoBody = (key) => {
+    switch (key) {
+      case "almacenes":
+        return (
+          <>
+            <div className="flex gap-1 mb-2">
+              {[["capacidad", "Capacidad"], ["movimientos", "Movimientos"]].map(([k, l]) => (
+                <button key={k} onClick={() => setWhSub(k)}
+                  className={`flex-1 text-[10px] px-1 py-0.5 rounded transition
+                    ${whSub === k ? "bg-teal/20 text-teal border border-teal/40"
+                                  : "bg-[#021020] text-gray-500 border border-white/10"}`}>
+                  {l}
+                </button>
+              ))}
+            </div>
+            {whSub === "capacidad" ? (
+              <WarehouseCapacity
+                airports={simulation?.airports ?? []}
+                kpis={kpis}
+                filter={storageFilter}
+                onFilterChange={handleFilterChange}
+                sem={whSemFilter}
+                onSemChange={handleSemChange}
+                focusCodes={focusCodes}
+                selectedCode={selectedAirport}
+                onAirportClick={handleAirportClick}/>
+            ) : (
+              <StorageMovements
+                history={simulation?.history ?? []}
+                upcoming={simulation?.upcomingFlights ?? []}
+                focusCodes={focusCodes}
+                airports={simulation?.airports ?? []}/>
+            )}
+          </>
+        );
+      case "vuelos":
+        return (
+          <FlightsCapacity
+            routes={simulation?.routes ?? []}
+            upcoming={simulation?.upcomingFlights ?? []}
+            focusCodes={focusCodes}
+            selectedRouteKey={selectedRouteKey}
+            pinnedCodes={pinnedCodes}
+            onFlightClick={handleFlightClick}
+            running={running}/>
+        );
+      case "envios":
+        return (
+          <SLAMonitor
+            kpis={kpis} events={simulation?.history ?? []}
+            running={running} simulatedNow={simulatedNow}
+            focusCodes={focusCodes} view="envios"
+            selectedShipment={selectedShipment}
+            onShipmentClick={handleShipmentClick}/>
+        );
+      case "sla":
+        return (
+          <SLAMonitor
+            kpis={kpis} events={simulation?.history ?? []}
+            running={running} simulatedNow={simulatedNow}
+            focusCodes={focusCodes} view="sla"/>
+        );
+      default:
+        return null;
+    }
+  };
+
   return (
     <div className="flex flex-col gap-2 p-2 h-[calc(100vh-72px)]
                     overflow-y-auto md:overflow-hidden">
@@ -266,7 +396,8 @@ export default function Dashboard({
         </SidePanel>
 
         {/* Mapa central */}
-        <div className="flex-1 relative min-h-[320px] md:min-h-0">
+        <div ref={mapContainerRef} id="dash-map-zone"
+             className="flex-1 relative min-h-[320px] md:min-h-0">
         <WorldMap
           airports={simulation?.airports ?? []}
           routes={simulation?.routes ?? []}
@@ -382,83 +513,74 @@ export default function Dashboard({
                 : <span className="text-green-400 text-[10px] animate-pulse">● En curso</span>}
             </div>
           )}
+
+          {/* ── Ventanas flotantes (pestañas sacadas del panel) ─────────────── */}
+          {INFO_TABS.map(([k, l]) => floatWins[k] && (
+            <FloatingPanel
+              key={k} title={l}
+              x={floatWins[k].x} y={floatWins[k].y}
+              w={floatWins[k].w} h={floatWins[k].h}
+              mode={floatWins[k].mode} z={winZ[k] ?? 30}
+              onFocus={() => focusWin(k)}
+              onDrag={(x, y) => updateWin(k, { x, y })}
+              onResize={(w, h, x, y) => updateWin(k, { w, h, x, y })}
+              onMin={() => minimizeWin(k)}
+              onMax={() => maximizeWin(k)}
+              onClose={() => dockWin(k)}>
+              {infoBody(k)}
+            </FloatingPanel>
+          ))}
         </div>
 
         {/* Panel derecho — Información en pestañas (Almacenes/Vuelos/Envíos/SLA) */}
         <SidePanel title="Información" side="right"
                    open={rightOpen} onToggle={() => setRightOpen(o => !o)}
                    widthClass="md:w-72">
-          <div className="flex gap-1 mb-2 sticky top-0 z-10">
-            {[
-              ["almacenes", "Almacenes"], ["vuelos", "Vuelos"],
-              ["envios", "Envíos"], ["sla", "SLA"],
-            ].map(([k, l]) => (
-              <button key={k} onClick={() => setInfoTab(k)}
-                className={`flex-1 text-[10px] px-1 py-1 rounded transition font-medium
-                  ${infoTab === k ? "bg-teal text-white"
-                                  : "bg-[#021020] text-gray-400 border border-white/10 hover:text-white"}`}>
-                {l}
-              </button>
-            ))}
+          <div className="flex gap-1 mb-2 sticky top-0 z-10 items-stretch">
+            <div className="flex gap-1 flex-1">
+              {INFO_TABS.map(([k, l]) => {
+                const floating = !!floatWins[k];
+                return (
+                  <button key={k}
+                    onClick={() => floating ? focusRestore(k) : setInfoTab(k)}
+                    title={floating ? "En ventana flotante — clic para enfocarla" : l}
+                    className={`flex-1 text-[10px] px-1 py-1 rounded transition font-medium
+                      flex items-center justify-center gap-0.5
+                      ${floating ? "bg-[#021020] text-teal border border-teal/40 border-dashed"
+                        : infoTab === k ? "bg-teal text-white"
+                        : "bg-[#021020] text-gray-400 border border-white/10 hover:text-white"}`}>
+                    {l}{floating && <span className="text-[8px]">⧉</span>}
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              onClick={() => popOut(infoTab)}
+              disabled={!!floatWins[infoTab]}
+              title="Abrir la pestaña activa como ventana flotante"
+              className="px-1.5 rounded text-[11px] bg-[#021020] text-gray-400
+                         border border-white/10 hover:text-teal hover:border-teal/40
+                         disabled:opacity-30 disabled:cursor-not-allowed transition">
+              ⧉
+            </button>
           </div>
 
-          {infoTab === "almacenes" && (
-            <>
-              <div className="flex gap-1 mb-2">
-                {[["capacidad", "Capacidad"], ["movimientos", "Movimientos"]].map(([k, l]) => (
-                  <button key={k} onClick={() => setWhSub(k)}
-                    className={`flex-1 text-[10px] px-1 py-0.5 rounded transition
-                      ${whSub === k ? "bg-teal/20 text-teal border border-teal/40"
-                                    : "bg-[#021020] text-gray-500 border border-white/10"}`}>
-                    {l}
-                  </button>
-                ))}
-              </div>
-              {whSub === "capacidad" ? (
-                <WarehouseCapacity
-                  airports={simulation?.airports ?? []}
-                  kpis={kpis}
-                  filter={storageFilter}
-                  onFilterChange={handleFilterChange}
-                  sem={whSemFilter}
-                  onSemChange={handleSemChange}
-                  selectedCode={selectedAirport}
-                  onAirportClick={handleAirportClick}/>
-              ) : (
-                <StorageMovements
-                  history={simulation?.history ?? []}
-                  upcoming={simulation?.upcomingFlights ?? []}
-                  focusCodes={focusCodes}
-                  airports={simulation?.airports ?? []}/>
-              )}
-            </>
-          )}
-
-          {infoTab === "vuelos" && (
-            <FlightsCapacity
-              routes={simulation?.routes ?? []}
-              upcoming={simulation?.upcomingFlights ?? []}
-              focusCodes={focusCodes}
-              selectedRouteKey={selectedRouteKey}
-              pinnedCodes={pinnedCodes}
-              onFlightClick={handleFlightClick}
-              running={running}/>
-          )}
-
-          {infoTab === "envios" && (
-            <SLAMonitor
-              kpis={kpis} events={simulation?.history ?? []}
-              running={running} simulatedNow={simulatedNow}
-              focusCodes={focusCodes} view="envios"
-              selectedShipment={selectedShipment}
-              onShipmentClick={handleShipmentClick}/>
-          )}
-
-          {infoTab === "sla" && (
-            <SLAMonitor
-              kpis={kpis} events={simulation?.history ?? []}
-              running={running} simulatedNow={simulatedNow}
-              focusCodes={focusCodes} view="sla"/>
+          {floatWins[infoTab] ? (
+            <div className="text-center text-gray-500 text-[11px] py-6 px-3">
+              <p className="mb-2">«{INFO_TABS.find(t => t[0] === infoTab)?.[1]}» está en una ventana flotante.</p>
+              <button onClick={() => focusRestore(infoTab)}
+                className="px-2 py-1 rounded bg-teal/15 text-teal border border-teal/40
+                           hover:bg-teal/25 transition text-[10px]">
+                Enfocar ventana
+              </button>
+              <button onClick={() => dockWin(infoTab)}
+                className="ml-1 px-2 py-1 rounded bg-[#021020] text-gray-400 border border-white/10
+                           hover:text-white transition text-[10px]">
+                Devolver aquí
+              </button>
+            </div>
+          ) : (
+            infoBody(infoTab)
           )}
         </SidePanel>
       </div>
