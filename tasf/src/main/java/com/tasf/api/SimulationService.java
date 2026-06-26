@@ -1185,14 +1185,21 @@ public class SimulationService {
     // ── Utilidades ───────────────────────────────────────────────────────────
 
     private void broadcast(SimulationState s) {
+        // emitters es CopyOnWriteArrayList ⇒ es seguro retirar elementos durante
+        // la iteración (lo hace send() cuando un cliente se desconecta).
         for (SseEmitter emitter : emitters) send(emitter, s);
     }
 
     private void send(SseEmitter emitter, SimulationState payload) {
         try {
             emitter.send(SseEmitter.event().name("state").data(payload));
-        } catch (IOException e) {
+        } catch (Exception e) {
+            // Un cliente desconectado provoca "Broken pipe", que Spring envuelve en
+            // IllegalStateException (NO en IOException). Si no se captura aquí, el
+            // fallo sube hasta runSimulation y MATA la simulación para todos.
+            // Capturamos cualquier excepción, retiramos el emisor muerto y seguimos.
             emitters.remove(emitter);
+            try { emitter.complete(); } catch (Exception ignored) { /* ya cerrado */ }
         }
     }
 
