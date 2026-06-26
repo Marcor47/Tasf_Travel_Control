@@ -162,6 +162,13 @@ function flightColor(bags, capacity) {
   return loadColor(capacity > 0 ? bags / capacity : 0);
 }
 
+// Categoría de semáforo de un vuelo (para filtrar por carga): vacío/verde/ámbar/rojo.
+function flightSemCat(bags, capacity) {
+  if ((bags || 0) === 0) return "empty";
+  const pct = capacity > 0 ? bags / capacity : 0;
+  return pct > 0.85 ? "red" : pct > 0.6 ? "amber" : "green";
+}
+
 export default function WorldMap({
   airports = [],
   routes = [],
@@ -175,6 +182,7 @@ export default function WorldMap({
   highlightCodes = [],   // aeropuertos en foco (de clic o filtro) — controlado por el padre
   selectedRouteKey = null, // ruta resaltada — controlada por el padre (mapa o panel)
   shipmentPath = null,   // [{ from, to, flightId, finalDestination, status, color }] — recorrido de un envío
+  flightSem = "all",     // filtro de semáforo de carga: solo dibuja aviones de ese color
 }) {
   useEffect(() => { injectAnimation(); }, []);
 
@@ -273,9 +281,15 @@ export default function WorldMap({
     shownAirports.map(a => [a.code, [a.lng, a.lat]])
   );
 
+  // Filtro por semáforo de carga (del panel de Vuelos): solo dibuja aviones cuyo
+  // color de carga coincide con el seleccionado (vacío/verde/ámbar/rojo).
+  const semActive = flightSem === "all"
+    ? allActive
+    : allActive.filter(r => flightSemCat(r.bags, r.capacity || 0) === flightSem);
+
   const visibleRoutes = lineMode === "limited"
-    ? allActive.slice(0, 40)
-    : allActive;
+    ? semActive.slice(0, 40)
+    : semActive;
 
   const activeRoutes = (showLines || showPlanes) ? visibleRoutes : [];
 
@@ -340,7 +354,14 @@ export default function WorldMap({
           {running && !isCalculating && (
             <span className="text-[10px] text-gray-400">
               ✈ <span className="text-white font-bold">{activeFlightsCount}</span> vuelos activos
-              {(showLines || showPlanes) && lineMode === "limited" && activeFlightsCount > 40 && (
+              {flightSem !== "all" && (
+                <span className="ml-1 text-teal">
+                  · filtro {{ green: "verde", amber: "ámbar", red: "rojo", empty: "vacío" }[flightSem]}
+                  {" "}({semActive.length})
+                </span>
+              )}
+              {(showLines || showPlanes) && lineMode === "limited"
+                && (flightSem === "all" ? activeFlightsCount : semActive.length) > 40 && (
                 <span className="text-gray-600 ml-1">(mostrando 40 en mapa)</span>
               )}
             </span>
@@ -397,7 +418,7 @@ export default function WorldMap({
                     ${lineMode === "limited"
                       ? "bg-teal/10 text-teal border border-teal/30"
                       : "bg-orange-900/40 text-orange-400 border border-orange-700/40"}`}>
-                      {lineMode === "limited" ? `≤40 rutas` : `todas (${allActive.length})`}
+                      {lineMode === "limited" ? `≤40 rutas` : `todas (${semActive.length})`}
                 </button>
               )}
             </>

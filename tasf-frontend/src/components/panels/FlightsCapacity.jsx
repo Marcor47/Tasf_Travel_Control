@@ -34,10 +34,10 @@ function hhmm(minute) {
 export default function FlightsCapacity({
   routes = [], upcoming = [], running = false, focusCodes = [],
   focusFlightId = null,   // si está, muestra SOLO ese vuelo
+  sem = "all", onSemChange,   // semáforo controlado por el padre (también filtra el mapa)
   selectedRouteKey = null, pinnedCodes = null, onFlightClick,
 }) {
   const [search, setSearch] = useState("");
-  const [sem,    setSem]    = useState("all");   // semáforo: all/green/amber/red/empty
 
   // Cada ruta activa del backend ya es un vuelo con su capacidad y carga total.
   // Filtros: foco de aeropuerto, búsqueda por código/tramo y semáforo de carga.
@@ -103,7 +103,7 @@ export default function FlightsCapacity({
       />
       <div className="flex gap-1 mb-2">
         {SEM_CHIPS.map(c => (
-          <button key={c.key} onClick={() => setSem(c.key)}
+          <button key={c.key} onClick={() => onSemChange?.(c.key)}
             title={c.key}
             className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] transition border
               ${sem === c.key ? "border-teal/60 bg-teal/10 text-gray-200"

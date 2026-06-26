@@ -86,6 +86,9 @@ export default function Dashboard({
   // Filtro por semáforo de ocupación de almacenes (all/green/amber/red/empty).
   // Vive aquí (no en la tarjeta) para que también resalte en el mapa.
   const [whSemFilter, setWhSemFilter] = useState("all");
+  // Filtro por semáforo de CARGA de vuelos (all/green/amber/red/empty). Vive
+  // aquí para filtrar también los aviones mostrados en el mapa.
+  const [flightSemFilter, setFlightSemFilter] = useState("all");
   // Aeropuerto enfocado por clic (mapa o tarjeta de almacenes)
   const [selectedAirport, setSelectedAirport] = useState(null);
   // Ruta (vuelo) resaltada por clic en el panel de Vuelos o en el mapa.
@@ -407,6 +410,8 @@ export default function Dashboard({
             upcoming={simulation?.upcomingFlights ?? []}
             focusCodes={focusCodes}
             focusFlightId={focusFlightId}
+            sem={flightSemFilter}
+            onSemChange={setFlightSemFilter}
             selectedRouteKey={selectedRouteKey}
             pinnedCodes={pinnedCodes}
             onFlightClick={handleFlightClick}
@@ -469,6 +474,7 @@ export default function Dashboard({
           highlightCodes={focusCodes}
           selectedRouteKey={selectedRouteKey}
           shipmentPath={selectedShipmentPath}
+          flightSem={flightSemFilter}
           onAirportClick={handleAirportClick}
           onRouteClick={handleRouteClick}
           onClearSelection={clearFocus}/>
