@@ -166,12 +166,15 @@ export default function WorldMap({
   airports = [],
   routes = [],
   onAirportClick,        // (code) => void — clic en un aeropuerto (enfoca)
+  onRouteClick,          // (key)  => void — clic en una ruta/vuelo (resalta)
   onClearSelection,      // () => void — limpiar el foco
   running = false,
   message = "",
   simulatedMinute = 0,
   activeFlightsCount = 0,
   highlightCodes = [],   // aeropuertos en foco (de clic o filtro) — controlado por el padre
+  selectedRouteKey = null, // ruta resaltada — controlada por el padre (mapa o panel)
+  shipmentPath = null,   // [{ from, to, flightId, finalDestination, status, color }] — recorrido de un envío
 }) {
   useEffect(() => { injectAnimation(); }, []);
 
@@ -183,9 +186,6 @@ export default function WorldMap({
   const [zoom,       setZoom]       = useState(DEFAULT_ZOOM);
   const [center,     setCenter]     = useState(DEFAULT_CENTER);
   const [dragging,   setDragging]   = useState(false);
-  // Ruta resaltada por clic (solo afecta al mapa). El foco de aeropuertos es
-  // controlado por el padre vía highlightCodes (así también filtra las tarjetas).
-  const [selectedRoute, setSelectedRoute] = useState(null);
 
   const dragStart    = useRef(null);
   const dragMoved    = useRef(false);
@@ -214,13 +214,15 @@ export default function WorldMap({
       });
   }, [running, routes]);
 
-  // Si la ruta seleccionada ya aterrizó y desapareció, se ignora (derivado).
+  // La ruta resaltada la controla el padre (selectedRouteKey): puede venir de un
+  // clic en el mapa o en el panel de Vuelos. Si ya aterrizó/desapareció de las
+  // rutas activas, se ignora (derivado).
   const activeRouteKey = useMemo(() => {
-    if (selectedRoute && allActive.some(r => routeKey(r) === selectedRoute)) {
-      return selectedRoute;
+    if (selectedRouteKey && allActive.some(r => routeKey(r) === selectedRouteKey)) {
+      return selectedRouteKey;
     }
     return null;
-  }, [selectedRoute, allActive]);
+  }, [selectedRouteKey, allActive]);
 
   useEffect(() => {
     const el = mapRef.current;
@@ -262,7 +264,6 @@ export default function WorldMap({
   // Click en el fondo del mapa (sin arrastrar) limpia toda la selección
   const handleBackgroundClick = () => {
     if (!dragMoved.current) {
-      setSelectedRoute(null);
       onClearSelection?.();
     }
   };
@@ -303,15 +304,14 @@ export default function WorldMap({
       (focus.has(r.from) && r.to === code) || (focus.has(r.to) && r.from === code));
   };
 
-  // Clic en una ruta (línea o avión): resaltar esa ruta y limpiar foco de aeropuerto
+  // Clic en una ruta (línea o avión): el padre alterna el resaltado y limpia
+  // cualquier foco de aeropuerto.
   const clickRoute = (key) => {
-    onClearSelection?.();
-    setSelectedRoute(prev => (prev === key ? null : key));
+    onRouteClick?.(key);
   };
 
-  // Clic en un aeropuerto: enfocar (lo gestiona el padre) y limpiar ruta
+  // Clic en un aeropuerto: lo gestiona el padre (también limpia la ruta).
   const clickAirport = (code) => {
-    setSelectedRoute(null);
     onAirportClick?.(code);
   };
 
@@ -351,7 +351,7 @@ export default function WorldMap({
                   ? `${selRoute.from}→${selRoute.to}`
                   : `${focus.size} aeropuerto${focus.size === 1 ? "" : "s"}`}
               <button
-                onClick={() => { setSelectedRoute(null); onClearSelection?.(); }}
+                onClick={() => onClearSelection?.()}
                 className="ml-1 px-1.5 py-0.5 rounded bg-gray-900/70 border border-white/10
                            text-gray-400 hover:text-white transition">
                 ✕ Limpiar
@@ -542,6 +542,66 @@ export default function WorldMap({
             </Marker>
           );
         })}
+
+        {/* ── Recorrido del envío seleccionado (todos los tramos) ───────────
+            Cada tramo usa el COLOR de carga de su vuelo (mismo semáforo que el
+            mapa). El ESTADO distingue, por estilo + icono:
+              · completado (done)  → punteado tenue + ✓
+              · actual    (current)→ sólido animado + ✈   (tramo principal)
+              · próximo   (upcoming)→ a trazos + ›         (siguiente tramo)
+            El destino de cada tramo: verde = destino final; ámbar ⇄ = transbordo. */}
+        {Array.isArray(shipmentPath) && shipmentPath.length > 0 && (
+          <g style={{ pointerEvents: "none" }}>
+            {shipmentPath.map((leg, i) => {
+              const from = airportMap[leg.from];
+              const to   = airportMap[leg.to];
+              if (!from || !to) return null;
+              const dash  = leg.status === "done" ? "1 3"
+                          : leg.status === "upcoming" ? "6 4" : undefined;
+              const width = leg.status === "current" ? 2.6
+                          : leg.status === "done"    ? 1.4 : 1.8;
+              const op    = leg.status === "done" ? 0.45
+                          : leg.status === "upcoming" ? 0.85 : 1;
+              const icon  = leg.status === "current" ? "✈"
+                          : leg.status === "upcoming" ? "›" : "✓";
+              const mid   = [(from[0] + to[0]) / 2, (from[1] + to[1]) / 2];
+              return (
+                <g key={`leg-${i}`}>
+                  <Line from={from} to={to}
+                        stroke={leg.color || "#6b7280"}
+                        strokeWidth={width} strokeLinecap="round"
+                        strokeDasharray={dash} opacity={op}
+                        className={leg.status === "current" ? "route-active" : undefined}/>
+                  <Marker coordinates={mid}>
+                    <text textAnchor="middle" dy={-2}
+                      style={{ fontSize: Math.max(5, 8 / Math.sqrt(zoom)),
+                               fill: leg.color || "#6b7280",
+                               fontFamily: "sans-serif", fontWeight: "bold" }}>
+                      {icon}
+                    </text>
+                  </Marker>
+                  <Marker coordinates={to}>
+                    <circle r={leg.finalDestination ? 3 : 2.4}
+                      fill={leg.finalDestination ? "#22c55e" : "#f59e0b"}
+                      stroke="#fff" strokeWidth={0.5}/>
+                    <text textAnchor="middle" y={-5}
+                      style={{ fontSize: Math.max(4, 6 / Math.sqrt(zoom)),
+                               fill: leg.finalDestination ? "#22c55e" : "#f59e0b",
+                               fontFamily: "sans-serif" }}>
+                      {leg.finalDestination ? "destino final" : "⇄ transbordo"}
+                    </text>
+                  </Marker>
+                </g>
+              );
+            })}
+            {/* origen del recorrido */}
+            {airportMap[shipmentPath[0].from] && (
+              <Marker coordinates={airportMap[shipmentPath[0].from]}>
+                <circle r={2.6} fill="#fff" stroke="#0b1f33" strokeWidth={0.6}/>
+              </Marker>
+            )}
+          </g>
+        )}
       </ComposableMap>
     </div>
   );

@@ -1,6 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 const API_BASE = import.meta.env.VITE_API_BASE || ""; // || "http://localhost:8080";
+const MAX_HISTORY = 300;
+
+const evKey = e => `${e.minute}-${e.flightId}-${e.type}-${e.finalDestination}`;
+
+// Combina eventos en una lista "más nuevo primero", deduplicando y acotada a
+// MAX_HISTORY. `incoming` puede venir más-nuevo-primero (backlog del servidor,
+// evento SSE "history") o más-viejo-primero (los `emitted` de cada tick, en
+// orden de minuto); `incomingNewestFirst` lo indica.
+function mergeEvents(existing, incoming, incomingNewestFirst) {
+  if (!incoming || incoming.length === 0) return existing;
+  const inc  = incomingNewestFirst ? incoming : incoming.slice().reverse();
+  const seen = new Set(existing.map(evKey));
+  const fresh = inc.filter(e => !seen.has(evKey(e)));
+  if (fresh.length === 0) return existing;
+  return [...fresh, ...existing].slice(0, MAX_HISTORY);
+}
 
 const emptyState = {
   running: false,
@@ -31,6 +47,7 @@ const emptyState = {
 export function useSimulation() {
   const [state, setState]               = useState(emptyState);
   const [alerts, setAlerts]             = useState([]);
+  const [history, setHistory]           = useState([]);
   const [availableDates, setAvailableDates] = useState([]);
   const [flights, setFlights]               = useState([]);
   const [selectedDate, setSelectedDate] = useState("");
@@ -79,6 +96,18 @@ export function useSimulation() {
       }
     });
 
+    // Backlog del historial (se envía SOLO al conectar/recargar). Reconstruye lo
+    // ya ocurrido; luego cada tick añade únicamente los eventos nuevos. Así el
+    // Historial sobrevive a recargas SIN reenviar el log completo en cada frame.
+    source.addEventListener("history", event => {
+      try {
+        const backlog = JSON.parse(event.data); // más-nuevo-primero
+        setHistory(h => mergeEvents(h, backlog, true));
+      } catch {
+        // ignorar
+      }
+    });
+
     source.onerror = () => {
       source.close();
       sourceRef.current = null;
@@ -117,13 +146,18 @@ export function useSimulation() {
     };
   }, [connectSSE]);
 
-  // El historial (Historial/registro) lo mantiene el SERVIDOR y llega dentro de
-  // cada evento de estado (state.events), de modo que TODOS los clientes —y los
-  // que recargan la página— ven exactamente el mismo registro compartido.
-  const history = state.events || [];
+  // Acumular en el Historial los eventos NUEVOS de cada tick (state.events trae
+  // solo los recién emitidos). El backlog inicial llega por el evento SSE
+  // "history" al conectar; aquí solo añadimos lo nuevo, deduplicado y acotado.
+  useEffect(() => {
+    const evs = state.events;
+    if (!evs || evs.length === 0) return;
+    setHistory(h => mergeEvents(h, evs, false)); // emitted: más-viejo-primero
+  }, [state.events]);
 
 const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
   try {
+    setHistory([]);
     setState(prev => ({ ...prev, clock: "Dia --  00:00" }));
     // La velocidad de la simulación la controla el backend (BLOCK_REAL_SECONDS);
     // aquí solo enviamos qué simular y desde cuándo.
@@ -212,6 +246,20 @@ const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
     } catch (e) {
       console.error("Error al registrar lote:", e);
       return false;
+    }
+  }, []);
+
+  // Recorrido completo (todos los tramos) de un envío. Devuelve { lotId, legs }
+  // con cada tramo y su estado (done/current/upcoming).
+  const fetchShipmentPath = useCallback(async (lotId) => {
+    if (!lotId) return { lotId, legs: [] };
+    try {
+      const r = await fetch(
+        `${API_BASE}/api/simulation/shipmentPath?lotId=${encodeURIComponent(lotId)}`);
+      if (!r.ok) return { lotId, legs: [] };
+      return await r.json();
+    } catch {
+      return { lotId, legs: [] };
     }
   }, []);
 
@@ -304,6 +352,7 @@ const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
     addAirport,
     closeAirport,
     uploadData,
+    fetchShipmentPath,
     alerts,
     realSeconds, // ← nuevo
   };

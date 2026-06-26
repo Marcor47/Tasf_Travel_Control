@@ -7,6 +7,23 @@ import WorldMap          from "../components/map/WorldMap";
 import CollapseAlert     from "../components/modals/CollapseAlert";
 import FlightCancelPanel from "../components/panels/FlightCancelPanel";
 import { STATIC_AIRPORTS, airportMatches } from "../data/staticAirports";
+import { getWarehouseColor } from "../hooks/useStatusColor";
+
+// Categoría de semáforo de un almacén (igual que WarehouseCapacity).
+function whSemOf(a) {
+  const cur = a.current || 0;
+  if (cur === 0) return "empty";
+  return getWarehouseColor(Math.round(cur / Math.max(1, a.capacity) * 100));
+}
+
+// Color de semáforo de un vuelo por su carga (idéntico al del mapa): gris si va
+// vacío, si no verde/ámbar/rojo. Sirve para pintar cada tramo de un envío con el
+// MISMO color que su vuelo tiene en el mapa.
+function flightTrafficColor(bags, capacity) {
+  if ((bags || 0) === 0) return "#9ca3af";
+  const pct = capacity > 0 ? bags / capacity : 0;
+  return pct > 0.85 ? "#ef4444" : pct > 0.6 ? "#f59e0b" : "#22c55e";
+}
 
 const MODE_CONFIG = {
   diadia:  { selector: "Día a simular",  suffix: "(1 día — tiempo real)" },
@@ -54,8 +71,21 @@ export default function Dashboard({
   const [showCollapse, setShowCollapse] = useState(false);
   // Filtro del panel de almacenes (texto: código/país/región)
   const [storageFilter, setStorageFilter] = useState("");
+  // Filtro por semáforo de ocupación de almacenes (all/green/amber/red/empty).
+  // Vive aquí (no en la tarjeta) para que también resalte en el mapa.
+  const [whSemFilter, setWhSemFilter] = useState("all");
   // Aeropuerto enfocado por clic (mapa o tarjeta de almacenes)
   const [selectedAirport, setSelectedAirport] = useState(null);
+  // Ruta (vuelo) resaltada por clic en el panel de Vuelos o en el mapa.
+  const [selectedRouteKey, setSelectedRouteKey] = useState(null);
+  // Foco manual de aeropuertos (vuelo planificado o envío): cuando se fija,
+  // tiene prioridad sobre filtros de texto/semáforo.
+  const [pinnedCodes, setPinnedCodes] = useState(null);
+  // Envío (maleta) seleccionado: identidad para resaltar la fila.
+  const [selectedShipment, setSelectedShipment] = useState(null);
+  // Recorrido completo del envío seleccionado (todos los tramos, con color y
+  // estado) a dibujar en el mapa.
+  const [selectedShipmentPath, setSelectedShipmentPath] = useState(null);
   // Paneles laterales colapsables — al inicio ambos cerrados para ver el mapa
   const [leftOpen,  setLeftOpen]  = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
@@ -88,21 +118,111 @@ export default function Dashboard({
   // se usa el filtro de texto del panel de almacenes (región). Estos códigos
   // resaltan en el mapa Y filtran las tarjetas laterales.
   const liveAirports = simulation?.airports;
+  // Aeropuertos en foco (resaltan en el mapa Y filtran las tarjetas). Prioridad:
+  // 1) foco fijado (vuelo planificado/envío), 2) clic en un aeropuerto,
+  // 3) combinación de filtro de texto + semáforo de ocupación.
   const focusCodes = useMemo(() => {
+    if (pinnedCodes) return pinnedCodes;
     if (selectedAirport) return [selectedAirport];
-    if (!storageFilter.trim()) return [];
+    if (!storageFilter.trim() && whSemFilter === "all") return [];
     const src = (liveAirports && liveAirports.length) ? liveAirports : STATIC_AIRPORTS;
-    return src.filter(a => airportMatches(a, storageFilter)).map(a => a.code);
-  }, [selectedAirport, storageFilter, liveAirports]);
+    return src
+      .filter(a => storageFilter.trim() ? airportMatches(a, storageFilter) : true)
+      .filter(a => whSemFilter === "all" ? true : whSemOf(a) === whSemFilter)
+      .map(a => a.code);
+  }, [pinnedCodes, selectedAirport, storageFilter, whSemFilter, liveAirports]);
 
-  // Un solo foco a la vez: escribir en el filtro o clicar un aeropuerto se
-  // excluyen mutuamente para no confundir.
-  const handleFilterChange = (v) => { setStorageFilter(v); setSelectedAirport(null); };
+  // Limpia los focos "de ruta/envío" (los que compiten con un foco de aeropuerto).
+  const clearRouteFoci = () => {
+    setSelectedRouteKey(null);
+    setPinnedCodes(null);
+    setSelectedShipment(null);
+    setSelectedShipmentPath(null);
+  };
+
+  // Filtros de almacén (texto/semáforo) — combinables entre sí; descartan
+  // cualquier foco de clic/ruta/envío para no confundir.
+  const handleFilterChange = (v) => { setStorageFilter(v); setSelectedAirport(null); clearRouteFoci(); };
+  const handleSemChange    = (s) => { setWhSemFilter(s);   setSelectedAirport(null); clearRouteFoci(); };
+
   const handleAirportClick = (code) => {
-    setStorageFilter("");
+    setStorageFilter(""); setWhSemFilter("all"); clearRouteFoci();
     setSelectedAirport(prev => (prev === code ? null : code));
   };
-  const clearFocus = () => { setStorageFilter(""); setSelectedAirport(null); };
+
+  // Clic en un vuelo del panel: si está en el aire, resalta su ruta en el mapa;
+  // si es planificado (aún sin despegar, sin línea dibujada), enfoca sus dos
+  // aeropuertos.
+  const handleFlightClick = (f) => {
+    setStorageFilter(""); setWhSemFilter("all"); setSelectedAirport(null);
+    setSelectedShipment(null); setSelectedShipmentPath(null);
+    if (f.active) {
+      setPinnedCodes(null);
+      setSelectedRouteKey(prev => (prev === f.key ? null : f.key));
+    } else {
+      setSelectedRouteKey(null);
+      setPinnedCodes(prev =>
+        (prev && prev[0] === f.from && prev[1] === f.to) ? null : [f.from, f.to]);
+    }
+  };
+
+  // Color de cada tramo según su vuelo (mismo semáforo que el mapa): tramos ya
+  // completados van en gris; los activos/futuros toman el color de carga de su
+  // vuelo (rutas activas o planificadas).
+  const legColor = (leg) => {
+    if (leg.status === "done") return "#6b7280";
+    const routes   = simulation?.routes ?? [];
+    const upcoming = simulation?.upcomingFlights ?? [];
+    const r = routes.find(x => x.flightId === leg.flightId && x.status === "departed");
+    if (r) return flightTrafficColor(r.bags, r.capacity);
+    const u = upcoming.find(x => x.flightId === leg.flightId);
+    if (u) return flightTrafficColor(u.assigned, u.capacity);
+    return "#6b7280";
+  };
+
+  // Clic en un envío/maleta: pide al backend TODOS sus tramos y los dibuja en el
+  // mapa (cada uno con el color de su vuelo) distinguiendo completado/actual/
+  // próximo. Enfoca todos los aeropuertos del recorrido.
+  const handleShipmentClick = async (bag) => {
+    if (!bag?.from || !bag?.to) return;
+    if (selectedShipment && selectedShipment.bagId === bag.bagId) {
+      setSelectedShipment(null); setSelectedShipmentPath(null); setPinnedCodes(null);
+      return;
+    }
+    setStorageFilter(""); setWhSemFilter("all"); setSelectedAirport(null);
+    setSelectedRouteKey(null);
+    setSelectedShipment({
+      from: bag.from, to: bag.to, minute: bag.minute, bagId: bag.bagId,
+    });
+
+    let legs = [];
+    if (bag.lotId) {
+      const path = await simulation?.fetchShipmentPath?.(bag.lotId);
+      legs = path?.legs ?? [];
+    }
+    if (!legs.length) {
+      // Respaldo (sin lotId o lote ya fuera de caché): solo el tramo clicado.
+      legs = [{
+        flightId: bag.flightId, from: bag.from, to: bag.to,
+        finalDestination: !!bag.finalDestination, status: "current",
+      }];
+    }
+    const colored = legs.map(l => ({ ...l, color: legColor(l) }));
+    setSelectedShipmentPath(colored);
+    setPinnedCodes(Array.from(new Set(colored.flatMap(l => [l.from, l.to]))));
+  };
+
+  // Clic en una ruta del mapa: idéntico a clicar un vuelo activo.
+  const handleRouteClick = (key) => {
+    setStorageFilter(""); setWhSemFilter("all"); setSelectedAirport(null);
+    setPinnedCodes(null); setSelectedShipment(null); setSelectedShipmentPath(null);
+    setSelectedRouteKey(prev => (prev === key ? null : key));
+  };
+
+  const clearFocus = () => {
+    setStorageFilter(""); setWhSemFilter("all"); setSelectedAirport(null);
+    clearRouteFoci();
+  };
 
 
 
@@ -155,7 +275,10 @@ export default function Dashboard({
           simulatedMinute={simulatedNow}
           activeFlightsCount={kpis?.activeFlights ?? 0}
           highlightCodes={focusCodes}
+          selectedRouteKey={selectedRouteKey}
+          shipmentPath={selectedShipmentPath}
           onAirportClick={handleAirportClick}
+          onRouteClick={handleRouteClick}
           onClearSelection={clearFocus}/>
 
           {/* ── Configuración: ventana flotante colapsable sobre el mapa ───── */}
@@ -297,6 +420,8 @@ export default function Dashboard({
                   kpis={kpis}
                   filter={storageFilter}
                   onFilterChange={handleFilterChange}
+                  sem={whSemFilter}
+                  onSemChange={handleSemChange}
                   selectedCode={selectedAirport}
                   onAirportClick={handleAirportClick}/>
               ) : (
@@ -314,6 +439,9 @@ export default function Dashboard({
               routes={simulation?.routes ?? []}
               upcoming={simulation?.upcomingFlights ?? []}
               focusCodes={focusCodes}
+              selectedRouteKey={selectedRouteKey}
+              pinnedCodes={pinnedCodes}
+              onFlightClick={handleFlightClick}
               running={running}/>
           )}
 
@@ -321,7 +449,9 @@ export default function Dashboard({
             <SLAMonitor
               kpis={kpis} events={simulation?.history ?? []}
               running={running} simulatedNow={simulatedNow}
-              focusCodes={focusCodes} view="envios"/>
+              focusCodes={focusCodes} view="envios"
+              selectedShipment={selectedShipment}
+              onShipmentClick={handleShipmentClick}/>
           )}
 
           {infoTab === "sla" && (

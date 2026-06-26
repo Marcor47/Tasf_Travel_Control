@@ -21,6 +21,7 @@ import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
@@ -76,9 +77,13 @@ public class SimulationService {
     // las mismas alertas (antes cada navegador acumulaba lo suyo en memoria).
     private static final int EVENT_LOG_MAX = 300;
     private static final int ALERT_LOG_MAX = 60;
+    private static final int PATH_CACHE_MAX = 20000;  // tope del caché de recorridos por lote
     private final List<SimEvent>   eventLog     = new ArrayList<>();  // más nuevo primero
     private final Set<String>      eventLogKeys = new HashSet<>();    // dedup (guarded by eventLog)
     private final List<AlertEntry> alertLog     = new ArrayList<>();  // más nuevo primero
+    // Recorrido completo (todos los tramos) por lote — para mostrar el camino de
+    // un envío al seleccionarlo. Se llena en buildEvents y se limpia en cada run.
+    private final Map<String, List<ShipmentLeg>> pathByLot = new ConcurrentHashMap<>();
 
     private final AirportRepository  repoAirports  = new AirportRepository();
     private final FlightRepository   repoFlights   = new FlightRepository();
@@ -150,7 +155,8 @@ public class SimulationService {
         emitter.onTimeout(   () -> emitters.remove(emitter));
         emitter.onError(   e -> emitters.remove(emitter));
         send(emitter, state);
-        sendAlerts(emitter, alertSnapshot());   // alertas compartidas al conectar
+        sendHistory(emitter, eventLogSnapshot()); // backlog para reconstruir tras recargar
+        sendAlerts(emitter, alertSnapshot());     // alertas compartidas al conectar
         return emitter;
     }
 
@@ -578,7 +584,7 @@ public class SimulationService {
                         true, request.mode(),
                         fmtClock(blockStart), blockNo,
                         fmtClock(blockStart), fmtClock(blockEnd),
-                        staticAirports, prevRoutes, eventLogSnapshot(),
+                        staticAirports, prevRoutes, List.of(),
                         buildKpis(prevBlockTotal, prevBlockRouted, prevBlockOverdue,
                                 solution, staticAirports, List.of(),
                                 delivered, replanifications, 0, blockStart),
@@ -775,8 +781,11 @@ public class SimulationService {
                             buildUpcomingFlights(context, solution, simulatedNow);
 
                     // Acumular los eventos recién emitidos en el registro compartido
-                    // del servidor para que TODOS los clientes (y los que recargan)
-                    // vean el mismo historial completo.
+                    // del servidor (acotado a EVENT_LOG_MAX). Solo sirve como
+                    // BACKLOG: se envía una vez al conectar (evento SSE "history")
+                    // para que un cliente que recarga recupere lo ya ocurrido. En
+                    // cada frame seguimos enviando únicamente los eventos NUEVOS
+                    // (emitted), pequeños, para no malgastar memoria/ancho de banda.
                     appendEvents(emitted);
 
                     state = new SimulationState(
@@ -785,7 +794,7 @@ public class SimulationService {
                             fmtClock(blockStart), fmtClock(blockEnd),
                             airportStates,
                             recentRoutes(events, simulatedNow),
-                            eventLogSnapshot(), kpis, collapsed,
+                            emitted, kpis, collapsed,
                             collapseReason,
                             simulatedNow,
                             upcoming);
@@ -1103,6 +1112,11 @@ public class SimulationService {
             int blockStart,
             int blockEnd) {
 
+        // Guarda defensiva: en períodos largos el caché de recorridos podría
+        // crecer mucho. Acotamos su tamaño (los lotes del bloque actual se
+        // vuelven a cachear justo debajo; los antiguos degradan al tramo único).
+        if (pathByLot.size() > PATH_CACHE_MAX) pathByLot.clear();
+
         Map<String, EventAccumulator> grouped = new HashMap<>();
         for (BaggageLot lot : lots) {
             RoutePlan plan = solution.getPlan(lot.getId());
@@ -1111,16 +1125,29 @@ public class SimulationService {
 
             int slaLimitMinutes = lot.getDueHour() - lot.getRegistrationHour();
 
+            // Cachear el recorrido COMPLETO del lote (todos los tramos, incluidos
+            // los que aún no han despegado) para que el panel pueda mostrarlos al
+            // seleccionar el envío. El `status` se calcula en cada consulta según
+            // el minuto simulado actual; aquí se guarda crudo.
+            List<ShipmentLeg> legs = new ArrayList<>(segments.size());
+            for (int i = 0; i < segments.size(); i++) {
+                RouteSegment seg = segments.get(i);
+                legs.add(new ShipmentLeg(seg.getFlightId(), seg.getOrigin(), seg.getDestination(),
+                        seg.getDepartureHour(), seg.getArrivalHour(),
+                        i == segments.size() - 1, ""));
+            }
+            pathByLot.put(lot.getId(), legs);
+
             for (int i = 0; i < segments.size(); i++) {
                 RouteSegment seg       = segments.get(i);
                 boolean      finalDest = i == segments.size() - 1;
 
                 addEvent(grouped, seg, seg.getDepartureHour(), "departed",
                          false, lot.getQuantity(),
-                         lot.getRegistrationHour(), slaLimitMinutes);
+                         lot.getRegistrationHour(), slaLimitMinutes, lot.getId());
                 addEvent(grouped, seg, seg.getArrivalHour(), "landed",
                          finalDest, lot.getQuantity(),
-                         lot.getRegistrationHour(), slaLimitMinutes);
+                         lot.getRegistrationHour(), slaLimitMinutes, lot.getId());
             }
         }
         return grouped.values().stream()
@@ -1138,13 +1165,14 @@ public class SimulationService {
             boolean finalDestination,
             int bags,
             int registrationMinute,
-            int slaLimitMinutes) {
+            int slaLimitMinutes,
+            String lotId) {
         String key = minute + "|" + type + "|" + seg.getFlightId()
                 + "|" + finalDestination + "|" + registrationMinute;
         grouped.computeIfAbsent(key, k -> new EventAccumulator(
                 minute, type, seg.getOrigin(), seg.getDestination(),
                 seg.getFlightId(), finalDestination,
-                registrationMinute, slaLimitMinutes))
+                registrationMinute, slaLimitMinutes, lotId))
                .bags += bags;
     }
 
@@ -1254,6 +1282,16 @@ public class SimulationService {
         synchronized (eventLog) { return new ArrayList<>(eventLog); }
     }
 
+    /** Envía el backlog de historial a un cliente recién conectado/recargado. */
+    private void sendHistory(SseEmitter emitter, List<SimEvent> backlog) {
+        try {
+            emitter.send(SseEmitter.event().name("history").data(backlog));
+        } catch (Exception e) {
+            emitters.remove(emitter);
+            try { emitter.complete(); } catch (Exception ignored) {}
+        }
+    }
+
     /** Registra una alerta compartida y la empuja a todos los clientes. */
     private void pushAlert(String type, String text) {
         synchronized (alertLog) {
@@ -1280,6 +1318,28 @@ public class SimulationService {
     private void clearLogs() {
         synchronized (eventLog) { eventLog.clear(); eventLogKeys.clear(); }
         synchronized (alertLog) { alertLog.clear(); }
+        pathByLot.clear();
+    }
+
+    /**
+     * Recorrido completo de un envío (lote): todos sus tramos con su estado
+     * actual (done / current / upcoming) según el minuto simulado. Permite que
+     * el panel dibuje el camino entero —incluidos los tramos aún no despegados—
+     * al seleccionar una maleta.
+     */
+    public ShipmentPath shipmentPath(String lotId) {
+        List<ShipmentLeg> raw = (lotId == null) ? null : pathByLot.get(lotId);
+        if (raw == null) return new ShipmentPath(lotId, List.of());
+        int now = state.simulatedMinute();
+        List<ShipmentLeg> legs = new ArrayList<>(raw.size());
+        for (ShipmentLeg l : raw) {
+            String st = l.arrivalMinute()   <= now ? "done"
+                      : l.departureMinute() <= now ? "current"
+                      : "upcoming";
+            legs.add(new ShipmentLeg(l.flightId(), l.from(), l.to(),
+                    l.departureMinute(), l.arrivalMinute(), l.finalDestination(), st));
+        }
+        return new ShipmentPath(lotId, legs);
     }
 
     private int daysForMode(String mode, int numDays) {
@@ -1325,21 +1385,23 @@ public class SimulationService {
         final boolean finalDestination;
         final int registrationMinute;
         final int slaLimitMinutes;
+        final String lotId;          // lote representativo (primer contribuyente)
         int bags;
 
         EventAccumulator(int minute, String type, String from, String to,
                          String flightId, boolean finalDestination,
-                         int registrationMinute, int slaLimitMinutes) {
+                         int registrationMinute, int slaLimitMinutes, String lotId) {
             this.minute = minute; this.type = type;
             this.from   = from;   this.to   = to;
             this.flightId = flightId;
             this.finalDestination = finalDestination;
             this.registrationMinute = registrationMinute;
             this.slaLimitMinutes    = slaLimitMinutes;
+            this.lotId              = lotId;
         }
         SimEvent toEvent(String clock) {
             return new SimEvent(minute, type, from, to, flightId, bags,
-                    finalDestination, clock, registrationMinute, slaLimitMinutes);
+                    finalDestination, clock, registrationMinute, slaLimitMinutes, lotId);
         }
     }
 
@@ -1397,7 +1459,16 @@ public class SimulationService {
     public record SimEvent(int minute, String type, String from, String to,
                            String flightId, int bags, boolean finalDestination,
                            String clock,
-                           int registrationMinute, int slaLimitMinutes) {}
+                           int registrationMinute, int slaLimitMinutes,
+                           String lotId) {}
+
+    /** Un tramo del recorrido planificado de un envío (lote). */
+    public record ShipmentLeg(String flightId, String from, String to,
+                              int departureMinute, int arrivalMinute,
+                              boolean finalDestination, String status) {} // status: done|current|upcoming
+
+    /** Recorrido completo (todos los tramos) de un envío seleccionado. */
+    public record ShipmentPath(String lotId, List<ShipmentLeg> legs) {}
     public record Kpis(int activeFlights, int saturationPercent,
                        int occupancyPercent, double avgDeliveryDays,
                        int replanifications, int deliveredOnTime,

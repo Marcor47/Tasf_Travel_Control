@@ -31,7 +31,10 @@ function hhmm(minute) {
  * origen-destino-hora de salida. Las maletas se suman por vuelo (un mismo vuelo
  * puede llevar varios grupos de lotes).
  */
-export default function FlightsCapacity({ routes = [], upcoming = [], running = false, focusCodes = [] }) {
+export default function FlightsCapacity({
+  routes = [], upcoming = [], running = false, focusCodes = [],
+  selectedRouteKey = null, pinnedCodes = null, onFlightClick,
+}) {
   const [search, setSearch] = useState("");
   const [sem,    setSem]    = useState("all");   // semáforo: all/green/amber/red/empty
 
@@ -53,6 +56,7 @@ export default function FlightsCapacity({ routes = [], upcoming = [], running = 
         const cap = r.capacity || 0;
         return {
           key: r.flightId || `${r.from}-${r.to}-${r.departureMinute}`,
+          active: true,
           from: r.from, to: r.to, departure: hhmm(r.departureMinute),
           bags: r.bags || 0, capacity: cap || null,
           pct: cap > 0 ? Math.round(((r.bags || 0) / cap) * 100) : null,
@@ -70,6 +74,7 @@ export default function FlightsCapacity({ routes = [], upcoming = [], running = 
       .filter(u => focus.size === 0 || focus.has(u.origin) || focus.has(u.destination))
       .map(u => ({
         key: u.flightId,
+        active: false,
         from: u.origin, to: u.destination,
         departure: (u.departureClock || "").split("  ")[1] || u.departureClock,
         bags: u.assigned || 0, capacity: u.capacity || 0,
@@ -124,8 +129,13 @@ export default function FlightsCapacity({ routes = [], upcoming = [], running = 
                            : color === "amber" ? "text-yellow-400"
                            : color === "red"   ? "text-red-400"
                            : "text-gray-400";
+            const isSel = selectedRouteKey === f.key;
             return (
-              <div key={f.key}>
+              <button key={f.key} type="button"
+                onClick={() => onFlightClick?.(f)}
+                title="Resaltar este vuelo en el mapa"
+                className={`w-full text-left rounded px-1 py-0.5 -mx-1 transition
+                  ${isSel ? "bg-teal/15 ring-1 ring-teal/40" : "hover:bg-white/5"}`}>
                 <div className="flex justify-between items-center mb-0.5">
                   <span className="text-gray-300 truncate">
                     <span className="text-teal">{f.from}</span>
@@ -149,7 +159,7 @@ export default function FlightsCapacity({ routes = [], upcoming = [], running = 
                     {f.capacity != null && ` / ${f.capacity.toLocaleString()}`}
                   </span>
                 </div>
-              </div>
+              </button>
             );
           })}
         </div>
@@ -162,8 +172,16 @@ export default function FlightsCapacity({ routes = [], upcoming = [], running = 
             Planificados (próximos)
           </p>
           <div className="flex flex-col gap-1 max-h-40 overflow-y-auto">
-            {plannedFlights.map(f => (
-              <div key={f.key} className="flex items-center justify-between text-[10px]">
+            {plannedFlights.map(f => {
+              const isSel = pinnedCodes
+                && pinnedCodes[0] === f.from && pinnedCodes[1] === f.to;
+              return (
+              <button key={f.key} type="button"
+                onClick={() => onFlightClick?.(f)}
+                title="Enfocar este tramo en el mapa"
+                className={`w-full flex items-center justify-between text-[10px] rounded
+                  px-1 py-0.5 -mx-1 transition
+                  ${isSel ? "bg-teal/15 ring-1 ring-teal/40" : "hover:bg-white/5"}`}>
                 <span className="flex items-center gap-1 min-w-0">
                   <span className="text-blue-400">⌛</span>
                   <span className="text-teal">{f.from}</span>
@@ -175,8 +193,9 @@ export default function FlightsCapacity({ routes = [], upcoming = [], running = 
                   {f.bags.toLocaleString()}/{f.capacity.toLocaleString()}
                   {f.pct != null && <span className="text-gray-600 ml-1">({f.pct}%)</span>}
                 </span>
-              </div>
-            ))}
+              </button>
+              );
+            })}
           </div>
         </div>
       )}

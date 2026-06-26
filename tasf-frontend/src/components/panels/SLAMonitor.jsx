@@ -134,6 +134,7 @@ export default function SLAMonitor({
   simulatedMinute = 0,
   focusCodes = [],
   view = "all",   // "all" | "sla" | "envios" | "resumen"
+  selectedShipment = null, onShipmentClick,
 }) {
   const [filterText, setFilterText] = useState("");
   const showSla     = view === "all" || view === "sla";
@@ -307,9 +308,17 @@ export default function SLAMonitor({
           </thead>
           <tbody>
             {bagLevelDetails.length > 0 ? (
-              bagLevelDetails.map((bag, idx) => (
+              bagLevelDetails.map((bag, idx) => {
+                const isSel = selectedShipment
+                  && selectedShipment.from === bag.from
+                  && selectedShipment.to   === bag.to
+                  && selectedShipment.minute === bag.minute;
+                return (
                 <tr key={`bag-${bag.bagId}-${idx}`}
-                    className="border-b border-white/5">
+                    onClick={() => onShipmentClick?.(bag)}
+                    title="Ver el tramo de este envío en el mapa"
+                    className={`border-b border-white/5 cursor-pointer transition
+                      ${isSel ? "bg-teal/15" : "hover:bg-white/5"}`}>
                   <td className="py-1.5 text-teal font-mono font-bold text-[10px]">
                     {bag.bagId}
                   </td>
@@ -317,12 +326,16 @@ export default function SLAMonitor({
                     <span className="text-gray-300">{bag.flightId || `FLT`}</span>
                     <br />
                     {bag.from} → {bag.to}
+                    {!bag.finalDestination && (
+                      <span className="text-amber-400 ml-1" title="Continúa en otro vuelo">⇄</span>
+                    )}
                   </td>
                   <td className="py-1.5">
                     <SLAStatusBadge event={bag} simulatedMinute={simulatedMinute} />
                   </td>
                 </tr>
-              ))
+                );
+              })
             ) : (
               <tr>
                 <td colSpan={3} className="py-3 text-center text-gray-600 text-[10px]">

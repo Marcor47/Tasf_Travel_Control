@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { getWarehouseColor } from "../../hooks/useStatusColor";
 import { STATIC_AIRPORTS, AIRPORT_META, airportMatches } from "../../data/staticAirports";
 
@@ -19,9 +18,9 @@ function whSem(a) {
 export default function WarehouseCapacity({
   airports = [], kpis = {},
   filter = "", onFilterChange,
+  sem = "all", onSemChange,        // semáforo controlado por el padre (resalta en el mapa)
   selectedCode = null, onAirportClick,
 }) {
-  const [sem, setSem] = useState("all");   // semáforo: all/green/amber/red/empty
   const hasFilter = filter.trim().length > 0 || sem !== "all";
 
   // Fuente: datos en vivo del backend si existen; si no (antes de iniciar)
@@ -80,7 +79,7 @@ export default function WarehouseCapacity({
         {/* Filtro por semáforo de ocupación (incluye vacío) */}
         <div className="flex gap-1 mb-2">
           {SEM_CHIPS.map(c => (
-            <button key={c.key} onClick={() => setSem(c.key)}
+            <button key={c.key} onClick={() => onSemChange?.(c.key)}
               title={c.key}
               className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] transition border
                 ${sem === c.key ? "border-teal/60 bg-teal/10 text-gray-200"

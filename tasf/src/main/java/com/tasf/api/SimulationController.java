@@ -107,4 +107,10 @@ public class SimulationController {
             @RequestBody SimulationService.UploadRequest r) {
         return simulationService.uploadData(r.type(), r.content(), r.origin());
     }
+
+    /** Recorrido completo (todos los tramos) de un envío seleccionado. */
+    @GetMapping("/shipmentPath")
+    public SimulationService.ShipmentPath shipmentPath(@RequestParam String lotId) {
+        return simulationService.shipmentPath(lotId);
+    }
 }
