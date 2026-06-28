@@ -165,6 +165,7 @@ export default function Dashboard({
 
 
   const kpis         = simulation?.kpis ?? {};
+  const prep         = simulation?.prepStatus;
   const running      = simulation?.running ?? false;
   const simulatedNow = simulation?.simulatedMinute ?? 0;
   const cfg          = MODE_CONFIG[mode] ?? MODE_CONFIG.diadia;
@@ -485,28 +486,86 @@ export default function Dashboard({
               <span>{configOpen ? "▾" : "▸"}</span> Configuración
             </button>
 
-            {!configOpen && (
-              <span className="text-gray-500 text-xs truncate">
-                {cfg.selector}: <span className="text-gray-300">{selectedDate || "—"}</span>
-                {" "}a las <span className="text-gray-300">{startTimeValue}</span> {cfg.suffix}
-              </span>
-            )}
-
-            {configOpen && (
-              <>
-                <span className="text-teal text-xs font-bold uppercase whitespace-nowrap">
-                  {cfg.selector}
+            {/* Día a Día = pizarra en blanco en tiempo real: SIN selector de
+                fecha; muestra el estado de preparación (datos cargados). */}
+            {mode === "diadia" ? (
+              !configOpen ? (
+                <span className="text-gray-500 text-xs truncate">
+                  Tiempo real ·{" "}
+                  <span className={prep?.ready ? "text-green-400" : "text-yellow-400"}>
+                    {prep?.airports ?? 0} aerop · {prep?.flights ?? 0} vuelos · {prep?.lots ?? 0} paq.
+                  </span>
                 </span>
-                <DateTimePicker
-                  selectedDate={selectedDate}
-                  availableDates={availableDates}
-                  onDateChange={onDateChange}
-                  selectedStartMinute={selectedStartMinute}
-                  onStartMinuteChange={onStartMinuteChange}
-                  disabled={running}
-                />
-                {cfg.suffix && (
-                  <span className="text-gray-500 text-xs">{cfg.suffix}</span>
+              ) : (
+                <>
+                  <span className="text-teal text-xs font-bold uppercase whitespace-nowrap">
+                    Tiempo real (hora del sistema)
+                  </span>
+                  <span className="text-gray-400 text-xs">
+                    Cargados:{" "}
+                    <b className={prep?.airports ? "text-green-400" : "text-red-400"}>{prep?.airports ?? 0}</b> aerop ·{" "}
+                    <b className={prep?.flights ? "text-green-400" : "text-red-400"}>{prep?.flights ?? 0}</b> vuelos ·{" "}
+                    <b className={prep?.lots ? "text-green-400" : "text-red-400"}>{prep?.lots ?? 0}</b> paq.
+                  </span>
+                  {!running && (
+                    <>
+                      <span className={`text-[10px] ${prep?.ready ? "text-green-400" : "text-yellow-400"}`}>
+                        {prep?.ready ? "✓ Listo para iniciar" : "Cargue datos en Registro »"}
+                      </span>
+                      {(prep?.airports || prep?.flights || prep?.lots) ? (
+                        <button onClick={() => simulation?.resetPrep?.()}
+                          className="text-[10px] px-1.5 py-0.5 rounded bg-gray-900/70 border border-white/10
+                                     text-gray-400 hover:text-white transition">
+                          Vaciar
+                        </button>
+                      ) : null}
+                    </>
+                  )}
+                </>
+              )
+            ) : (
+              <>
+                {!configOpen && (
+                  <span className="text-gray-500 text-xs truncate">
+                    {cfg.selector}: <span className="text-gray-300">{selectedDate || "—"}</span>
+                    {" "}a las <span className="text-gray-300">{startTimeValue}</span> {cfg.suffix}
+                  </span>
+                )}
+                {configOpen && (
+                  <>
+                    <span className="text-teal text-xs font-bold uppercase whitespace-nowrap">
+                      {cfg.selector}
+                    </span>
+                    {availableDates.length === 0 ? (
+                      <span className="text-gray-600 text-xs italic">Cargando fechas...</span>
+                    ) : (
+                      <select
+                        value={selectedDate}
+                        onChange={e => onDateChange?.(e.target.value)}
+                        disabled={running}
+                        className="bg-[#021020] border border-white/10 rounded px-2 py-1
+                                   text-xs text-gray-300 focus:outline-none focus:border-teal
+                                   disabled:opacity-40 disabled:cursor-not-allowed">
+                        {availableDates.map(d => (
+                          <option key={d} value={d}>{d}</option>
+                        ))}
+                      </select>
+                    )}
+                    <span className="text-gray-500 text-xs">a las</span>
+                    <input
+                      type="time"
+                      value={startTimeValue}
+                      onChange={handleStartTimeChange}
+                      disabled={running}
+                      title="Hora y minuto de inicio dentro del día"
+                      className="bg-[#021020] border border-white/10 rounded px-2 py-1
+                                 text-xs text-gray-300 focus:outline-none focus:border-teal
+                                 disabled:opacity-40 disabled:cursor-not-allowed"
+                    />
+                    {cfg.suffix && (
+                      <span className="text-gray-500 text-xs">{cfg.suffix}</span>
+                    )}
+                  </>
                 )}
               </>
             )}
