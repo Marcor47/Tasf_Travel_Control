@@ -8,6 +8,7 @@ import WorldMap          from "../components/map/WorldMap";
 import CollapseAlert     from "../components/modals/CollapseAlert";
 import FlightCancelPanel from "../components/panels/FlightCancelPanel";
 import FloatingPanel     from "../components/panels/FloatingPanel";
+import DateTimePicker    from "../components/panels/DateTimePicker";
 
 // Pestañas del panel de Información (también las que pueden flotar).
 const INFO_TABS = [
@@ -74,12 +75,7 @@ export default function Dashboard({
   const startTimeValue =
     `${String(Math.floor(selectedStartMinute / 60)).padStart(2, "0")}:` +
     `${String(selectedStartMinute % 60).padStart(2, "0")}`;
-  const handleStartTimeChange = e => {
-    const [h, m] = e.target.value.split(":").map(Number);
-    if (Number.isFinite(h) && Number.isFinite(m)) {
-      onStartMinuteChange?.(h * 60 + m);
-    }
-  };
+  
   const [showCollapse, setShowCollapse] = useState(false);
   // Filtro del panel de almacenes (texto: código/país/región)
   const [storageFilter, setStorageFilter] = useState("");
@@ -501,31 +497,13 @@ export default function Dashboard({
                 <span className="text-teal text-xs font-bold uppercase whitespace-nowrap">
                   {cfg.selector}
                 </span>
-                {availableDates.length === 0 ? (
-                  <span className="text-gray-600 text-xs italic">Cargando fechas...</span>
-                ) : (
-                  <select
-                    value={selectedDate}
-                    onChange={e => onDateChange?.(e.target.value)}
-                    disabled={running}
-                    className="bg-[#021020] border border-white/10 rounded px-2 py-1
-                               text-xs text-gray-300 focus:outline-none focus:border-teal
-                               disabled:opacity-40 disabled:cursor-not-allowed">
-                    {availableDates.map(d => (
-                      <option key={d} value={d}>{d}</option>
-                    ))}
-                  </select>
-                )}
-                <span className="text-gray-500 text-xs">a las</span>
-                <input
-                  type="time"
-                  value={startTimeValue}
-                  onChange={handleStartTimeChange}
+                <DateTimePicker
+                  selectedDate={selectedDate}
+                  availableDates={availableDates}
+                  onDateChange={onDateChange}
+                  selectedStartMinute={selectedStartMinute}
+                  onStartMinuteChange={onStartMinuteChange}
                   disabled={running}
-                  title="Hora y minuto de inicio dentro del día"
-                  className="bg-[#021020] border border-white/10 rounded px-2 py-1
-                             text-xs text-gray-300 focus:outline-none focus:border-teal
-                             disabled:opacity-40 disabled:cursor-not-allowed"
                 />
                 {cfg.suffix && (
                   <span className="text-gray-500 text-xs">{cfg.suffix}</span>
