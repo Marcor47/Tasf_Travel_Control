@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { AIRPORT_META } from "../../data/staticAirports";
+import { AIRPORT_META, airportName } from "../../data/staticAirports";
 
 // Cuántos almacenes mostrar cuando no hay filtro (para no saturar la vista)
 const MAX_STORAGES_NO_FILTER = 6;
@@ -138,8 +138,9 @@ function MovementRow({ e }) {
         <span className="text-gray-300 font-mono truncate">
           {e.flightId || "—"}
         </span>
-        <span className="text-gray-600">
-          {isIn ? `← ${e.from}` : `→ ${e.to}`}
+        <span className="text-gray-600 truncate"
+              title={isIn ? `← ${e.from}` : `→ ${e.to}`}>
+          {isIn ? `← ${airportName(e.from)}` : `→ ${airportName(e.to)}`}
         </span>
         {e.bags != null && (
           <span className="text-gray-500">· {e.bags}</span>

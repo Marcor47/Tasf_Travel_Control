@@ -15,7 +15,7 @@ const menu = [
   { label:"Monitoreo", path:"/monitoreo", icon:<Bell size={14}/>     },
 ];
 
-export default function Navbar({ running, onToggle, onStop, paused, onModeClick, clock, mode, simulationMode, message }) {
+export default function Navbar({ running, onToggle, onStop, paused, onModeClick, clock, mode, simulationMode, message, canStart = true, prepStatus }) {
   const nav          = useNavigate();
   const { pathname } = useLocation();
 
@@ -114,8 +114,12 @@ export default function Navbar({ running, onToggle, onStop, paused, onModeClick,
         ) : (
           <>
             <button onClick={onToggle}
+              disabled={!running && !canStart}
+              title={!running && !canStart
+                ? `Día a Día: cargue aeropuertos (${prepStatus?.airports ?? 0}), vuelos (${prepStatus?.flights ?? 0}) y paquetes (${prepStatus?.lots ?? 0}) en Registro antes de iniciar`
+                : ""}
               className={`text-white text-xs px-3 py-1 rounded flex items-center gap-1
-                          transition ${!running
+                          transition disabled:opacity-40 disabled:cursor-not-allowed ${!running
                             ? "bg-teal hover:bg-teal/80"
                             : paused
                               ? "bg-green-700 hover:bg-green-600"

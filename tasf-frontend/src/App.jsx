@@ -17,6 +17,7 @@ function AppContent() {
     selectedNumDays, setSelectedNumDays,
     selectedStartMinute, setSelectedStartMinute,
     cancelFlight,
+    prepStatus,
     realSeconds, // ← nuevo
   } = simulation;
 
@@ -26,6 +27,10 @@ function AppContent() {
   const modeFromPath = pathname === "/colapso" ? "colapso"
                      : pathname === "/periodo"  ? "periodo"
                      : "diadia";
+
+  // Día a Día (pizarra en blanco) solo puede iniciar si ya hay aeropuertos,
+  // vuelos y al menos un paquete cargados. Los otros modos usan el dataset.
+  const canStart = modeFromPath !== "diadia" || (prepStatus?.ready ?? false);
 
   // Nota: cambiar de pestaña de modo NO detiene la simulación en curso.
   // Solo navega; la simulación (única en el backend) sigue corriendo y el
@@ -41,6 +46,8 @@ function AppContent() {
       // Pausar / reanudar — NO reinicia la simulación.
       if (paused) resume(); else pause();
     } else {
+      // Día a Día: no iniciar si faltan datos (aeropuertos/vuelos/paquetes).
+      if (!canStart) { navigate("/registro"); return; }
       const targetPath = modeFromPath === "colapso" ? "/colapso"
                       : modeFromPath === "periodo"  ? "/periodo"
                       : "/";
@@ -81,6 +88,8 @@ function AppContent() {
       simulationMode={simulation?.mode}   // ← modo real de la sim activa
       paused={paused}
       onStop={stop}
+      canStart={canStart}
+      prepStatus={prepStatus}
       message={simulation?.message ?? ""}/>
       
       <main className="flex-1 overflow-hidden">

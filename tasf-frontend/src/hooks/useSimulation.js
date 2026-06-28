@@ -48,6 +48,8 @@ export function useSimulation() {
   const [state, setState]               = useState(emptyState);
   const [alerts, setAlerts]             = useState([]);
   const [history, setHistory]           = useState([]);
+  // Preparación de Día a Día (aeropuertos/vuelos/paquetes cargados sin iniciar).
+  const [prepStatus, setPrepStatus]     = useState({ airports: 0, flights: 0, lots: 0, ready: false });
   const [availableDates, setAvailableDates] = useState([]);
   const [flights, setFlights]               = useState([]);
   const [selectedDate, setSelectedDate] = useState("");
@@ -233,21 +235,39 @@ const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
 
   // Alta de lote (registro). Devuelve true si se agregó. `client` viaja al
   // backend para identificar quién registró en la alerta compartida.
+  // Estado de preparación de Día a Día. Se refresca al cargar y tras cada ingesta.
+  const refreshPrep = useCallback(async () => {
+    try {
+      const r = await fetch(`${API_BASE}/api/simulation/prepStatus`);
+      if (r.ok) setPrepStatus(await r.json());
+    } catch { /* backend antiguo sin endpoint: ignorar */ }
+  }, []);
+
+  const resetPrep = useCallback(async () => {
+    try {
+      await fetch(`${API_BASE}/api/simulation/resetPrep`, { method: "POST" });
+    } catch { /* ignore */ }
+    refreshPrep();
+  }, [refreshPrep]);
+
   const addLot = useCallback(async (origin, destination, quantity, client) => {
     try {
       const r = await fetch(`${API_BASE}/api/simulation/addLot`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ origin, destination, quantity, client }),
+        // clientEpochMs = reloj del sistema del usuario → el backend lo convierte
+        // a la hora local del aeropuerto de origen (GMT-0 interno).
+        body: JSON.stringify({ origin, destination, quantity, client, clientEpochMs: Date.now() }),
       });
       if (!r.ok) return false;
       setState(await r.json());
+      refreshPrep();
       return true;
     } catch (e) {
       console.error("Error al registrar lote:", e);
       return false;
     }
-  }, []);
+  }, [refreshPrep]);
 
   // Recorrido completo (todos los tramos) de un envío. Devuelve { lotId, legs }
   // con cada tramo y su estado (done/current/upcoming).
@@ -273,12 +293,13 @@ const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
       });
       if (!r.ok) return false;
       setState(await r.json());
+      refreshPrep();           // las ingestas cambian la preparación de Día a Día
       return true;
     } catch (e) {
       console.error(`Error en ${path}:`, e);
       return false;
     }
-  }, []);
+  }, [refreshPrep]);
 
   const addFlight = useCallback(async (origin, destination, departureLocal, arrivalLocal, capacity) =>
     postJson("addFlight", { origin, destination, departureLocal, arrivalLocal, capacity }),
@@ -329,9 +350,20 @@ const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
   }, [state.running, state.simulatedMinute, simStartMinute]);
 
 
+  // Refresca la preparación al cargar; mientras NO corre, sondea cada 4 s para
+  // reflejar lo que cargan otras instancias.
+  useEffect(() => {
+    refreshPrep();
+    if (state.running) return;
+    const id = setInterval(refreshPrep, 4000);
+    return () => clearInterval(id);
+  }, [state.running, refreshPrep]);
+
   return {
     ...state,
     history,
+    prepStatus,
+    resetPrep,
     simStartMinute,
     availableDates,
     flights,

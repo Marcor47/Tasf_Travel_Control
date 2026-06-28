@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { airportName } from "../../data/staticAirports";
 
 // ── Constantes SLA ────────────────────────────────────────────────────────────
 // El backend envía registrationMinute y slaLimitMinutes por evento.
@@ -247,7 +248,9 @@ export default function SLAMonitor({
                       {getPackageId(event)}
                     </span>
                     <br/>
-                    <span className="text-gray-500">{event.from} → {event.to}</span>
+                    <span className="text-gray-500" title={`${event.from} → ${event.to}`}>
+                      {airportName(event.from)} → {airportName(event.to)}
+                    </span>
                   </td>
                   <td className="py-1.5 text-center text-gray-300 font-bold text-[10px]">
                     {event.bags || 1}
@@ -333,7 +336,9 @@ export default function SLAMonitor({
                   <td className="py-1.5 text-gray-400 text-[10px]">
                     <span className="text-gray-300">{bag.flightId || `FLT`}</span>
                     <br />
-                    {bag.from} → {bag.to}
+                    <span title={`${bag.from} → ${bag.to}`}>
+                      {airportName(bag.from)} → {airportName(bag.to)}
+                    </span>
                     {!bag.finalDestination && (
                       <span className="text-amber-400 ml-1" title="Continúa en otro vuelo">⇄</span>
                     )}

@@ -6,8 +6,15 @@ const API_BASE = import.meta.env.VITE_API_BASE || "";
 export default function RegisterLot({ simulation }) {
   const running = simulation?.running ?? false;
   const mode    = simulation?.mode ?? "diadia";
-  // Las altas de lotes solo aplican al escenario Día a Día en curso.
-  const canAdd  = running && mode === "diadia";
+  const prep    = simulation?.prepStatus ?? { airports: 0, flights: 0, lots: 0, ready: false };
+
+  // Día a Día = pizarra en blanco: se cargan datos ANTES de iniciar (staging) y
+  // también en caliente mientras corre. La ingesta no aplica a periodo/colapso
+  // en curso (esos usan el dataset).
+  const canIngest  = !running || mode === "diadia";
+  const canAirport = canIngest;                                   // aeropuertos: base
+  const canFlight  = canIngest && prep.airports > 0;              // vuelos: requieren aeropuertos
+  const canAdd     = canIngest && prep.airports > 0 && prep.flights > 0; // paquetes: requieren ambos
 
   // Aeropuertos para los selectores: datos en vivo si hay, si no los del dataset
   const airports = (simulation?.airports?.length
@@ -138,15 +145,40 @@ export default function RegisterLot({ simulation }) {
   return (
     <div className="p-4 max-w-5xl mx-auto">
       <h2 className="text-teal font-bold text-lg mb-1">REGISTRO DE LOTES</h2>
-      <p className="text-gray-500 text-xs mb-4">
-        Alta de nuevos lotes de equipaje para el escenario Día a Día.
-        {!canAdd && (
-          <span className="text-yellow-400 ml-1">
-            Solo disponible con una simulación Día a Día en curso — puedes evaluar la
-            viabilidad, pero no agregar.
-          </span>
-        )}
+      <p className="text-gray-500 text-xs mb-3">
+        Día a Día parte de una <b className="text-gray-300">pizarra en blanco</b>: carga primero
+        <b className="text-gray-300"> aeropuertos</b>, luego <b className="text-gray-300">vuelos</b> y
+        al menos un <b className="text-gray-300">paquete</b>. El botón <b>INICIAR</b> se habilita
+        cuando hay los tres. Puedes seguir cargando con la simulación en curso.
       </p>
+
+      {/* Estado de preparación (compartido por todas las instancias) */}
+      <div className="flex flex-wrap items-center gap-2 mb-4 text-xs">
+        {[
+          ["Aeropuertos", prep.airports],
+          ["Vuelos",      prep.flights],
+          ["Paquetes",    prep.lots],
+        ].map(([label, n]) => (
+          <span key={label}
+            className={`px-2 py-1 rounded border ${n > 0
+              ? "border-green-600/50 bg-green-900/15 text-green-300"
+              : "border-red-700/50 bg-red-900/15 text-red-300"}`}>
+            {label}: <b>{n}</b>
+          </span>
+        ))}
+        <span className={prep.ready ? "text-green-400" : "text-yellow-400"}>
+          {prep.ready ? "✓ Listo para iniciar" : "Faltan datos para iniciar"}
+        </span>
+        {(prep.airports || prep.flights || prep.lots) ? (
+          <button onClick={() => simulation?.resetPrep?.()}
+            disabled={running}
+            title={running ? "No se puede vaciar con la simulación en curso" : "Vaciar preparación"}
+            className="ml-auto px-2 py-1 rounded bg-[#021020] border border-white/10 text-gray-400
+                       hover:text-white transition disabled:opacity-40 disabled:cursor-not-allowed">
+            Vaciar preparación
+          </button>
+        ) : null}
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* ── Formulario ──────────────────────────────────────────────────── */}
@@ -205,7 +237,7 @@ export default function RegisterLot({ simulation }) {
             <button
               onClick={addLot}
               disabled={!canAdd || !report?.feasible || adding}
-              title={!canAdd ? "Requiere una simulación Día a Día en curso"
+              title={!canAdd ? "Carga primero aeropuertos y vuelos"
                              : !report?.feasible ? "Evalúa una ruta viable primero" : ""}
               className="flex-1 bg-teal hover:bg-teal/80 text-white text-sm py-2 rounded
                          font-medium tracking-wide transition
@@ -216,12 +248,13 @@ export default function RegisterLot({ simulation }) {
 
           {status === "added" && (
             <p className="text-green-400 text-xs mt-3">
-              ● Lote agregado a la simulación. Aparecerá en el bloque actual.
+              ● Paquete registrado{running ? " (entra en la simulación en curso)" : " (en preparación)"}.
+              Se registró con la hora del sistema convertida a la hora local del origen.
             </p>
           )}
           {status === "error" && (
             <p className="text-red-400 text-xs mt-3">
-              No se pudo agregar el lote (¿hay una simulación Día a Día en curso?).
+              No se pudo registrar. Verifica que haya aeropuertos y vuelos cargados.
             </p>
           )}
         </div>
@@ -347,7 +380,8 @@ export default function RegisterLot({ simulation }) {
                 className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300"/>
             </label>
           </div>
-          <button onClick={submitFlight} disabled={!canAdd}
+          <button onClick={submitFlight} disabled={!canFlight}
+            title={!canFlight ? "Carga aeropuertos primero" : ""}
             className="w-full bg-teal hover:bg-teal/80 text-white text-xs py-1.5 rounded transition
                        disabled:opacity-40 disabled:cursor-not-allowed">
             Agregar Vuelo
@@ -371,7 +405,7 @@ export default function RegisterLot({ simulation }) {
             <input name="capacity" type="number" min="1" value={airportForm.capacity} onChange={ha} placeholder="Capacidad"
               className="bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300"/>
           </div>
-          <button onClick={submitAirport} disabled={!canAdd}
+          <button onClick={submitAirport} disabled={!canAirport}
             className="w-full bg-teal hover:bg-teal/80 text-white text-xs py-1.5 rounded transition mb-2
                        disabled:opacity-40 disabled:cursor-not-allowed">
             Agregar Aeropuerto
@@ -382,7 +416,7 @@ export default function RegisterLot({ simulation }) {
               <option value="">Cerrar aeropuerto…</option>
               {airports.map(a => <option key={a.code} value={a.code}>{a.code}</option>)}
             </select>
-            <button onClick={submitClose} disabled={!canAdd || !closeCode}
+            <button onClick={submitClose} disabled={!running || !closeCode}
               className="bg-red-800/60 hover:bg-red-700 text-red-200 text-xs px-3 py-1 rounded transition
                          disabled:opacity-40 disabled:cursor-not-allowed">
               Cerrar
@@ -414,7 +448,7 @@ export default function RegisterLot({ simulation }) {
           </div>
           <p className="text-gray-600 text-[10px] mt-2">
             Lotes: el origen se toma del nombre del archivo (_envios_XXXX_).
-            {!canAdd && <span className="text-yellow-400"> Requiere Día a Día en curso.</span>}
+            {!canIngest && <span className="text-yellow-400"> Disponible en Día a Día (preparación o en curso).</span>}
           </p>
         </div>
       </div>

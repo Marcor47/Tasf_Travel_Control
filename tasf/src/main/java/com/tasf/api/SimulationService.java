@@ -18,8 +18,10 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -85,6 +87,15 @@ public class SimulationService {
     // un envío al seleccionarlo. Se llena en buildEvents y se limpia en cada run.
     private final Map<String, List<ShipmentLeg>> pathByLot = new ConcurrentHashMap<>();
 
+    // ── Preparación de "Día a Día" (pizarra en blanco) ────────────────────────
+    // En modo diadia NO se usa el dataset: el usuario carga aeropuertos, vuelos y
+    // paquetes ANTES de iniciar (Ingesta de datos). Estas colecciones acumulan lo
+    // cargado mientras la simulación NO corre; al pulsar iniciar se usan como base.
+    private final Map<String, Airport>   stagedAirports = new ConcurrentHashMap<>();
+    private final List<FlightInstance>   stagedFlights  = new CopyOnWriteArrayList<>();
+    private final List<BaggageLot>       stagedLots     = new CopyOnWriteArrayList<>();
+    private final AtomicInteger          stagedSeq      = new AtomicInteger(0);
+
     private final AirportRepository  repoAirports  = new AirportRepository();
     private final FlightRepository   repoFlights   = new FlightRepository();
     private final ShipmentRepository repoShipments = new ShipmentRepository();
@@ -102,9 +113,21 @@ public class SimulationService {
         StartRequest safeRequest = request == null
                 ? new StartRequest("diadia", null, null, null, null) : request;
         stop();
+        String mode = normalizeMode(safeRequest.mode());
+
+        // Día a Día (pizarra en blanco): solo inicia si el usuario ya cargó
+        // aeropuertos, vuelos y al menos un paquete. No se usa el dataset.
+        if ("diadia".equals(mode)
+                && (stagedAirports.isEmpty() || stagedFlights.isEmpty() || stagedLots.isEmpty())) {
+            state = SimulationState.initial().withMode("diadia").withMessage(
+                    "Faltan datos: cargue aeropuertos, vuelos y al menos un paquete antes de iniciar");
+            broadcast(state);
+            return state;                  // NO inicia
+        }
+
         clearLogs();                       // historial/alertas frescos por cada run
+        resetMutationQueues();             // descarta altas/cancelaciones pendientes de una corrida previa
         int    runId = generation.incrementAndGet();
-        String mode  = normalizeMode(safeRequest.mode());
         running.set(true);
         paused.set(false);
         state = SimulationState.initial()
@@ -244,29 +267,39 @@ public class SimulationService {
         }
     }
 
-    /** Encola un nuevo lote para inyectarlo en la simulación día a día en curso. */
     public synchronized SimulationState addLot(String origin, String destination, int quantity) {
-        return addLot(origin, destination, quantity, null);
+        return addLot(origin, destination, quantity, null, null);
     }
-
     public synchronized SimulationState addLot(String origin, String destination,
                                                int quantity, String client) {
-        if (!running.get() || !"diadia".equals(state.mode())) return state;
-        try {
-            Map<String, Airport> airports = loadAirports();
-            Airport o = airports.get(origin), d = airports.get(destination);
-            if (o == null || d == null || origin.equals(destination) || quantity <= 0) return state;
-            int     regMin        = Math.max(0, state.simulatedMinute());
-            boolean sameContinent = o.getRegion().equals(d.getRegion());
-            int     dueMin        = regMin + (sameContinent ? 24 * 60 : 48 * 60);
-            pendingAdditions.add(new BaggageLot(
-                    "USER-" + System.currentTimeMillis(),
-                    origin, destination, quantity, regMin, dueMin, false));
-            pushAlert("lote", (client == null || client.isBlank() ? "Un cliente" : client)
-                    + " registró " + quantity + " maletas " + origin + "→" + destination);
-        } catch (IOException e) {
-            System.err.println("Error agregando lote: " + e.getMessage());
-        }
+        return addLot(origin, destination, quantity, client, null);
+    }
+
+    /**
+     * Registra un lote. Día a Día (pizarra): si la simulación NO corre, va a la
+     * preparación (staging); si corre, se inyecta en caliente. La hora de
+     * registro es la hora REAL (reloj del cliente si lo envía) convertida a UTC;
+     * el día/hora local del origen se deriva de su offset GMT.
+     * Validación: requiere aeropuertos Y vuelos cargados.
+     */
+    public synchronized SimulationState addLot(String origin, String destination,
+                                               int quantity, String client, Long clientEpochMs) {
+        boolean live = running.get();
+        Map<String, Airport> ap = live
+                ? (activeContext != null ? activeContext.getAirports() : Map.of())
+                : stagedAirports;
+        boolean haveFlights = live ? !scheduledFlights.isEmpty() : !stagedFlights.isEmpty();
+        if (ap.isEmpty() || !haveFlights) return state;   // sin aeropuertos/vuelos no se puede
+        Airport o = ap.get(origin), d = ap.get(destination);
+        if (o == null || d == null || origin.equals(destination) || quantity <= 0) return state;
+        int     regMin = registrationMinuteFor(clientEpochMs);
+        boolean same   = o.getRegion().equals(d.getRegion());
+        int     dueMin = regMin + (same ? 24 * 60 : 48 * 60);
+        BaggageLot lot = new BaggageLot("USER-" + stagedSeq.incrementAndGet(),
+                origin, destination, quantity, regMin, dueMin, false);
+        if (live) pendingAdditions.add(lot); else stagedLots.add(lot);
+        pushAlert("lote", (client == null || client.isBlank() ? "Un cliente" : client)
+                + " registró " + quantity + " maletas " + origin + "→" + destination);
         return state;
     }
 
@@ -287,21 +320,24 @@ public class SimulationService {
 
     // ── Edición de la red en caliente (solo con simulación en curso) ───────────
 
-    /** Agrega un vuelo (horas LOCALES de origen/destino → se convierten a UTC). */
+    /** Agrega un vuelo (horas LOCALES de origen/destino → se convierten a UTC).
+     *  Si la simulación corre, en caliente; si no, a la preparación (staging).
+     *  Requiere que existan los aeropuertos de origen y destino. */
     public synchronized SimulationState addFlight(String origin, String destination,
             String departureLocal, String arrivalLocal, int capacity) {
-        PlanningContext ctx = activeContext;
-        if (!running.get() || ctx == null) return state;
+        boolean live = running.get() && activeContext != null;
+        Map<String, Airport> ap = live ? activeContext.getAirports() : stagedAirports;
+        if (origin == null || destination == null || origin.equals(destination) || capacity <= 0) return state;
+        Airport o = ap.get(origin), d = ap.get(destination);
+        if (o == null || d == null) return state;   // aeropuertos deben estar cargados
         try {
-            Airport o = ctx.getAirports().get(origin);
-            Airport d = ctx.getAirports().get(destination);
-            if (o == null || d == null || origin.equals(destination) || capacity <= 0) return state;
             int depUtc = toUtcMinuteOfDay(departureLocal, o.getGmtOffset());
             int arrUtc = toUtcMinuteOfDay(arrivalLocal,   d.getGmtOffset());
             if (arrUtc < depUtc) arrUtc += 1440;
-            pendingFlightAdds.add(new FlightInstance(
+            FlightInstance f = new FlightInstance(
                     "U" + userFlightSeq.incrementAndGet(),
-                    origin, destination, depUtc, arrUtc, capacity, false));
+                    origin, destination, depUtc, arrUtc, capacity, false);
+            if (live) pendingFlightAdds.add(f); else stagedFlights.add(f);
             pushAlert("vuelo", "Vuelo agregado " + origin + "→" + destination
                     + " (cap. " + capacity + ")");
         } catch (Exception e) {
@@ -310,16 +346,18 @@ public class SimulationService {
         return state;
     }
 
-    /** Agrega un aeropuerto con su almacén (gmtHours en horas, p.ej. -5, +2). */
+    /** Agrega un aeropuerto con su almacén (gmtHours en horas, p.ej. -5, +2).
+     *  Si la simulación corre, en caliente; si no, a la preparación (staging). */
     public synchronized SimulationState addAirport(String code, String region,
             double lat, double lng, int gmtHours, int capacity) {
-        if (!running.get() || activeContext == null
-                || code == null || code.isBlank() || capacity <= 0) return state;
-        pendingAirportAdds.add(new Airport(
+        if (code == null || code.isBlank() || capacity <= 0) return state;
+        Airport a = new Airport(
                 code.trim().toUpperCase(),
                 (region == null || region.isBlank()) ? "UNKNOWN" : region,
-                capacity, gmtHours * 60, lat, lng));
-        pushAlert("aeropuerto", "Aeropuerto agregado " + code.trim().toUpperCase());
+                capacity, gmtHours * 60, lat, lng);
+        if (running.get() && activeContext != null) pendingAirportAdds.add(a);
+        else stagedAirports.put(a.getCode(), a);
+        pushAlert("aeropuerto", "Aeropuerto agregado " + a.getCode());
         return state;
     }
 
@@ -337,28 +375,32 @@ public class SimulationService {
      * del aeropuerto de origen (en el dataset va en el nombre del archivo).
      */
     public synchronized SimulationState uploadData(String type, String content, String origin) {
-        PlanningContext ctx = activeContext;
-        if (!running.get() || ctx == null || content == null || content.isBlank()) return state;
+        if (content == null || content.isBlank()) return state;
+        boolean live = running.get() && activeContext != null;
+        Map<String, Airport> ap = live ? activeContext.getAirports() : stagedAirports;
         try {
             if ("planes".equals(type)) {
+                if (ap.isEmpty()) return state;   // requiere aeropuertos cargados primero
                 java.io.File tmp = java.io.File.createTempFile("up_planes", ".txt");
                 java.nio.file.Files.writeString(tmp.toPath(), content);
-                for (FlightInstance f : repoFlights.loadFlights(tmp.getAbsolutePath(), ctx.getAirports())) {
-                    pendingFlightAdds.add(new FlightInstance(
+                for (FlightInstance f : repoFlights.loadFlights(tmp.getAbsolutePath(), ap)) {
+                    FlightInstance nf = new FlightInstance(
                             "U" + userFlightSeq.incrementAndGet(),
                             f.getOrigin(), f.getDestination(),
-                            f.getDepartureHour(), f.getArrivalHour(), f.getCapacity(), false));
+                            f.getDepartureHour(), f.getArrivalHour(), f.getCapacity(), false);
+                    if (live) pendingFlightAdds.add(nf); else stagedFlights.add(nf);
                 }
                 tmp.delete();
             } else if ("airports".equals(type)) {
                 java.io.File tmp = java.io.File.createTempFile("up_airports", ".txt");
                 java.nio.file.Files.write(tmp.toPath(),
                         content.getBytes(java.nio.charset.StandardCharsets.UTF_16));
-                repoAirports.loadAirports(tmp.getAbsolutePath()).values()
-                        .forEach(pendingAirportAdds::add);
+                for (Airport a : repoAirports.loadAirports(tmp.getAbsolutePath()).values()) {
+                    if (live) pendingAirportAdds.add(a); else stagedAirports.put(a.getCode(), a);
+                }
                 tmp.delete();
             } else if ("lots".equals(type) && origin != null) {
-                Airport o = ctx.getAirports().get(origin.trim().toUpperCase());
+                Airport o = ap.get(origin.trim().toUpperCase());
                 if (o == null) return state;
                 for (String raw : content.split("\\r?\\n")) {
                     String line = raw.trim();
@@ -374,14 +416,15 @@ public class SimulationService {
                         int mm = Integer.parseInt(p[3].trim());
                         String dest = p[4].trim().toUpperCase();
                         int qty = Integer.parseInt(p[5].replaceAll("[^0-9]", ""));
-                        Airport d = ctx.getAirports().get(dest);
+                        Airport d = ap.get(dest);
                         if (d == null || qty <= 0) continue;
                         int regUtc = (int) (Duration.between(BASE_UTC,
                                 LocalDateTime.of(y, mo, da, hh, mm)).toMinutes() - o.getGmtOffset());
                         boolean same = o.getRegion().equals(d.getRegion());
-                        pendingAdditions.add(new BaggageLot("UF-" + userFlightSeq.incrementAndGet(),
+                        BaggageLot lot = new BaggageLot("UF-" + stagedSeq.incrementAndGet(),
                                 origin.trim().toUpperCase(), dest, qty,
-                                regUtc, regUtc + (same ? 1440 : 2880), false));
+                                regUtc, regUtc + (same ? 1440 : 2880), false);
+                        if (live) pendingAdditions.add(lot); else stagedLots.add(lot);
                     } catch (Exception ignored) {}
                 }
             }
@@ -452,6 +495,13 @@ public class SimulationService {
     // ── Simulación ───────────────────────────────────────────────────────────
 
     private void runSimulation(StartRequest request, int runId) {
+        // Día a Día = pizarra en blanco en TIEMPO REAL: no usa el dataset, solo
+        // lo cargado por el usuario (Ingesta de datos). Bucle propio, aislado de
+        // periodo/colapso para no afectar su funcionamiento.
+        if ("diadia".equals(request.mode())) {
+            runRealtimeDiaDia(runId);
+            return;
+        }
         try {
             // 1. Cargar datos
             Map<String, Airport> airports = loadAirports();
@@ -798,6 +848,10 @@ public class SimulationService {
                             collapseReason,
                             simulatedNow,
                             upcoming);
+                    // Si esta corrida ya fue superada/detenida (otro usuario pulsó
+                    // detener/iniciar), NO emitir: evita que un hilo agonizante
+                    // sobrescriba el estado "Detenido" con uno "activo" fantasma.
+                    if (!isActive(runId)) return;
                     broadcast(state);
 
                     if (simulatedNow >= blockEnd) break;
@@ -858,6 +912,193 @@ public class SimulationService {
             broadcast(state);
         }
     }
+
+    // ── Día a Día en tiempo real (pizarra en blanco) ──────────────────────────
+
+    /**
+     * Bucle de "Día a Día": NO usa el dataset. Parte de lo que el usuario cargó
+     * (aeropuertos, vuelos y paquetes en `staged*`) y avanza con el RELOJ REAL
+     * (GMT-0). Cada tick fija el minuto simulado = hora real UTC, drena las
+     * altas/cancelaciones encoladas (registro en caliente) y reconstruye el
+     * estado. Termina al acabar el día (UTC) o por colapso de almacén.
+     */
+    private void runRealtimeDiaDia(int runId) {
+        try {
+            Map<String, Airport> airports = new HashMap<>(stagedAirports);
+            List<FlightInstance> flights  = new ArrayList<>(stagedFlights);
+            PlanningContext context = new PlanningContext(airports, flights,
+                    ScenarioConfig.defaultWeek4());
+            flightCapacityById = flights.stream().collect(Collectors.toMap(
+                    FlightInstance::getId, FlightInstance::getCapacity, (a, b) -> a));
+            scheduledFlights = context.getFlights();
+            activeContext    = context;
+
+            int dayStart = absoluteMinute(LocalDate.now(ZoneOffset.UTC).atStartOfDay());
+            int dayEnd   = dayStart + 1440;
+
+            List<BaggageLot> lots = new ArrayList<>(stagedLots);
+            WorkingSolution solution = new WorkingSolution(context);
+            planGreedy(context, solution, lots);
+
+            List<SimEvent> events = buildEvents(solution, lots, dayStart, dayEnd);
+            events.sort(Comparator.comparingInt(SimEvent::minute).thenComparing(SimEvent::type));
+            int     nextEvent       = 0;
+            int     replanifications = 0;
+            boolean collapsed        = false;
+
+            while (isActive(runId)) {
+                // Pausa: congela el reloj (no se avanza ni se emite).
+                if (paused.get()) {
+                    state = state.withMessage("Pausado");
+                    if (isActive(runId)) broadcast(state);
+                    while (paused.get() && isActive(runId)) sleep(150);
+                    if (!isActive(runId)) return;
+                }
+
+                int now      = absoluteMinute(LocalDateTime.ofInstant(Instant.now(), ZoneOffset.UTC));
+                if (now < dayStart) now = dayStart;
+                boolean dayOver = now >= dayEnd;
+                int     clampNow = Math.min(now, dayEnd);
+
+                // ── Drenar registros en caliente (cancelaciones / red / lotes) ──
+                boolean changed = false;
+                String cancelId = pendingCancellations.poll();
+                if (cancelId != null) {
+                    solution = processCancellation(cancelId, context, lots, solution);
+                    replanifications++; changed = true;
+                }
+                FlightInstance nf;
+                while ((nf = pendingFlightAdds.poll()) != null) {
+                    context.addFlight(nf);
+                    flightCapacityById.put(nf.getId(), nf.getCapacity());
+                    changed = true;
+                }
+                Airport na;
+                while ((na = pendingAirportAdds.poll()) != null) { context.addAirport(na); changed = true; }
+                String cc;
+                while ((cc = pendingAirportCloses.poll()) != null) { context.closeAirport(cc); changed = true; }
+
+                List<BaggageLot> newLots = new ArrayList<>();
+                BaggageLot add;
+                while ((add = pendingAdditions.poll()) != null && newLots.size() < 2000) newLots.add(add);
+                if (!newLots.isEmpty()) {
+                    lots.addAll(newLots);
+                    WorkingSolution next = solution.copy();
+                    planGreedy(context, next, newLots);
+                    solution = next;
+                    changed = true;
+                }
+
+                if (changed) {
+                    events = buildEvents(solution, lots, dayStart, dayEnd);
+                    events.sort(Comparator.comparingInt(SimEvent::minute).thenComparing(SimEvent::type));
+                    nextEvent = 0;
+                    while (nextEvent < events.size() && events.get(nextEvent).minute() < dayStart) nextEvent++;
+                }
+
+                // Emitir los eventos cuyo minuto ya alcanzó el reloj real.
+                List<SimEvent> emitted = new ArrayList<>();
+                while (nextEvent < events.size() && events.get(nextEvent).minute() <= clampNow) {
+                    emitted.add(events.get(nextEvent++));
+                }
+                appendEvents(emitted);
+
+                // Entregadas: maletas que llegaron a destino final hasta ahora.
+                int delivered = 0;
+                for (SimEvent ev : events) {
+                    if ("landed".equals(ev.type()) && ev.finalDestination() && ev.minute() <= clampNow) {
+                        delivered += ev.bags();
+                    }
+                }
+
+                final WorkingSolution sol = solution;
+                List<BaggageLot> visible = lots.stream()
+                        .filter(l -> l.getRegistrationHour() <= clampNow)
+                        .collect(Collectors.toList());
+                int total   = visible.stream().mapToInt(BaggageLot::getQuantity).sum();
+                int routed  = visible.stream().filter(l -> sol.getPlan(l.getId()) != null)
+                        .mapToInt(BaggageLot::getQuantity).sum();
+                int overdue = visible.stream().filter(l -> {
+                    RoutePlan p = sol.getPlan(l.getId());
+                    return p != null && p.getTardinessHours() > 0;
+                }).mapToInt(BaggageLot::getQuantity).sum();
+
+                int                activeFlights = countActiveFlights(clampNow);
+                List<AirportState> aps           = airportStates(airports, solution, clampNow);
+                Kpis               kpis          = buildKpis(total, routed, overdue,
+                        solution, aps, visible, delivered, replanifications, activeFlights, clampNow);
+                collapsed = aps.stream().anyMatch(a -> a.current() > a.capacity());
+                List<UpcomingFlight> upcoming = buildUpcomingFlights(context, solution, clampNow);
+                List<RouteState>     routes   = recentRoutes(events, clampNow);
+
+                String msg = dayOver   ? "Día completado"
+                           : collapsed ? "⚠ Capacidad de almacén excedida"
+                           : "Simulación activa (tiempo real)";
+                state = new SimulationState(true, "diadia",
+                        fmtClock(clampNow), 1, fmtClock(dayStart), fmtClock(dayEnd),
+                        aps, routes, emitted, kpis, collapsed, msg, clampNow, upcoming);
+                if (!isActive(runId)) return;
+                broadcast(state);
+
+                if (dayOver || collapsed) {
+                    running.set(false);
+                    state = state.withRunning(false)
+                            .withMessage(dayOver ? "Día completado" : "⚠ Colapso");
+                    if (!isActive(runId)) return;
+                    broadcast(state);
+                    return;
+                }
+                sleep(BROADCAST_INTERVAL_MS);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            if (!isActive(runId)) return;
+            running.set(false);
+            state = state.withRunning(false).withMessage("Error: " + e.getMessage());
+            broadcast(state);
+        }
+    }
+
+    /** Planifica greedy una lista de lotes sobre la solución dada (1ª ruta viable
+     *  con capacidad). Mismo criterio que el alta en caliente. */
+    private void planGreedy(PlanningContext context, WorkingSolution solution, List<BaggageLot> lots) {
+        RouteEvaluator ev = new RouteEvaluator(context);
+        for (BaggageLot lot : lots) {
+            try {
+                for (RoutePlan p : ev.enumerateCandidates(lot)) {
+                    if (solution.canAssign(lot, p)) { solution.assign(lot, p); break; }
+                }
+            } catch (Exception e) {
+                System.err.println("Error planificando lote: " + e.getMessage());
+            }
+        }
+    }
+
+    /** Minuto absoluto (UTC, GMT-0 del modelo) del instante "ahora". Usa el reloj
+     *  del CLIENTE si lo envía (p.ej. Perú), si no el del servidor. La fecha/hora
+     *  local del aeropuerto de origen se deriva sumando su offset GMT. */
+    private int registrationMinuteFor(Long clientEpochMs) {
+        Instant now = clientEpochMs != null ? Instant.ofEpochMilli(clientEpochMs) : Instant.now();
+        return absoluteMinute(LocalDateTime.ofInstant(now, ZoneOffset.UTC));
+    }
+
+    // ── Preparación (staging) de Día a Día ────────────────────────────────────
+
+    public PrepStatus prepStatus() {
+        return new PrepStatus(stagedAirports.size(), stagedFlights.size(), stagedLots.size(),
+                !stagedAirports.isEmpty() && !stagedFlights.isEmpty() && !stagedLots.isEmpty());
+    }
+
+    /** Vacía la preparación (aeropuertos/vuelos/paquetes cargados sin iniciar). */
+    public SimulationState resetPrep() {
+        stagedAirports.clear();
+        stagedFlights.clear();
+        stagedLots.clear();
+        pushAlert("prep", "Preparación reiniciada");
+        return state;
+    }
+
+    public record PrepStatus(int airports, int flights, int lots, boolean ready) {}
 
     // ── Lookahead ALNS helper ────────────────────────────────────────────────
 
@@ -1321,6 +1562,17 @@ public class SimulationService {
         pathByLot.clear();
     }
 
+    /** Vacía las colas de mutación para que una nueva corrida no herede
+     *  altas/cancelaciones encoladas de una corrida anterior (robustez al
+     *  reiniciar con varios usuarios). */
+    private void resetMutationQueues() {
+        pendingAdditions.clear();
+        pendingFlightAdds.clear();
+        pendingAirportAdds.clear();
+        pendingAirportCloses.clear();
+        pendingCancellations.clear();
+    }
+
     /**
      * Recorrido completo de un envío (lote): todos sus tramos con su estado
      * actual (done / current / upcoming) según el minuto simulado. Permite que
@@ -1491,7 +1743,8 @@ public class SimulationService {
         }
     }
 
-    public record LotRequest(String origin, String destination, Integer quantity, String client) {
+    public record LotRequest(String origin, String destination, Integer quantity,
+                             String client, Long clientEpochMs) {
         int qty() { return quantity == null ? 0 : quantity; }
         String who() { return client == null || client.isBlank() ? "Un cliente" : client; }
     }

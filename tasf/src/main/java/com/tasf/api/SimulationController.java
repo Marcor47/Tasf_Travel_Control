@@ -75,7 +75,8 @@ public class SimulationController {
     public SimulationService.SimulationState addLot(
             @RequestBody SimulationService.LotRequest request) {
         return simulationService.addLot(
-                request.origin(), request.destination(), request.qty(), request.who());
+                request.origin(), request.destination(), request.qty(),
+                request.who(), request.clientEpochMs());
     }
 
     @PostMapping("/addFlight")
@@ -112,5 +113,17 @@ public class SimulationController {
     @GetMapping("/shipmentPath")
     public SimulationService.ShipmentPath shipmentPath(@RequestParam String lotId) {
         return simulationService.shipmentPath(lotId);
+    }
+
+    /** Estado de preparación de Día a Día (aeropuertos/vuelos/paquetes cargados). */
+    @GetMapping("/prepStatus")
+    public SimulationService.PrepStatus prepStatus() {
+        return simulationService.prepStatus();
+    }
+
+    /** Vacía la preparación de Día a Día. */
+    @PostMapping("/resetPrep")
+    public SimulationService.SimulationState resetPrep() {
+        return simulationService.resetPrep();
     }
 }

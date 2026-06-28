@@ -1,4 +1,5 @@
 import { useState, useMemo } from "react";
+import { airportName } from "../../data/staticAirports";
 
 const SORT_FIELDS = {
   flightId:       (f) => f.flightId,
@@ -126,8 +127,8 @@ export default function FlightCancelPanel({ flights = [], onCancel }) {
                       <td className="py-1.5 text-teal font-mono text-[10px] font-bold">
                         {f.flightId}
                       </td>
-                      <td className="py-1.5 text-gray-300 text-[10px]">{f.origin}</td>
-                      <td className="py-1.5 text-gray-300 text-[10px]">{f.destination}</td>
+                      <td className="py-1.5 text-gray-300 text-[10px]" title={f.origin}>{airportName(f.origin)}</td>
+                      <td className="py-1.5 text-gray-300 text-[10px]" title={f.destination}>{airportName(f.destination)}</td>
                       <td className="py-1.5 text-gray-400 text-[10px] font-mono">
                         {f.departureClock?.split("  ")[1] ?? "--:--"}
                       </td>

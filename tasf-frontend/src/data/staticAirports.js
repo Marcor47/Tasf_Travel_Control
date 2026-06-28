@@ -67,3 +67,28 @@ function normalize(s) {
     .normalize("NFD")
     .replace(/[̀-ͯ]/g, ""); // quitar acentos
 }
+
+/**
+ * Nombre legible (ciudad) de un aeropuerto a partir de su código. Prioriza el
+ * nombre que llega en vivo del backend; si no, usa la tabla del dataset; si no
+ * existe, devuelve el propio código. Para mostrar ciudades/países en vez de
+ * códigos en tarjetas y paneles durante la ejecución.
+ *
+ * @param {string} code  código del aeropuerto (p.ej. "SPIM")
+ * @param {Array}  live  aeropuertos en vivo del backend (opcional)
+ */
+export function airportName(code, live = null) {
+  if (!code) return "";
+  if (live && live.length) {
+    const hit = live.find(a => a.code === code);
+    if (hit?.name) return hit.name;
+  }
+  return AIRPORT_META[code]?.name || code;
+}
+
+/** "Ciudad · País" si se conocen; si no, el nombre o el código. */
+export function airportLabel(code, live = null) {
+  const name = airportName(code, live);
+  const country = AIRPORT_META[code]?.country;
+  return country && name !== code ? `${name} · ${country}` : name;
+}

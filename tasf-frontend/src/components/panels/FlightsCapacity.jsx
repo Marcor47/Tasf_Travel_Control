@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { getWarehouseColor } from "../../hooks/useStatusColor";
+import { airportName } from "../../data/staticAirports";
 
 // Categoría de semáforo de un vuelo (incluye "vacío").
 function flightSem(bags, capacity) {
@@ -136,14 +137,14 @@ export default function FlightsCapacity({
             return (
               <button key={f.key} type="button"
                 onClick={() => onFlightClick?.(f)}
-                title="Resaltar este vuelo en el mapa"
+                title={`${f.from} → ${f.to} · Resaltar en el mapa`}
                 className={`w-full text-left rounded px-1 py-0.5 -mx-1 transition
                   ${isSel ? "bg-teal/15 ring-1 ring-teal/40" : "hover:bg-white/5"}`}>
                 <div className="flex justify-between items-center mb-0.5">
                   <span className="text-gray-300 truncate">
-                    <span className="text-teal">{f.from}</span>
+                    <span className="text-teal">{airportName(f.from)}</span>
                     <span className="text-gray-600 mx-1">→</span>
-                    <span className="text-gray-200">{f.to}</span>
+                    <span className="text-gray-200">{airportName(f.to)}</span>
                     <span className="text-gray-600 font-mono text-[10px] ml-1">
                       {f.departure}
                     </span>
@@ -181,15 +182,15 @@ export default function FlightsCapacity({
               return (
               <button key={f.key} type="button"
                 onClick={() => onFlightClick?.(f)}
-                title="Enfocar este tramo en el mapa"
+                title={`${f.from} → ${f.to} · Enfocar en el mapa`}
                 className={`w-full flex items-center justify-between text-[10px] rounded
                   px-1 py-0.5 -mx-1 transition
                   ${isSel ? "bg-teal/15 ring-1 ring-teal/40" : "hover:bg-white/5"}`}>
                 <span className="flex items-center gap-1 min-w-0">
                   <span className="text-blue-400">⌛</span>
-                  <span className="text-teal">{f.from}</span>
+                  <span className="text-teal truncate">{airportName(f.from)}</span>
                   <span className="text-gray-600">→</span>
-                  <span className="text-gray-200">{f.to}</span>
+                  <span className="text-gray-200 truncate">{airportName(f.to)}</span>
                   <span className="text-gray-600 font-mono ml-1">{f.departure}</span>
                 </span>
                 <span className="text-gray-400 tabular-nums flex-shrink-0">
