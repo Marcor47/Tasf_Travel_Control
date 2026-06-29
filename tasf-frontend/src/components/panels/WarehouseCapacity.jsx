@@ -1,5 +1,5 @@
 import { getWarehouseColor } from "../../hooks/useStatusColor";
-import { STATIC_AIRPORTS, AIRPORT_META, airportMatches } from "../../data/staticAirports";
+import { STATIC_AIRPORTS, AIRPORT_META, airportMatches, airportName } from "../../data/staticAirports";
 
 function whSem(a) {
   const cur = a.current || 0;
@@ -73,11 +73,14 @@ export default function WarehouseCapacity({
               const current  = Math.max(0, a.current  || 0);
               const pct      = Math.round(current / capacity * 100);
               const clampPct = Math.min(100, pct);
+              const empty    = current === 0;                 // vacío → gris
               const color    = getWarehouseColor(pct);
-              const bar      = color === "green"  ? "bg-green-500"
+              const bar      = empty                ? "bg-gray-600"
+                             : color === "green"  ? "bg-green-500"
                              : color === "amber"  ? "bg-yellow-500"
                              : "bg-red-500";
-              const txt      = color === "green"  ? "text-green-400"
+              const txt      = empty                ? "text-gray-400"
+                             : color === "green"  ? "text-green-400"
                              : color === "amber"  ? "text-yellow-400"
                              : "text-red-400";
               const country  = AIRPORT_META[a.code]?.country;
@@ -89,8 +92,9 @@ export default function WarehouseCapacity({
                   className={`w-full text-left rounded px-1 py-0.5 -mx-1 transition
                     ${isSel ? "bg-teal/15 ring-1 ring-teal/40" : "hover:bg-white/5"}`}>
                   <div className="flex justify-between mb-0.5">
-                    <span className="text-gray-300 truncate max-w-[140px]">
-                      {a.name || a.code}
+                    <span className="text-gray-300 truncate max-w-[140px]"
+                          title={a.code}>
+                      {airportName(a.code)}
                       {country && (
                         <span className="text-gray-500 ml-1">· {country}</span>
                       )}

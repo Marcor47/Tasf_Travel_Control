@@ -51,9 +51,13 @@ export function airportMatches(airport, query) {
   const q = normalize(query);
   if (!q) return false;
   const meta = AIRPORT_META[airport.code] || {};
+  // Incluir SIEMPRE el nombre de ciudad (meta.name): en datos en vivo
+  // airport.name es el código, así que sin meta.name la búsqueda por ciudad
+  // fallaría. Busca por código, ciudad, país y continente/región.
   const haystack = [
     airport.code,
-    airport.name || meta.name,
+    airport.name,
+    meta.name,
     meta.country,
     meta.region,
   ].map(normalize).join(" ");

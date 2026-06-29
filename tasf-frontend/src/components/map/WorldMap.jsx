@@ -3,7 +3,7 @@ import {
   ComposableMap, Geographies, Geography,
   Marker, Line
 } from "react-simple-maps";
-import { STATIC_AIRPORTS } from "../../data/staticAirports";
+import { STATIC_AIRPORTS, airportName } from "../../data/staticAirports";
 
 const GEO_URL = "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json";
 
@@ -155,6 +155,12 @@ function loadColor(pct) {
   return pct > 0.85 ? "#ef4444" : pct > 0.6 ? "#f59e0b" : "#22c55e";
 }
 
+// Color del almacén/aeropuerto: GRIS si está vacío (0 maletas), si no semáforo.
+function airportColor(current, capacity) {
+  if ((current || 0) === 0) return "#9ca3af";   // gris = vacío
+  return loadColor(Math.min(1, current / Math.max(1, capacity || 1)));
+}
+
 // Color de un vuelo: GRIS si va vacío (programado sin maletas), si no semáforo.
 const EMPTY_FLIGHT = "#9ca3af";
 function flightColor(bags, capacity) {
@@ -291,7 +297,11 @@ export default function WorldMap({
     ? semActive.slice(0, 40)
     : semActive;
 
-  const activeRoutes = (showLines || showPlanes) ? visibleRoutes : [];
+  // Modo "envío seleccionado": cuando se elige un paquete, OCULTAMOS las demás
+  // rutas/aviones para que solo se vea su recorrido (con transbordos).
+  const shipmentMode = Array.isArray(shipmentPath) && shipmentPath.length > 0;
+
+  const activeRoutes = (showLines || showPlanes) && !shipmentMode ? visibleRoutes : [];
 
   const isCalculating = running && message.startsWith("Planificando");
 
@@ -521,7 +531,7 @@ export default function WorldMap({
             coloreado con el semáforo de ocupación; verde casi vacío → rojo lleno. */}
         {shownAirports.map(a => {
           const pct   = Math.min(1, (a.current || 0) / Math.max(1, a.capacity || 1));
-          const col   = loadColor(pct);
+          const col   = airportColor(a.current, a.capacity);   // gris si vacío
           const hl    = airportIsHighlighted(a.code);
           const isSel = focus.has(a.code);
           const s     = isSel ? 5.5 : 4.5;          // medio tamaño del cajón
@@ -533,7 +543,7 @@ export default function WorldMap({
                 clickAirport(a.code);
               }}>
               <title>
-                {a.code}{a.name ? ` · ${a.name}` : ""} — almacén{" "}
+                {airportName(a.code)} ({a.code}) — almacén{" "}
                 {(a.current || 0).toLocaleString()}/{(a.capacity || 0).toLocaleString()}
                 {a.capacity ? ` (${Math.round(pct * 100)}%)` : ""}
               </title>
@@ -558,7 +568,7 @@ export default function WorldMap({
                   fontFamily: "sans-serif",
                   pointerEvents: "none",
                 }}>
-                {a.code}
+                {airportName(a.code)}
               </text>
             </Marker>
           );

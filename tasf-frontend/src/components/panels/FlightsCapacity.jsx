@@ -137,7 +137,7 @@ export default function FlightsCapacity({
             return (
               <button key={f.key} type="button"
                 onClick={() => onFlightClick?.(f)}
-                title={`${f.from} → ${f.to} · Resaltar en el mapa`}
+                title={`ID: ${f.key} · ${f.from} → ${f.to} · clic para resaltar en el mapa`}
                 className={`w-full text-left rounded px-1 py-0.5 -mx-1 transition
                   ${isSel ? "bg-teal/15 ring-1 ring-teal/40" : "hover:bg-white/5"}`}>
                 <div className="flex justify-between items-center mb-0.5">
@@ -182,7 +182,7 @@ export default function FlightsCapacity({
               return (
               <button key={f.key} type="button"
                 onClick={() => onFlightClick?.(f)}
-                title={`${f.from} → ${f.to} · Enfocar en el mapa`}
+                title={`ID: ${f.key} · ${f.from} → ${f.to} · clic para enfocar en el mapa`}
                 className={`w-full flex items-center justify-between text-[10px] rounded
                   px-1 py-0.5 -mx-1 transition
                   ${isSel ? "bg-teal/15 ring-1 ring-teal/40" : "hover:bg-white/5"}`}>

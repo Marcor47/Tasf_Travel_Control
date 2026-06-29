@@ -72,15 +72,8 @@ export default function Dashboard({
   cancelFlight,
   realSeconds = 0, // ← nuevo, viene del hook vía App
 }) {
-const startTimeValue =
-  `${String(Math.floor(selectedStartMinute / 60)).padStart(2, "0")}:` +
-  `${String(selectedStartMinute % 60).padStart(2, "0")}`;
-
-const handleStartTimeChange = (e) => {
-  const [hours, minutes] = e.target.value.split(":").map(Number);
-  onStartMinuteChange?.(hours * 60 + minutes);
-};
-  
+  // La fecha/hora de inicio (modos periodo/colapso) la gestiona el calendario
+  // DateTimePicker vía onDateChange / onStartMinuteChange.
   const [showCollapse, setShowCollapse] = useState(false);
   // Filtro del panel de almacenes (texto: código/país/región)
   const [storageFilter, setStorageFilter] = useState("");
@@ -202,7 +195,8 @@ const handleStartTimeChange = (e) => {
     const codes = new Set();
     for (const e of (simulation?.history ?? [])) {
       const pkg = `pkg-${e.from || ""}${e.to || ""}-${e.minute ?? ""}`.toLowerCase();
-      if ((e.flightId || "").toLowerCase().includes(q) ||
+      if ((e.lotId || "").toLowerCase().includes(q) ||
+          (e.flightId || "").toLowerCase().includes(q) ||
           (e.from || "").toLowerCase().includes(q) ||
           (e.to   || "").toLowerCase().includes(q) ||
           pkg.includes(q)) {
@@ -295,14 +289,15 @@ const handleStartTimeChange = (e) => {
   // próximo. Enfoca todos los aeropuertos del recorrido.
   const handleShipmentClick = async (bag) => {
     if (!bag?.from || !bag?.to) return;
-    if (selectedShipment && selectedShipment.bagId === bag.bagId) {
+    const pkgId = bag.pkgId || bag.lotId;
+    if (selectedShipment && selectedShipment.bagId === pkgId) {
       setSelectedShipment(null); setSelectedShipmentPath(null); setPinnedCodes(null);
       return;
     }
     setStorageFilter(""); setWhSemFilter("all"); setSelectedAirport(null); setBagSearch("");
     setSelectedRouteKey(null);
     setSelectedShipment({
-      from: bag.from, to: bag.to, minute: bag.minute, bagId: bag.bagId,
+      from: bag.from, to: bag.to, minute: bag.minute, bagId: pkgId,
     });
 
     let legs = [];
