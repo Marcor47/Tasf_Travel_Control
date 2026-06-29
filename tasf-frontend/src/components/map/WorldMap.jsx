@@ -161,6 +161,13 @@ function airportColor(current, capacity) {
   return loadColor(Math.min(1, current / Math.max(1, capacity || 1)));
 }
 
+// Categoría de semáforo de un almacén (para filtrar): empty/green/amber/red.
+function airportSemCat(current, capacity) {
+  if ((current || 0) === 0) return "empty";
+  const pct = current / Math.max(1, capacity || 1);
+  return pct > 0.85 ? "red" : pct > 0.6 ? "amber" : "green";
+}
+
 // Color de un vuelo: GRIS si va vacío (programado sin maletas), si no semáforo.
 const EMPTY_FLIGHT = "#9ca3af";
 function flightColor(bags, capacity) {
@@ -189,6 +196,7 @@ export default function WorldMap({
   selectedRouteKey = null, // ruta resaltada — controlada por el padre (mapa o panel)
   shipmentPath = null,   // [{ from, to, flightId, finalDestination, status, color }] — recorrido de un envío
   flightSem = "all",     // filtro de semáforo de carga: solo dibuja aviones de ese color
+  whSem = "all",         // filtro de semáforo de almacenes: solo dibuja almacenes de ese color
 }) {
   useEffect(() => { injectAnimation(); }, []);
 
@@ -282,10 +290,17 @@ export default function WorldMap({
     }
   };
 
-  const shownAirports = airports.length > 0 ? airports : STATIC_AIRPORTS;
-  const airportMap    = Object.fromEntries(
-    shownAirports.map(a => [a.code, [a.lng, a.lat]])
+  const allAirports = airports.length > 0 ? airports : STATIC_AIRPORTS;
+  // airportMap usa TODOS los aeropuertos (las rutas necesitan sus coordenadas
+  // aunque el almacén esté filtrado del mapa).
+  const airportMap  = Object.fromEntries(
+    allAirports.map(a => [a.code, [a.lng, a.lat]])
   );
+  // Almacenes a DIBUJAR: filtrados por el semáforo del panel de Almacenes
+  // (igual que los aviones con su semáforo): si pides verde, solo verdes; etc.
+  const shownAirports = whSem === "all"
+    ? allAirports
+    : allAirports.filter(a => airportSemCat(a.current, a.capacity) === whSem);
 
   // Filtro por semáforo de carga (del panel de Vuelos): solo dibuja aviones cuyo
   // color de carga coincide con el seleccionado (vacío/verde/ámbar/rojo).

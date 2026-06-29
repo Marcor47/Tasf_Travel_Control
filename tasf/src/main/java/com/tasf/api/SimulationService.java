@@ -53,6 +53,11 @@ public class SimulationService {
     private static final int            ALNS_TIME_BUDGET_SEC = 25;
     private static final int            ALNS_MAX_ITERATIONS  = 0;
     private static final int            BROADCAST_INTERVAL_MS = 800;
+    // 📦 ÚNICO punto: tamaño máximo de un "sub-lote". Un lote más grande se parte
+    // en sub-lotes de ≤ este tamaño (IDs id-1, id-2, …) para que el planificador
+    // pueda repartirlo en VARIOS aviones (un avión solo no puede con 1000 maletas).
+    // Debe ser ≤ la capacidad típica de un vuelo para que cada sub-lote quepa.
+    private static final int            MAX_BAGS_PER_SUBLOT  = 150;
 
     private final List<SseEmitter> emitters   = new CopyOnWriteArrayList<>();
     private final ExecutorService  executor   = Executors.newSingleThreadExecutor();
@@ -295,12 +300,38 @@ public class SimulationService {
         int     regMin = registrationMinuteFor(clientEpochMs);
         boolean same   = o.getRegion().equals(d.getRegion());
         int     dueMin = regMin + (same ? 24 * 60 : 48 * 60);
-        BaggageLot lot = new BaggageLot("USER-" + stagedSeq.incrementAndGet(),
-                origin, destination, quantity, regMin, dueMin, false);
-        if (live) pendingAdditions.add(lot); else stagedLots.add(lot);
+        // Partir lotes grandes en sub-lotes (id-1, id-2, …) para que el
+        // planificador pueda repartirlos en varios aviones.
+        List<BaggageLot> lots = splitLot("USER-" + stagedSeq.incrementAndGet(),
+                origin, destination, quantity, regMin, dueMin);
+        if (live) pendingAdditions.addAll(lots); else stagedLots.addAll(lots);
         pushAlert("lote", (client == null || client.isBlank() ? "Un cliente" : client)
-                + " registró " + quantity + " maletas " + origin + "→" + destination);
+                + " registró " + quantity + " maletas " + origin + "→" + destination
+                + (lots.size() > 1 ? " (" + lots.size() + " sub-lotes)" : ""));
         return state;
+    }
+
+    /**
+     * Parte un lote en sub-lotes de ≤ MAX_BAGS_PER_SUBLOT maletas. Si cabe entero
+     * devuelve un único lote con el ID base (sin sufijo). Si no, devuelve
+     * sub-lotes con IDs id-1, id-2, … cada uno con su porción de maletas; el
+     * planificador (ALNS) los asigna por separado, repartiéndolos entre aviones.
+     */
+    private List<BaggageLot> splitLot(String baseId, String origin, String dest,
+                                      int qty, int regMin, int dueMin) {
+        List<BaggageLot> out = new ArrayList<>();
+        if (qty <= MAX_BAGS_PER_SUBLOT) {
+            out.add(new BaggageLot(baseId, origin, dest, qty, regMin, dueMin, false));
+            return out;
+        }
+        int n = (qty + MAX_BAGS_PER_SUBLOT - 1) / MAX_BAGS_PER_SUBLOT;
+        int remaining = qty;
+        for (int k = 1; k <= n; k++) {
+            int chunk = Math.min(MAX_BAGS_PER_SUBLOT, remaining);
+            remaining -= chunk;
+            out.add(new BaggageLot(baseId + "-" + k, origin, dest, chunk, regMin, dueMin, false));
+        }
+        return out;
     }
 
     private int flightCapacity(List<FlightInstance> flights, String flightId) {
@@ -421,10 +452,11 @@ public class SimulationService {
                         int regUtc = (int) (Duration.between(BASE_UTC,
                                 LocalDateTime.of(y, mo, da, hh, mm)).toMinutes() - o.getGmtOffset());
                         boolean same = o.getRegion().equals(d.getRegion());
-                        BaggageLot lot = new BaggageLot("UF-" + stagedSeq.incrementAndGet(),
+                        // Partir lotes grandes en sub-lotes (id-1, id-2, …).
+                        List<BaggageLot> subs = splitLot("UF-" + stagedSeq.incrementAndGet(),
                                 origin.trim().toUpperCase(), dest, qty,
-                                regUtc, regUtc + (same ? 1440 : 2880), false);
-                        if (live) pendingAdditions.add(lot); else stagedLots.add(lot);
+                                regUtc, regUtc + (same ? 1440 : 2880));
+                        if (live) pendingAdditions.addAll(subs); else stagedLots.addAll(subs);
                     } catch (Exception ignored) {}
                 }
             }

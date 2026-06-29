@@ -21,14 +21,6 @@ const INFO_TABS = [
 // origen-destino-salida si no lo trae.
 const routeKey = r => r.flightId || `${r.from}-${r.to}-${r.departureMinute ?? 0}`;
 import { STATIC_AIRPORTS, airportMatches } from "../data/staticAirports";
-import { getWarehouseColor } from "../hooks/useStatusColor";
-
-// Categoría de semáforo de un almacén (igual que WarehouseCapacity).
-function whSemOf(a) {
-  const cur = a.current || 0;
-  if (cur === 0) return "empty";
-  return getWarehouseColor(Math.round(cur / Math.max(1, a.capacity) * 100));
-}
 
 // Color de semáforo de un vuelo por su carga (idéntico al del mapa): gris si va
 // vacío, si no verde/ámbar/rojo. Sirve para pintar cada tramo de un envío con el
@@ -210,17 +202,19 @@ export default function Dashboard({
   // Aeropuertos en foco (resaltan en el mapa Y filtran las tarjetas). Prioridad:
   // 1) foco fijado (vuelo planificado/envío), 2) clic en un aeropuerto,
   // 3) búsqueda de maletas (panel Envíos), 4) filtro de texto + semáforo.
+  // Nota: el semáforo de almacenes (whSemFilter) NO entra aquí; igual que el de
+  // vuelos, es un filtro de DIBUJO del mapa (oculta los que no coinciden) y se
+  // pasa a WorldMap como `whSem`. La tarjeta filtra su lista con su propio `sem`.
   const focusCodes = useMemo(() => {
     if (pinnedCodes) return pinnedCodes;
     if (selectedAirport) return [selectedAirport];
     if (bagSearch.trim()) return bagFocusCodes || [];
-    if (!storageFilter.trim() && whSemFilter === "all") return [];
+    if (!storageFilter.trim()) return [];
     const src = (liveAirports && liveAirports.length) ? liveAirports : STATIC_AIRPORTS;
     return src
-      .filter(a => storageFilter.trim() ? airportMatches(a, storageFilter) : true)
-      .filter(a => whSemFilter === "all" ? true : whSemOf(a) === whSemFilter)
+      .filter(a => airportMatches(a, storageFilter))
       .map(a => a.code);
-  }, [pinnedCodes, selectedAirport, bagSearch, bagFocusCodes, storageFilter, whSemFilter, liveAirports]);
+  }, [pinnedCodes, selectedAirport, bagSearch, bagFocusCodes, storageFilter, liveAirports]);
 
   // Limpia los focos "de ruta/envío" (los que compiten con un foco de aeropuerto).
   const clearRouteFoci = () => {
@@ -472,6 +466,7 @@ export default function Dashboard({
           selectedRouteKey={selectedRouteKey}
           shipmentPath={selectedShipmentPath}
           flightSem={flightSemFilter}
+          whSem={whSemFilter}
           onAirportClick={handleAirportClick}
           onRouteClick={handleRouteClick}
           onClearSelection={clearFocus}/>
