@@ -16,6 +16,14 @@ const SEM_CHIPS = [
   { key: "empty", label: "Vacío", dot: "bg-gray-500" },
 ];
 
+const SORT_OPTIONS = [
+  { key: "ocupacion",  label: "% Ocup."  },
+  { key: "maletas",    label: "Maletas"  },
+  { key: "salida",     label: "Salida"   },
+  { key: "llegada",    label: "Llegada"  },
+  { key: "alfabetico", label: "A-Z"      },
+];
+
 // Minuto absoluto → "HH:MM" del día (igual que el backend para casar capacidades)
 function hhmm(minute) {
   const m = (((minute ?? 0) % 1440) + 1440) % 1440;
@@ -37,8 +45,26 @@ export default function FlightsCapacity({
   focusFlightId = null,   // si está, muestra SOLO ese vuelo
   sem = "all", onSemChange,   // semáforo controlado por el padre (también filtra el mapa)
   selectedRouteKey = null, pinnedCodes = null, onFlightClick,
+  onEditFlight,
 }) {
   const [search, setSearch] = useState("");
+  const [sortBy,   setSortBy]   = useState("ocupacion");
+  const [editKey,  setEditKey]  = useState(null);
+  const [editForm, setEditForm] = useState({ capacity: "", dep: "", arr: "" });
+
+  const startEdit = (f) => {
+    setEditKey(f.key);
+    setEditForm({ capacity: String(f.capacity ?? ""), dep: f.departure || "", arr: f.arrival || "" });
+  };
+  const saveEdit = (f) => {
+    const cap = parseInt(editForm.capacity, 10);
+    onEditFlight?.(f.flightId || f.key, {
+      capacity: isNaN(cap) ? undefined : cap,
+      departureLocal: editForm.dep || undefined,
+      arrivalLocal:   editForm.arr || undefined,
+    });
+    setEditKey(null);
+  };
 
   // Cada ruta activa del backend ya es un vuelo con su capacidad y carga total.
   // Filtros: foco de aeropuerto, búsqueda por código/tramo y semáforo de carga.
@@ -55,18 +81,58 @@ export default function FlightsCapacity({
         || `${r.from}-${r.to}`.toLowerCase().includes(q)
         || (r.from || "").toLowerCase().includes(q)
         || (r.to   || "").toLowerCase().includes(q))
-      .map(r => {
-        const cap = r.capacity || 0;
-        return {
-          key: r.flightId || `${r.from}-${r.to}-${r.departureMinute}`,
-          active: true,
-          from: r.from, to: r.to, departure: hhmm(r.departureMinute),
-          bags: r.bags || 0, capacity: cap || null,
-          pct: cap > 0 ? Math.round(((r.bags || 0) / cap) * 100) : null,
-        };
-      })
-      .sort((a, b) => (b.pct ?? -1) - (a.pct ?? -1));
-  }, [routes, focusCodes, focusFlightId, search, sem]);
+.map(r => {
+  const cap = r.capacity || 0;
+  return {
+    key: r.flightId || `${r.from}-${r.to}-${r.departureMinute}`,
+    active: true,
+    from: r.from,
+    to: r.to,
+
+    departure: hhmm(r.departureMinute),
+    departureMinute: r.departureMinute ?? 0,   // <-- AGREGAR ESTA LÍNEA
+
+    bags: r.bags || 0,
+    capacity: cap || null,
+    pct: cap > 0 ? Math.round(((r.bags || 0) / cap) * 100) : null,
+
+    flightId: r.flightId,
+
+    arrival: hhmm(r.arrivalMinute),
+    arrivalMinute: r.arrivalMinute ?? 0,
+  };
+})
+.sort((a, b) => {
+  if (sortBy === "maletas") 
+    return (b.bags ?? 0) - (a.bags ?? 0);
+
+  if (sortBy === "salida") 
+    return (a.departureMinute ?? 0) - (b.departureMinute ?? 0);
+
+  if (sortBy === "llegada") 
+    return (a.arrivalMinute ?? 0) - (b.arrivalMinute ?? 0);
+
+  if (sortBy === "alfabetico") {
+    const fromCompare = airportName(a.from || "")
+      .localeCompare(
+        airportName(b.from || ""),
+        "es",
+        { sensitivity: "base" }
+      );
+
+    if (fromCompare !== 0) return fromCompare;
+
+    return airportName(a.to || "")
+      .localeCompare(
+        airportName(b.to || ""),
+        "es",
+        { sensitivity: "base" }
+      );
+  }
+
+  return (b.pct ?? -1) - (a.pct ?? -1);
+});
+  }, [routes, focusCodes, focusFlightId, search, sem, sortBy]);
 
   // Vuelos PLANIFICADOS próximos (aún no despegan) con maletas asignadas —
   // el registro de lo que el sistema planea. Respeta el foco de aeropuertos.
@@ -74,25 +140,83 @@ export default function FlightsCapacity({
     const focus = new Set(focusCodes);
     return upcoming
       .filter(u => (u.assigned || 0) > 0)
+      .filter(u =>
+  sem === "all" ||
+  flightSem(u.assigned, u.capacity || 0) === sem
+)
       .filter(u => !focusFlightId || u.flightId === focusFlightId)
       .filter(u => focus.size === 0 || focus.has(u.origin) || focus.has(u.destination))
       .map(u => ({
-        key: u.flightId,
-        active: false,
-        from: u.origin, to: u.destination,
-        departure: (u.departureClock || "").split("  ")[1] || u.departureClock,
-        bags: u.assigned || 0, capacity: u.capacity || 0,
-        pct: u.capacity ? Math.round(((u.assigned || 0) / u.capacity) * 100) : null,
-      }))
-      .slice(0, 10);
-  }, [upcoming, focusCodes, focusFlightId]);
+    key: u.flightId,
+    active: false,
+    from: u.origin,
+    to: u.destination,
+
+    departure: (u.departureClock || "").split("  ")[1] || u.departureClock,
+    departureMinute: u.departureMinute ?? 0,   // <-- AGREGAR
+
+    bags: u.assigned || 0,
+    capacity: u.capacity || 0,
+    pct: u.capacity
+      ? Math.round(((u.assigned || 0) / u.capacity) * 100)
+      : null,
+
+    flightId: u.flightId,
+
+    arrival: (u.arrivalClock || "").split("  ")[1] || u.arrivalClock || "",
+    arrivalMinute: u.arrivalMinute ?? 0,
+}))
+.sort((a, b) => {
+  if (sortBy === "maletas") 
+    return (b.bags ?? 0) - (a.bags ?? 0);
+
+  if (sortBy === "salida") 
+    return (a.departureMinute ?? 0) - (b.departureMinute ?? 0);
+
+  if (sortBy === "llegada") 
+    return (a.arrivalMinute ?? 0) - (b.arrivalMinute ?? 0);
+
+  if (sortBy === "alfabetico") {
+    const fromCompare = airportName(a.from || "")
+      .localeCompare(
+        airportName(b.from || ""),
+        "es",
+        { sensitivity: "base" }
+      );
+
+    if (fromCompare !== 0) return fromCompare;
+
+    return airportName(a.to || "")
+      .localeCompare(
+        airportName(b.to || ""),
+        "es",
+        { sensitivity: "base" }
+      );
+  }
+
+  return (b.pct ?? -1) - (a.pct ?? -1);
+});
+}, [upcoming, focusCodes, focusFlightId, sortBy, sem]);
 
   return (
     <div className="bg-[#031525] border border-teal/20 rounded p-2 mt-2">
-      <p className="text-teal font-bold mb-2 uppercase tracking-wide text-[10px]">
-        Vuelos Activos y Capacidad
-        <span className="text-gray-500 normal-case ml-1">({activeFlights.length})</span>
-      </p>
+      <div className="flex items-center justify-between mb-2 gap-1">
+        <p className="text-teal font-bold uppercase tracking-wide text-[10px] shrink-0">
+          Vuelos y Capacidad
+          <span className="text-gray-500 normal-case ml-1">({activeFlights.length})</span>
+        </p>
+        <div className="flex gap-0.5 flex-wrap justify-end">
+          {SORT_OPTIONS.map(o => (
+            <button key={o.key} onClick={() => setSortBy(o.key)}
+              className={`text-[9px] px-1 py-0.5 rounded transition border
+                ${sortBy === o.key
+                  ? "bg-teal/20 text-teal border-teal/40"
+                  : "bg-[#021020] text-gray-500 border-white/10 hover:text-white"}`}>
+              {o.label}
+            </button>
+          ))}
+        </div>
+      </div>
 
       {/* Búsqueda por código/tramo + filtro por semáforo (incluye vacío) */}
       <input
@@ -134,36 +258,91 @@ export default function FlightsCapacity({
                            : color === "red"   ? "text-red-400"
                            : "text-gray-400";
             const isSel = selectedRouteKey === f.key;
+            const isEd = editKey === f.key;
             return (
-              <button key={f.key} type="button"
-                onClick={() => onFlightClick?.(f)}
-                title={`ID: ${f.key} · ${f.from} → ${f.to} · clic para resaltar en el mapa`}
-                className={`w-full text-left rounded px-1 py-0.5 -mx-1 transition
-                  ${isSel ? "bg-teal/15 ring-1 ring-teal/40" : "hover:bg-white/5"}`}>
-                <div className="flex justify-between items-center mb-0.5">
-                  <span className="text-gray-300 truncate">
-                    <span className="text-teal">{airportName(f.from)}</span>
-                    <span className="text-gray-600 mx-1">→</span>
-                    <span className="text-gray-200">{airportName(f.to)}</span>
-                    <span className="text-gray-600 font-mono text-[10px] ml-1">
-                      {f.departure}
-                    </span>
-                  </span>
-                  <span className={`font-bold flex-shrink-0 ${txtColor}`}>
-                    {pct == null ? `${f.bags}` : `${pct}%`}
-                  </span>
+              <div key={f.key} className={`rounded transition ${isSel ? "bg-teal/15 ring-1 ring-teal/40" : ""}`}>
+                <div className="flex items-center gap-0.5">
+                  <button type="button" onClick={() => onFlightClick?.(f)}
+                    title={`ID: ${f.key} · ${f.from} → ${f.to}`}
+                    className="flex-1 text-left rounded px-1 py-0.5 hover:bg-white/5 transition">
+                    
+
+
+
+
+
+
+
+<div className="flex justify-between items-center mb-0.5">
+<span className="text-gray-300 truncate">
+<span className="text-teal">{airportName(f.from)}</span>
+<span className="text-gray-600 mx-1">→</span>
+<span className="text-gray-200">{airportName(f.to)}</span>
+<span className="text-gray-600 font-mono text-[10px] ml-1">{f.departure}</span>
+</span>
+<span className={`font-bold flex-shrink-0 ${txtColor}`}>
+{pct == null ? `${f.bags}` : `${pct}%`}
+</span>
+</div>
+<div className="flex items-center gap-2">
+<div className="flex-1 bg-white/10 rounded-full h-1.5">
+<div className={`${barColor} h-1.5 rounded-full transition-all duration-500`}
+style={{ width: `${clamp}%` }}/>
+</div>
+<span className="text-gray-500 text-[10px] tabular-nums flex-shrink-0">
+{(f.bags||0).toLocaleString()}
+{f.capacity != null && ` / ${f.capacity.toLocaleString()}`}
+</span>
+</div>
+
+
+
+
+                  </button>
+                  <button onClick={() => isEd ? setEditKey(null) : startEdit(f)}
+                    title="Editar vuelo"
+                    className={`text-[11px] px-1 py-1 transition shrink-0 ${isEd ? "text-teal" : "text-gray-500 hover:text-teal"}`}>
+                    ✎
+                  </button>
                 </div>
-                <div className="flex items-center gap-2">
-                  <div className="flex-1 bg-white/10 rounded-full h-1.5">
-                    <div className={`${barColor} h-1.5 rounded-full transition-all duration-500`}
-                         style={{ width: `${clamp}%` }}/>
+                {isEd && (
+                  <div className="mt-1 px-1 pb-1 border-t border-white/10 pt-1">
+                    <div className="grid grid-cols-3 gap-1 mb-1">
+                      <div>
+                        <label className="text-gray-600 text-[8px] block">Capacidad</label>
+                        <input type="number" min="1" value={editForm.capacity}
+                          onChange={e => setEditForm(p => ({ ...p, capacity: e.target.value }))}
+                          className="w-full bg-[#021020] border border-white/10 rounded px-1 py-0.5
+                                     text-[10px] text-gray-300 focus:outline-none focus:border-teal"/>
+                      </div>
+                      <div>
+                        <label className="text-gray-600 text-[8px] block">Salida</label>
+                        <input type="time" value={editForm.dep}
+                          onChange={e => setEditForm(p => ({ ...p, dep: e.target.value }))}
+                          className="w-full bg-[#021020] border border-white/10 rounded px-1 py-0.5
+                                     text-[10px] text-gray-300 focus:outline-none focus:border-teal [color-scheme:dark]"/>
+                      </div>
+                      <div>
+                        <label className="text-gray-600 text-[8px] block">Llegada</label>
+                        <input type="time" value={editForm.arr}
+                          onChange={e => setEditForm(p => ({ ...p, arr: e.target.value }))}
+                          className="w-full bg-[#021020] border border-white/10 rounded px-1 py-0.5
+                                     text-[10px] text-gray-300 focus:outline-none focus:border-teal [color-scheme:dark]"/>
+                      </div>
+                    </div>
+                    <div className="flex gap-1 justify-end">
+                      <button onClick={() => saveEdit(f)}
+                        className="bg-teal hover:bg-teal/80 text-white text-[9px] px-2 py-0.5 rounded transition">
+                        Guardar
+                      </button>
+                      <button onClick={() => setEditKey(null)}
+                        className="text-gray-500 hover:text-white text-[9px] px-1 py-0.5 rounded transition">
+                        Cancelar
+                      </button>
+                    </div>
                   </div>
-                  <span className="text-gray-500 text-[10px] tabular-nums flex-shrink-0">
-                    {(f.bags || 0).toLocaleString()}
-                    {f.capacity != null && ` / ${f.capacity.toLocaleString()}`}
-                  </span>
-                </div>
-              </button>
+                )}
+              </div>
             );
           })}
         </div>
@@ -194,7 +373,8 @@ export default function FlightsCapacity({
                   <span className="text-gray-600 font-mono ml-1">{f.departure}</span>
                 </span>
                 <span className="text-gray-400 tabular-nums flex-shrink-0">
-                  {f.bags.toLocaleString()}/{f.capacity.toLocaleString()}
+                  {f.bags.toLocaleString()}
+{f.capacity != null && `/${f.capacity.toLocaleString()}`}
                   {f.pct != null && <span className="text-gray-600 ml-1">({f.pct}%)</span>}
                 </span>
               </button>

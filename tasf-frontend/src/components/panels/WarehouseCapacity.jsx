@@ -1,5 +1,12 @@
+import { useState, useMemo } from "react";
 import { getWarehouseColor } from "../../hooks/useStatusColor";
 import { STATIC_AIRPORTS, AIRPORT_META, airportMatches, airportName } from "../../data/staticAirports";
+
+const SORT_OPTIONS = [
+  { key: "ocupacion",  label: "% Ocup." },
+  { key: "maletas",    label: "Maletas" },
+  { key: "alfabetico", label: "A-Z"     },
+];
 
 function whSem(a) {
   const cur = a.current || 0;
@@ -9,9 +16,11 @@ function whSem(a) {
 
 export default function WarehouseCapacity({
   airports = [], kpis = {},
-  filter = "", sem = "all",        // filtro/semáforo controlados por el padre (barra compartida)
-  focusCodes = [],                 // aeropuertos en foco (clic en mapa / vuelo / envío)
+  filter = "", sem = "all",
+  focusCodes = [],
   selectedCode = null, onAirportClick,
+  events = [],
+  onEditAirport,
 }) {
   // Foco activo = un aeropuerto/clic en el mapa o un vuelo/envío seleccionado.
   // Restringe la lista a esos almacenes (coherente con el mapa y los demás
@@ -24,15 +33,45 @@ export default function WarehouseCapacity({
   // usamos los estáticos del dataset para poder filtrar igualmente.
   const source = airports.length > 0 ? airports : STATIC_AIRPORTS;
 
+  const [sortBy,       setSortBy]   = useState("ocupacion");
+  const [expandedCode, setExpanded] = useState(null);
+  const [editCode,     setEditCode] = useState(null);
+  const [editCap,      setEditCap]  = useState("");
+
+  const airportBags = useMemo(() => {
+    if (!expandedCode) return [];
+    return [...events].filter(e => e.to === expandedCode && e.type === "landed")
+      .reverse().slice(0, 15);
+  }, [events, expandedCode]);
+
+  const startEdit = (a) => { setEditCode(a.code); setEditCap(String(a.capacity || "")); };
+  const saveEdit  = (code) => {
+    const cap = parseInt(editCap, 10);
+    if (!isNaN(cap) && cap > 0) onEditAirport?.(code, { capacity: cap });
+    setEditCode(null);
+  };
+
   // Filtro por foco + texto (código/país/región) + semáforo, ORDENADO por
   // ocupación. Sin filtros: top 10 por ocupación (comportamiento original).
-  const matched = [...source]
-    .filter(a => airports.length > 0 ? a.capacity > 0 : true)
-    .filter(a => focusSet.size ? focusSet.has(a.code) : true)
-    .filter(a => filter.trim() ? airportMatches(a, filter) : true)
-    .filter(a => sem === "all" || whSem(a) === sem)
-    .sort((a, b) => ((b.current || 0) / Math.max(1, b.capacity)) -
-                    ((a.current || 0) / Math.max(1, a.capacity)));
+  const matched = useMemo(() => {
+    const base = [...source]
+      .filter(a => airports.length > 0 ? a.capacity > 0 : true)
+      .filter(a => focusSet.size ? focusSet.has(a.code) : true)
+      .filter(a => filter.trim() ? airportMatches(a, filter) : true)
+      .filter(a => sem === "all" || whSem(a) === sem);
+    if (sortBy === "alfabetico") {
+  return base.sort((a, b) =>
+    airportName(a.code).localeCompare(
+      airportName(b.code),
+      "es",
+      { sensitivity: "base" }
+    )
+  );
+}
+    if (sortBy === "maletas")    return base.sort((a, b) => (b.current||0) - (a.current||0));
+    return base.sort((a, b) =>
+      ((b.current||0) / Math.max(1,b.capacity)) - ((a.current||0) / Math.max(1,a.capacity)));
+  }, [source, airports.length, focusSet, filter, sem, sortBy]);
   const shownAirports = (hasFilter || airports.length === 0) ? matched : matched.slice(0, 10);
 
   const safeKpis = {
@@ -44,14 +83,25 @@ export default function WarehouseCapacity({
   return (
     <div className="flex flex-col gap-2 text-xs">
       <div className="bg-[#031525] border border-teal/20 rounded p-2">
-        <p className="text-teal font-bold mb-2 uppercase tracking-wide text-[10px]">
-          Capacidad de Almacenes
-          {!hasFilter && airports.length > 10 && (
-            <span className="text-gray-500 normal-case ml-1">
-              (top 10 de {airports.length})
-            </span>
-          )}
-        </p>
+          <div className="flex items-center justify-between mb-2 gap-2">
+          <p className="text-teal font-bold uppercase tracking-wide text-[10px] shrink-0">
+            Almacenes
+            {!hasFilter && airports.length > 10 && (
+              <span className="text-gray-500 normal-case ml-1">(top 10 de {airports.length})</span>
+            )}
+          </p>
+          <div className="flex gap-0.5">
+            {SORT_OPTIONS.map(o => (
+              <button key={o.key} onClick={() => setSortBy(o.key)}
+                className={`text-[9px] px-1.5 py-0.5 rounded transition border
+                  ${sortBy === o.key
+                    ? "bg-teal/20 text-teal border-teal/40"
+                    : "bg-[#021020] text-gray-500 border-white/10 hover:text-white"}`}>
+                {o.label}
+              </button>
+            ))}
+          </div>
+        </div>
 
         {hasFilter && (
           <p className="text-gray-500 text-[10px] mb-1">
@@ -85,30 +135,85 @@ export default function WarehouseCapacity({
                              : "text-red-400";
               const country  = AIRPORT_META[a.code]?.country;
               const isSel    = a.code === selectedCode;
+              const isExp = a.code === expandedCode;
+              const isEd  = a.code === editCode;
               return (
-                <button key={a.code}
-                  onClick={() => onAirportClick?.(a.code)}
-                  title="Resaltar en el mapa y filtrar"
-                  className={`w-full text-left rounded px-1 py-0.5 -mx-1 transition
-                    ${isSel ? "bg-teal/15 ring-1 ring-teal/40" : "hover:bg-white/5"}`}>
-                  <div className="flex justify-between mb-0.5">
-                    <span className="text-gray-300 truncate max-w-[140px]"
-                          title={a.code}>
-                      {airportName(a.code)}
-                      {country && (
-                        <span className="text-gray-500 ml-1">· {country}</span>
+                <div key={a.code} className={`rounded transition ${isSel ? "bg-teal/15 ring-1 ring-teal/40" : ""}`}>
+                  <div className="flex items-start gap-0.5">
+                    <button onClick={() => onAirportClick?.(a.code)} title="Resaltar en el mapa"
+                      className="flex-1 text-left px-1 py-0.5 hover:bg-white/5 rounded transition">
+                      <div className="flex justify-between mb-0.5">
+                        <span className="text-gray-300 truncate max-w-[120px]" title={a.code}>
+                          {airportName(a.code)}
+                          {country && <span className="text-gray-500 ml-1">· {country}</span>}
+                        </span>
+                        <span className={`font-bold flex-shrink-0 ${txt}`}>
+                          {pct}%{pct > 100 ? " ⚠" : ""}
+                        </span>
+                      </div>
+                      <div className="w-full bg-white/10 rounded-full h-1.5">
+                        <div className={`${bar} h-1.5 rounded-full transition-all duration-700`}
+                             style={{ width:`${clampPct}%` }}/>
+                      </div>
+                      <div className="text-gray-600 text-[9px] mt-0.5">
+                        {current.toLocaleString()} / {capacity.toLocaleString()} maletas
+                      </div>
+                    </button>
+                    <button onClick={() => setExpanded(isExp ? null : a.code)}
+                      title={isExp ? "Ocultar lista" : "Ver movimientos recientes"}
+                      className="text-[10px] px-1 py-1 text-gray-500 hover:text-teal transition shrink-0">
+                      {isExp ? "▴" : "▾"}
+                    </button>
+                    <button onClick={() => isEd ? setEditCode(null) : startEdit(a)}
+                      title="Editar almacén"
+                      className={`text-[11px] px-1 py-1 transition shrink-0 ${isEd ? "text-teal" : "text-gray-500 hover:text-teal"}`}>
+                      ✎
+                    </button>
+                  </div>
+
+                  {isEd && (
+                    <div className="mt-1 px-1 pb-1.5 border-t border-white/10 pt-1">
+                      <div className="flex items-center gap-1">
+                        <label className="text-gray-500 text-[9px] shrink-0">Capacidad:</label>
+                        <input type="number" min="1" value={editCap}
+                          onChange={e => setEditCap(e.target.value)}
+                          className="flex-1 bg-[#021020] border border-white/10 rounded
+                                     px-1 py-0.5 text-[10px] text-gray-300 focus:outline-none focus:border-teal"/>
+                        <button onClick={() => saveEdit(a.code)}
+                          className="bg-teal hover:bg-teal/80 text-white text-[9px] px-2 py-0.5 rounded transition shrink-0">
+                          Guardar
+                        </button>
+                        <button onClick={() => setEditCode(null)}
+                          className="text-gray-500 hover:text-white text-[9px] px-1 rounded">✕</button>
+                      </div>
+                    </div>
+                  )}
+
+                  {isExp && (
+                    <div className="mt-1 px-1 pb-1 border-t border-white/10 pt-1">
+                      <p className="text-gray-500 text-[9px] uppercase mb-1">
+                        Maletas · <span className="text-teal font-bold">{current.toLocaleString()}</span>
+                      </p>
+                      {airportBags.length === 0 ? (
+                        <p className="text-gray-600 text-[9px] text-center py-1">Sin movimientos recientes</p>
+                      ) : (
+                        <div className="flex flex-col gap-0.5 max-h-32 overflow-y-auto">
+                          {airportBags.map((e, i) => (
+                            <div key={i} className="grid grid-cols-[auto_1fr_auto_auto] gap-1 items-center
+                                                    bg-[#021020] rounded px-1 py-0.5 text-[9px]">
+                              <span className="text-teal font-mono">{e.flightId || "—"}</span>
+                              <span className="text-gray-400 truncate">{e.from} → {e.to}</span>
+                              <span className="text-gray-300 font-bold tabular-nums">{(e.bags||0).toLocaleString()}</span>
+                              <span className={e.finalDestination ? "text-green-400" : "text-amber-400"}>
+                                {e.finalDestination ? "✓" : "⇄"}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
                       )}
-                    </span>
-                    <span className={`font-bold ${txt} flex-shrink-0`}>
-                      {pct}%{pct > 100 ? " ⚠" : ""}
-                    </span>
-                  </div>
-                  <div className="w-full bg-white/10 rounded-full h-1.5">
-                    <div className={`${bar} h-1.5 rounded-full
-                                    transition-all duration-700`}
-                         style={{ width:`${clampPct}%` }}/>
-                  </div>
-                </button>
+                    </div>
+                  )}
+                </div>
               );
             })}
           </div>
