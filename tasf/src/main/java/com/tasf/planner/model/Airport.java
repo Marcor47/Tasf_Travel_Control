@@ -12,7 +12,7 @@ public class Airport {
  
     private final String code;
     private final String region;
-    private final int    warehouseCapacity;
+    private int    warehouseCapacity;
     private final int    gmtOffset;          // en minutos respecto a UTC
     private final double latitude;
     private final double longitude;
@@ -36,6 +36,10 @@ public class Airport {
     public int    getWarehouseCapacity() { return warehouseCapacity; }
     public double getLatitude()          { return latitude; }
     public double getLongitude()         { return longitude; }
+
+    public void setCapacity(int warehouseCapacity) {
+        this.warehouseCapacity = warehouseCapacity;
+    }
  
     /**
      * Offset respecto a UTC, en minutos.

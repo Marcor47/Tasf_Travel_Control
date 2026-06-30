@@ -452,14 +452,15 @@ public class SimulationService {
 
 
 public synchronized SimulationState editAirport(String code, Integer capacity) {
-    if (code == null) return state;
+    if (code == null || capacity == null || capacity <= 0) return state;
     boolean live = running.get() && activeContext != null;
     Map<String, Airport> ap = live ? activeContext.getAirports() : stagedAirports;
     Airport existing = ap.get(code);
-    if (existing == null || capacity == null || capacity <= 0) return state;
-    Airport updated = new Airport(existing.getCode(), existing.getRegion(),
-            capacity, existing.getGmtOffset(), existing.getLatitude(), existing.getLongitude());
-    ap.put(code, updated);
+    if (existing == null) return state;
+    // Mutar el objeto EN SITIO (no reemplazar la entrada del mapa): así el
+    // cambio es visible sin importar si PlanningContext mantiene una copia
+    // defensiva del mapa — todas las copias apuntan al MISMO objeto Airport.
+    existing.setCapacity(capacity);
     pushAlert("editar", "Almacén " + code + " actualizado: capacidad " + capacity);
     return state;
 }

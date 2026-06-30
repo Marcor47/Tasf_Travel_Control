@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { STATIC_AIRPORTS } from "../data/staticAirports";
+import { STATIC_AIRPORTS, airportName } from "../data/staticAirports";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "";
 
@@ -37,6 +37,30 @@ const [editFlightId,    setEditFlightId]    = useState("");
 const [editFlightCap,   setEditFlightCap]   = useState("");
 const [editFlightDep,   setEditFlightDep]   = useState("");
 const [editFlightArr,   setEditFlightArr]   = useState("");
+
+
+const [editMsg, setEditMsg] = useState(null);
+const flashEdit = (text) => { setEditMsg(text); setTimeout(() => setEditMsg(null), 4000); };
+
+// Lista de vuelos editables: combina planificados (upcomingFlights) y en
+// el aire (routes), que SÍ incluyen altas en caliente (IDs U1, U2…).
+// simulation.flights es el dataset estático y NO refleja vuelos agregados.
+const editableFlights = (() => {
+  const map = new Map();
+  for (const u of (simulation?.upcomingFlights ?? [])) {
+    map.set(u.flightId, { id: u.flightId, origin: u.origin, destination: u.destination });
+  }
+  for (const r of (simulation?.routes ?? [])) {
+    if (!map.has(r.flightId)) {
+      map.set(r.flightId, { id: r.flightId, origin: r.from, destination: r.to });
+    }
+  }
+  for (const f of (simulation?.flights ?? [])) {
+    if (!map.has(f.id)) map.set(f.id, f);
+  }
+  return [...map.values()];
+})();
+
 
   // Edición de la red: vuelos / aeropuertos / carga de archivos
   const [flightForm, setFlightForm] = useState({
@@ -206,7 +230,7 @@ const [editFlightArr,   setEditFlightArr]   = useState("");
                   <option value="">Seleccionar</option>
                   {airports.map(a => (
                     <option key={a.code} value={a.code}>
-                      {a.code} — {a.name || a.code}
+                      {a.code} — {airportName(a.code)}
                     </option>
                   ))}
                 </select>
@@ -374,7 +398,7 @@ const [editFlightArr,   setEditFlightArr]   = useState("");
               <select key={n} name={n} value={flightForm[n]} onChange={hf}
                 className="bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300">
                 <option value="">{l}</option>
-                {airports.map(a => <option key={a.code} value={a.code}>{a.code}</option>)}
+                {airports.map(a => <option key={a.code} value={a.code}>{a.code} — {airportName(a.code)}</option>)}
               </select>
             ))}
             <label className="text-gray-500 text-[10px]">Salida (local)
@@ -424,7 +448,7 @@ const [editFlightArr,   setEditFlightArr]   = useState("");
             <select value={closeCode} onChange={e => setCloseCode(e.target.value)}
               className="flex-1 bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300">
               <option value="">Cerrar aeropuerto…</option>
-              {airports.map(a => <option key={a.code} value={a.code}>{a.code}</option>)}
+              {airports.map(a => <option key={a.code} value={a.code}>{a.code} — {airportName(a.code)}</option>)}
             </select>
             <button onClick={submitClose} disabled={!running || !closeCode}
               className="bg-red-800/60 hover:bg-red-700 text-red-200 text-xs px-3 py-1 rounded transition
@@ -465,11 +489,12 @@ const [editFlightArr,   setEditFlightArr]   = useState("");
 
 
 
-              <h2 className="text-teal font-bold text-lg mt-6 mb-1">EDITAR ALMACENES Y VUELOS</h2>
-              <p className="text-gray-500 text-xs mb-3">
-                Modifica atributos de almacenes y vuelos ya existentes en la simulación actual
-                (no afecta los archivos del dataset).
-              </p>
+<h2 className="text-teal font-bold text-lg mt-6 mb-1">EDITAR ALMACENES Y VUELOS</h2>
+<p className="text-gray-500 text-xs mb-3">
+  Modifica atributos de almacenes y vuelos ya existentes en la simulación actual
+  (no afecta los archivos del dataset).
+  {editMsg && <span className="text-teal ml-2">{editMsg}</span>}
+</p>
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
                 <div className="bg-[#031525] border border-teal/20 rounded p-3">
@@ -477,7 +502,7 @@ const [editFlightArr,   setEditFlightArr]   = useState("");
                   <select value={editAirportCode} onChange={e => setEditAirportCode(e.target.value)}
                     className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1.5 text-xs text-gray-300 mb-2">
                     <option value="">Seleccionar aeropuerto…</option>
-                    {airports.map(a => <option key={a.code} value={a.code}>{a.code} — {a.name || a.code}</option>)}
+                    {airports.map(a => <option key={a.code} value={a.code}>{a.code} — {airportName(a.code)}</option>)}
                   </select>
                   <label className="text-gray-500 text-[10px]">Nueva capacidad
                     <input type="number" min="1" value={editAirportCap}
@@ -485,14 +510,14 @@ const [editFlightArr,   setEditFlightArr]   = useState("");
                       className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300"/>
                   </label>
                   <button onClick={async () => {
-                      const ok = await simulation?.editAirport?.(editAirportCode, Number(editAirportCap) || 0);
-                      flash(ok ? "✓ Almacén actualizado" : "✕ No se pudo actualizar");
-                    }}
-                    disabled={!editAirportCode || !editAirportCap}
-                    className="w-full mt-2 bg-teal hover:bg-teal/80 text-white text-xs py-1.5 rounded transition
-                              disabled:opacity-40 disabled:cursor-not-allowed">
-                    Guardar Cambios
-                  </button>
+                  const ok = await simulation?.editAirport?.(editAirportCode, Number(editAirportCap) || 0);
+                  flashEdit(ok ? "✓ Almacén actualizado" : "✕ No se pudo actualizar");
+                }}
+                disabled={!editAirportCode || !editAirportCap}
+                className="w-full mt-2 bg-teal hover:bg-teal/80 text-white text-xs py-1.5 rounded transition
+                          disabled:opacity-40 disabled:cursor-not-allowed">
+                Guardar Cambios
+              </button>
                 </div>
 
                 <div className="bg-[#031525] border border-teal/20 rounded p-3">
@@ -500,8 +525,10 @@ const [editFlightArr,   setEditFlightArr]   = useState("");
                   <select value={editFlightId} onChange={e => setEditFlightId(e.target.value)}
                     className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1.5 text-xs text-gray-300 mb-2">
                     <option value="">Seleccionar vuelo…</option>
-                    {(simulation?.flights ?? []).map(f => (
-                      <option key={f.id} value={f.id}>{f.id} · {f.origin}→{f.destination}</option>
+                    {editableFlights.map(f => (
+                      <option key={f.id} value={f.id}>
+                        {f.id} · {airportName(f.origin)}→{airportName(f.destination)}
+                      </option>
                     ))}
                   </select>
                   <div className="grid grid-cols-3 gap-2 mb-2">
@@ -522,18 +549,18 @@ const [editFlightArr,   setEditFlightArr]   = useState("");
                     </label>
                   </div>
                   <button onClick={async () => {
-                      const ok = await simulation?.editFlight?.(editFlightId, {
-                        capacity: editFlightCap ? Number(editFlightCap) : undefined,
-                        departureLocal: editFlightDep || undefined,
-                        arrivalLocal: editFlightArr || undefined,
-                      });
-                      flash(ok ? "✓ Vuelo actualizado" : "✕ No se pudo actualizar");
-                    }}
-                    disabled={!editFlightId}
-                    className="w-full bg-teal hover:bg-teal/80 text-white text-xs py-1.5 rounded transition
-                              disabled:opacity-40 disabled:cursor-not-allowed">
-                    Guardar Cambios
-                  </button>
+    const ok = await simulation?.editFlight?.(editFlightId, {
+      capacity: editFlightCap ? Number(editFlightCap) : undefined,
+      departureLocal: editFlightDep || undefined,
+      arrivalLocal: editFlightArr || undefined,
+    });
+    flashEdit(ok ? "✓ Vuelo actualizado" : "✕ No se pudo actualizar");
+  }}
+  disabled={!editFlightId}
+  className="w-full bg-teal hover:bg-teal/80 text-white text-xs py-1.5 rounded transition
+             disabled:opacity-40 disabled:cursor-not-allowed">
+  Guardar Cambios
+</button>
                 </div>
               </div>
 
