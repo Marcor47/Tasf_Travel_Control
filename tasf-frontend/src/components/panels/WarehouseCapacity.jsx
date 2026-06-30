@@ -20,7 +20,7 @@ export default function WarehouseCapacity({
   focusCodes = [],
   selectedCode = null, onAirportClick,
   events = [],
-  onEditAirport,
+
 }) {
   // Foco activo = un aeropuerto/clic en el mapa o un vuelo/envío seleccionado.
   // Restringe la lista a esos almacenes (coherente con el mapa y los demás
@@ -35,8 +35,7 @@ export default function WarehouseCapacity({
 
   const [sortBy,       setSortBy]   = useState("ocupacion");
   const [expandedCode, setExpanded] = useState(null);
-  const [editCode,     setEditCode] = useState(null);
-  const [editCap,      setEditCap]  = useState("");
+
 
   const airportBags = useMemo(() => {
     if (!expandedCode) return [];
@@ -44,12 +43,6 @@ export default function WarehouseCapacity({
       .reverse().slice(0, 15);
   }, [events, expandedCode]);
 
-  const startEdit = (a) => { setEditCode(a.code); setEditCap(String(a.capacity || "")); };
-  const saveEdit  = (code) => {
-    const cap = parseInt(editCap, 10);
-    if (!isNaN(cap) && cap > 0) onEditAirport?.(code, { capacity: cap });
-    setEditCode(null);
-  };
 
   // Filtro por foco + texto (código/país/región) + semáforo, ORDENADO por
   // ocupación. Sin filtros: top 10 por ocupación (comportamiento original).
@@ -136,7 +129,7 @@ export default function WarehouseCapacity({
               const country  = AIRPORT_META[a.code]?.country;
               const isSel    = a.code === selectedCode;
               const isExp = a.code === expandedCode;
-              const isEd  = a.code === editCode;
+              
               return (
                 <div key={a.code} className={`rounded transition ${isSel ? "bg-teal/15 ring-1 ring-teal/40" : ""}`}>
                   <div className="flex items-start gap-0.5">
@@ -164,30 +157,9 @@ export default function WarehouseCapacity({
                       className="text-[10px] px-1 py-1 text-gray-500 hover:text-teal transition shrink-0">
                       {isExp ? "▴" : "▾"}
                     </button>
-                    <button onClick={() => isEd ? setEditCode(null) : startEdit(a)}
-                      title="Editar almacén"
-                      className={`text-[11px] px-1 py-1 transition shrink-0 ${isEd ? "text-teal" : "text-gray-500 hover:text-teal"}`}>
-                      ✎
-                    </button>
+
                   </div>
 
-                  {isEd && (
-                    <div className="mt-1 px-1 pb-1.5 border-t border-white/10 pt-1">
-                      <div className="flex items-center gap-1">
-                        <label className="text-gray-500 text-[9px] shrink-0">Capacidad:</label>
-                        <input type="number" min="1" value={editCap}
-                          onChange={e => setEditCap(e.target.value)}
-                          className="flex-1 bg-[#021020] border border-white/10 rounded
-                                     px-1 py-0.5 text-[10px] text-gray-300 focus:outline-none focus:border-teal"/>
-                        <button onClick={() => saveEdit(a.code)}
-                          className="bg-teal hover:bg-teal/80 text-white text-[9px] px-2 py-0.5 rounded transition shrink-0">
-                          Guardar
-                        </button>
-                        <button onClick={() => setEditCode(null)}
-                          className="text-gray-500 hover:text-white text-[9px] px-1 rounded">✕</button>
-                      </div>
-                    </div>
-                  )}
 
                   {isExp && (
                     <div className="mt-1 px-1 pb-1 border-t border-white/10 pt-1">

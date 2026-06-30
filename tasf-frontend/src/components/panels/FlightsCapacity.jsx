@@ -45,26 +45,12 @@ export default function FlightsCapacity({
   focusFlightId = null,   // si está, muestra SOLO ese vuelo
   sem = "all", onSemChange,   // semáforo controlado por el padre (también filtra el mapa)
   selectedRouteKey = null, pinnedCodes = null, onFlightClick,
-  onEditFlight,
+
 }) {
   const [search, setSearch] = useState("");
   const [sortBy,   setSortBy]   = useState("ocupacion");
-  const [editKey,  setEditKey]  = useState(null);
-  const [editForm, setEditForm] = useState({ capacity: "", dep: "", arr: "" });
 
-  const startEdit = (f) => {
-    setEditKey(f.key);
-    setEditForm({ capacity: String(f.capacity ?? ""), dep: f.departure || "", arr: f.arrival || "" });
-  };
-  const saveEdit = (f) => {
-    const cap = parseInt(editForm.capacity, 10);
-    onEditFlight?.(f.flightId || f.key, {
-      capacity: isNaN(cap) ? undefined : cap,
-      departureLocal: editForm.dep || undefined,
-      arrivalLocal:   editForm.arr || undefined,
-    });
-    setEditKey(null);
-  };
+
 
   // Cada ruta activa del backend ya es un vuelo con su capacidad y carga total.
   // Filtros: foco de aeropuerto, búsqueda por código/tramo y semáforo de carga.
@@ -258,7 +244,7 @@ export default function FlightsCapacity({
                            : color === "red"   ? "text-red-400"
                            : "text-gray-400";
             const isSel = selectedRouteKey === f.key;
-            const isEd = editKey === f.key;
+            
             return (
               <div key={f.key} className={`rounded transition ${isSel ? "bg-teal/15 ring-1 ring-teal/40" : ""}`}>
                 <div className="flex items-center gap-0.5">
@@ -299,49 +285,9 @@ style={{ width: `${clamp}%` }}/>
 
 
                   </button>
-                  <button onClick={() => isEd ? setEditKey(null) : startEdit(f)}
-                    title="Editar vuelo"
-                    className={`text-[11px] px-1 py-1 transition shrink-0 ${isEd ? "text-teal" : "text-gray-500 hover:text-teal"}`}>
-                    ✎
-                  </button>
+
                 </div>
-                {isEd && (
-                  <div className="mt-1 px-1 pb-1 border-t border-white/10 pt-1">
-                    <div className="grid grid-cols-3 gap-1 mb-1">
-                      <div>
-                        <label className="text-gray-600 text-[8px] block">Capacidad</label>
-                        <input type="number" min="1" value={editForm.capacity}
-                          onChange={e => setEditForm(p => ({ ...p, capacity: e.target.value }))}
-                          className="w-full bg-[#021020] border border-white/10 rounded px-1 py-0.5
-                                     text-[10px] text-gray-300 focus:outline-none focus:border-teal"/>
-                      </div>
-                      <div>
-                        <label className="text-gray-600 text-[8px] block">Salida</label>
-                        <input type="time" value={editForm.dep}
-                          onChange={e => setEditForm(p => ({ ...p, dep: e.target.value }))}
-                          className="w-full bg-[#021020] border border-white/10 rounded px-1 py-0.5
-                                     text-[10px] text-gray-300 focus:outline-none focus:border-teal [color-scheme:dark]"/>
-                      </div>
-                      <div>
-                        <label className="text-gray-600 text-[8px] block">Llegada</label>
-                        <input type="time" value={editForm.arr}
-                          onChange={e => setEditForm(p => ({ ...p, arr: e.target.value }))}
-                          className="w-full bg-[#021020] border border-white/10 rounded px-1 py-0.5
-                                     text-[10px] text-gray-300 focus:outline-none focus:border-teal [color-scheme:dark]"/>
-                      </div>
-                    </div>
-                    <div className="flex gap-1 justify-end">
-                      <button onClick={() => saveEdit(f)}
-                        className="bg-teal hover:bg-teal/80 text-white text-[9px] px-2 py-0.5 rounded transition">
-                        Guardar
-                      </button>
-                      <button onClick={() => setEditKey(null)}
-                        className="text-gray-500 hover:text-white text-[9px] px-1 py-0.5 rounded transition">
-                        Cancelar
-                      </button>
-                    </div>
-                  </div>
-                )}
+            
               </div>
             );
           })}

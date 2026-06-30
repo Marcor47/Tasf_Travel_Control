@@ -33,6 +33,21 @@ public class SimulationController {
         return simulationService.pause();
     }
 
+
+
+
+@PostMapping("/editAirport")
+public SimulationService.SimulationState editAirport(@RequestBody SimulationService.EditAirportRequest req) {
+    return simulationService.editAirport(req.code(), req.capacity());
+}
+
+@PostMapping("/editFlight")
+public SimulationService.SimulationState editFlight(@RequestBody SimulationService.EditFlightRequest req) {
+    return simulationService.editFlight(req.flightId(), req.capacity(), req.departureLocal(), req.arrivalLocal());
+}
+
+
+
     @PostMapping("/resume")
     public SimulationService.SimulationState resume() {
         return simulationService.resume();

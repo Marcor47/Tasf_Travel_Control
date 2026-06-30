@@ -30,6 +30,14 @@ export default function RegisterLot({ simulation }) {
   const [adding,     setAdding]     = useState(false);
   const [status,     setStatus]     = useState(null); // "added" | "error" | null
 
+
+const [editAirportCode, setEditAirportCode] = useState("");
+const [editAirportCap,  setEditAirportCap]  = useState("");
+const [editFlightId,    setEditFlightId]    = useState("");
+const [editFlightCap,   setEditFlightCap]   = useState("");
+const [editFlightDep,   setEditFlightDep]   = useState("");
+const [editFlightArr,   setEditFlightArr]   = useState("");
+
   // Edición de la red: vuelos / aeropuertos / carga de archivos
   const [flightForm, setFlightForm] = useState({
     origin: "", destination: "", departureLocal: "08:00", arrivalLocal: "09:00", capacity: 300,
@@ -355,6 +363,8 @@ export default function RegisterLot({ simulation }) {
         {netMsg && <span className="text-teal ml-2">{netMsg}</span>}
       </p>
 
+      
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Agregar vuelo */}
         <div className="bg-[#031525] border border-teal/20 rounded p-3">
@@ -452,6 +462,82 @@ export default function RegisterLot({ simulation }) {
           </p>
         </div>
       </div>
+
+
+
+              <h2 className="text-teal font-bold text-lg mt-6 mb-1">EDITAR ALMACENES Y VUELOS</h2>
+              <p className="text-gray-500 text-xs mb-3">
+                Modifica atributos de almacenes y vuelos ya existentes en la simulación actual
+                (no afecta los archivos del dataset).
+              </p>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+
+                <div className="bg-[#031525] border border-teal/20 rounded p-3">
+                  <p className="text-teal text-xs font-bold uppercase mb-2">Editar Almacén</p>
+                  <select value={editAirportCode} onChange={e => setEditAirportCode(e.target.value)}
+                    className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1.5 text-xs text-gray-300 mb-2">
+                    <option value="">Seleccionar aeropuerto…</option>
+                    {airports.map(a => <option key={a.code} value={a.code}>{a.code} — {a.name || a.code}</option>)}
+                  </select>
+                  <label className="text-gray-500 text-[10px]">Nueva capacidad
+                    <input type="number" min="1" value={editAirportCap}
+                      onChange={e => setEditAirportCap(e.target.value)}
+                      className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300"/>
+                  </label>
+                  <button onClick={async () => {
+                      const ok = await simulation?.editAirport?.(editAirportCode, Number(editAirportCap) || 0);
+                      flash(ok ? "✓ Almacén actualizado" : "✕ No se pudo actualizar");
+                    }}
+                    disabled={!editAirportCode || !editAirportCap}
+                    className="w-full mt-2 bg-teal hover:bg-teal/80 text-white text-xs py-1.5 rounded transition
+                              disabled:opacity-40 disabled:cursor-not-allowed">
+                    Guardar Cambios
+                  </button>
+                </div>
+
+                <div className="bg-[#031525] border border-teal/20 rounded p-3">
+                  <p className="text-teal text-xs font-bold uppercase mb-2">Editar Vuelo</p>
+                  <select value={editFlightId} onChange={e => setEditFlightId(e.target.value)}
+                    className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1.5 text-xs text-gray-300 mb-2">
+                    <option value="">Seleccionar vuelo…</option>
+                    {(simulation?.flights ?? []).map(f => (
+                      <option key={f.id} value={f.id}>{f.id} · {f.origin}→{f.destination}</option>
+                    ))}
+                  </select>
+                  <div className="grid grid-cols-3 gap-2 mb-2">
+                    <label className="text-gray-500 text-[10px]">Capacidad
+                      <input type="number" min="1" value={editFlightCap}
+                        onChange={e => setEditFlightCap(e.target.value)}
+                        className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300"/>
+                    </label>
+                    <label className="text-gray-500 text-[10px]">Salida
+                      <input type="time" value={editFlightDep}
+                        onChange={e => setEditFlightDep(e.target.value)}
+                        className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300"/>
+                    </label>
+                    <label className="text-gray-500 text-[10px]">Llegada
+                      <input type="time" value={editFlightArr}
+                        onChange={e => setEditFlightArr(e.target.value)}
+                        className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300"/>
+                    </label>
+                  </div>
+                  <button onClick={async () => {
+                      const ok = await simulation?.editFlight?.(editFlightId, {
+                        capacity: editFlightCap ? Number(editFlightCap) : undefined,
+                        departureLocal: editFlightDep || undefined,
+                        arrivalLocal: editFlightArr || undefined,
+                      });
+                      flash(ok ? "✓ Vuelo actualizado" : "✕ No se pudo actualizar");
+                    }}
+                    disabled={!editFlightId}
+                    className="w-full bg-teal hover:bg-teal/80 text-white text-xs py-1.5 rounded transition
+                              disabled:opacity-40 disabled:cursor-not-allowed">
+                    Guardar Cambios
+                  </button>
+                </div>
+              </div>
+
+
     </div>
   );
 }

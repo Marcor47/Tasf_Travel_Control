@@ -400,6 +400,49 @@ public class SimulationService {
         return state;
     }
 
+
+
+
+
+public synchronized SimulationState editAirport(String code, Integer capacity) {
+    if (code == null) return state;
+    boolean live = running.get() && activeContext != null;
+    Map<String, Airport> ap = live ? activeContext.getAirports() : stagedAirports;
+    Airport existing = ap.get(code);
+    if (existing == null || capacity == null || capacity <= 0) return state;
+    Airport updated = new Airport(existing.getCode(), existing.getRegion(),
+            capacity, existing.getGmtOffset(), existing.getLatitude(), existing.getLongitude());
+    ap.put(code, updated);
+    pushAlert("editar", "Almacén " + code + " actualizado: capacidad " + capacity);
+    return state;
+}
+
+public synchronized SimulationState editFlight(String flightId, Integer capacity,
+        String departureLocal, String arrivalLocal) {
+    boolean live = running.get() && activeContext != null;
+    List<FlightInstance> list = live ? activeContext.getFlights() : stagedFlights;
+    FlightInstance f = list.stream().filter(x -> x.getId().equals(flightId)).findFirst().orElse(null);
+    if (f == null) return state;
+    Map<String, Airport> ap = live ? activeContext.getAirports() : stagedAirports;
+    if (capacity != null && capacity > 0) f.setCapacity(capacity);
+    if (departureLocal != null || arrivalLocal != null) {
+        Airport o = ap.get(f.getOrigin()), d = ap.get(f.getDestination());
+        if (o != null && d != null) {
+            int dep = departureLocal != null ? toUtcMinuteOfDay(departureLocal, o.getGmtOffset()) : f.getDepartureHour();
+            int arr = arrivalLocal   != null ? toUtcMinuteOfDay(arrivalLocal,   d.getGmtOffset()) : f.getArrivalHour();
+            if (arr < dep) arr += 1440;
+            f.setDepartureHour(dep);
+            f.setArrivalHour(arr);
+        }
+    }
+    flightCapacityById.put(flightId, f.getCapacity());
+    pushAlert("editar", "Vuelo " + flightId + " actualizado");
+    return state;
+}
+
+
+
+
     /**
      * Carga masiva desde un archivo arrastrado (mismo formato que el dataset).
      * type = "planes" | "airports" | "lots". Para lots, `origin` es el código
@@ -1611,20 +1654,29 @@ public class SimulationService {
      * el panel dibuje el camino entero —incluidos los tramos aún no despegados—
      * al seleccionar una maleta.
      */
-    public ShipmentPath shipmentPath(String lotId) {
-        List<ShipmentLeg> raw = (lotId == null) ? null : pathByLot.get(lotId);
-        if (raw == null) return new ShipmentPath(lotId, List.of());
-        int now = state.simulatedMinute();
-        List<ShipmentLeg> legs = new ArrayList<>(raw.size());
-        for (ShipmentLeg l : raw) {
-            String st = l.arrivalMinute()   <= now ? "done"
-                      : l.departureMinute() <= now ? "current"
-                      : "upcoming";
-            legs.add(new ShipmentLeg(l.flightId(), l.from(), l.to(),
-                    l.departureMinute(), l.arrivalMinute(), l.finalDestination(), st));
+public ShipmentPath shipmentPath(String lotId) {
+    if (lotId == null) return new ShipmentPath(lotId, List.of());
+    String base = lotId.replaceFirst("-\\d+$", "");
+    List<ShipmentLeg> raw = new ArrayList<>();
+    for (Map.Entry<String, List<ShipmentLeg>> e : pathByLot.entrySet()) {
+        String key = e.getKey();
+        if (key.equals(lotId) || key.equals(base) || key.startsWith(base + "-")) {
+            raw.addAll(e.getValue());
         }
-        return new ShipmentPath(lotId, legs);
     }
+    if (raw.isEmpty()) return new ShipmentPath(lotId, List.of());
+    int now = state.simulatedMinute();
+    List<ShipmentLeg> legs = new ArrayList<>(raw.size());
+    for (ShipmentLeg l : raw) {
+        String st = l.arrivalMinute()   <= now ? "done"
+                  : l.departureMinute() <= now ? "current"
+                  : "upcoming";
+        legs.add(new ShipmentLeg(l.flightId(), l.from(), l.to(),
+                l.departureMinute(), l.arrivalMinute(), l.finalDestination(), st));
+    }
+    legs.sort(Comparator.comparingInt(ShipmentLeg::departureMinute));
+    return new ShipmentPath(lotId, legs);
+}
 
     private int daysForMode(String mode, int numDays) {
         if ("periodo".equals(mode)) return numDays;
@@ -1790,6 +1842,13 @@ public class SimulationService {
                                  Integer gmtHours, Integer capacity) {}
 
     public record CloseRequest(String code) {}
+
+
+
+public record EditAirportRequest(String code, Integer capacity) {}
+public record EditFlightRequest(String flightId, Integer capacity, String departureLocal, String arrivalLocal) {}
+
+
 
     public record UploadRequest(String type, String content, String origin) {}
 

@@ -386,7 +386,7 @@ export default function Dashboard({
                 selectedCode={selectedAirport}
                 onAirportClick={handleAirportClick}
                 events={simulation?.history ?? []}
-                onEditAirport={(code, attrs) => simulation?.editAirport?.(code, attrs)}/>
+              />
             ) : (
               <StorageMovements
                 history={simulation?.history ?? []}
@@ -408,7 +408,7 @@ export default function Dashboard({
             selectedRouteKey={selectedRouteKey}
             pinnedCodes={pinnedCodes}
             onFlightClick={handleFlightClick}
-            onEditFlight={(id, attrs) => simulation?.editFlight?.(id, attrs)}
+            
             running={running}/>
         );
       case "envios":

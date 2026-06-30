@@ -309,6 +309,20 @@ const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
     postJson("addAirport", { code, region, lat, lng, gmtHours, capacity }),
   [postJson]);
 
+
+
+
+const editAirport = useCallback(async (code, capacity) =>
+  postJson("editAirport", { code, capacity }),
+[postJson]);
+
+const editFlight = useCallback(async (flightId, { capacity, departureLocal, arrivalLocal }) =>
+  postJson("editFlight", { flightId, capacity, departureLocal, arrivalLocal }),
+[postJson]);
+
+
+
+
   const closeAirport = useCallback(async (code) =>
     postJson("closeAirport", { code }),
   [postJson]);
@@ -387,5 +401,6 @@ const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
     fetchShipmentPath,
     alerts,
     realSeconds, // ← nuevo
+    editAirport, editFlight,
   };
 }
