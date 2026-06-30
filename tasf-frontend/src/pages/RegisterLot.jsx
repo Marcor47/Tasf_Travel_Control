@@ -176,7 +176,7 @@ const editableFlights = (() => {
 
   return (
     <div className="p-4 max-w-5xl mx-auto">
-      <h2 className="text-teal font-bold text-lg mb-1">REGISTRO DE LOTES</h2>
+      <h2 className="text-teal font-bold text-lg mb-1">REGISTRO DE ENVÍOS</h2>
       <p className="text-gray-500 text-xs mb-3">
         Día a Día parte de una <b className="text-gray-300">pizarra en blanco</b>: carga primero
         <b className="text-gray-300"> aeropuertos</b>, luego <b className="text-gray-300">vuelos</b> y
@@ -215,7 +215,7 @@ const editableFlights = (() => {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* ── Formulario ──────────────────────────────────────────────────── */}
         <div className="bg-[#031525] border border-teal/20 rounded p-4">
-          <p className="text-teal text-xs font-bold uppercase mb-3">Ingesta de Datos</p>
+          <p className="text-teal text-xs font-bold uppercase mb-3">Agregar Envío</p>
 
           <div className="grid grid-cols-2 gap-3 mb-3">
             {[
@@ -380,7 +380,7 @@ const editableFlights = (() => {
       </div>
 
       {/* ── Edición de la red (vuelos / aeropuertos / carga de archivos) ───── */}
-      <h2 className="text-teal font-bold text-lg mt-6 mb-1">RED Y CARGA DE DATOS</h2>
+      <h2 className="text-teal font-bold text-lg mt-6 mb-1">REGISTRO DE ALMACENES Y VUELOS</h2>
       <p className="text-gray-500 text-xs mb-3">
         Agrega vuelos y aeropuertos, cierra aeropuertos o carga archivos txt
         (mismo formato del dataset) sobre la simulación en curso.
@@ -390,41 +390,14 @@ const editableFlights = (() => {
       
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Agregar vuelo */}
-        <div className="bg-[#031525] border border-teal/20 rounded p-3">
-          <p className="text-teal text-xs font-bold uppercase mb-2">Agregar Vuelo</p>
-          <div className="grid grid-cols-2 gap-2 mb-2">
-            {[["origin", "Origen"], ["destination", "Destino"]].map(([n, l]) => (
-              <select key={n} name={n} value={flightForm[n]} onChange={hf}
-                className="bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300">
-                <option value="">{l}</option>
-                {airports.map(a => <option key={a.code} value={a.code}>{a.code} — {airportName(a.code)}</option>)}
-              </select>
-            ))}
-            <label className="text-gray-500 text-[10px]">Salida (local)
-              <input name="departureLocal" type="time" value={flightForm.departureLocal} onChange={hf}
-                className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300"/>
-            </label>
-            <label className="text-gray-500 text-[10px]">Llegada (local)
-              <input name="arrivalLocal" type="time" value={flightForm.arrivalLocal} onChange={hf}
-                className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300"/>
-            </label>
-            <label className="text-gray-500 text-[10px] col-span-2">Capacidad
-              <input name="capacity" type="number" min="1" value={flightForm.capacity} onChange={hf}
-                className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300"/>
-            </label>
-          </div>
-          <button onClick={submitFlight} disabled={!canFlight}
-            title={!canFlight ? "Carga aeropuertos primero" : ""}
-            className="w-full bg-teal hover:bg-teal/80 text-white text-xs py-1.5 rounded transition
-                       disabled:opacity-40 disabled:cursor-not-allowed">
-            Agregar Vuelo
-          </button>
-        </div>
 
-        {/* Aeropuertos: agregar / cerrar */}
+
+
+
+
+        {/* Almacenes: agregar / cerrar */}
         <div className="bg-[#031525] border border-teal/20 rounded p-3">
-          <p className="text-teal text-xs font-bold uppercase mb-2">Aeropuertos</p>
+          <p className="text-teal text-xs font-bold uppercase mb-2">Agregar Almacén</p>
           <div className="grid grid-cols-2 gap-2 mb-2">
             <input name="code" value={airportForm.code} onChange={ha} placeholder="Código ICAO"
               className="bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300 uppercase"/>
@@ -458,9 +431,47 @@ const editableFlights = (() => {
           </div>
         </div>
 
+
+
+
+
+        {/* Agregar vuelo */}
+        <div className="bg-[#031525] border border-teal/20 rounded p-3">
+          <p className="text-teal text-xs font-bold uppercase mb-2">Agregar Vuelo</p>
+          <div className="grid grid-cols-2 gap-2 mb-2">
+            {[["origin", "Origen"], ["destination", "Destino"]].map(([n, l]) => (
+              <select key={n} name={n} value={flightForm[n]} onChange={hf}
+                className="bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300">
+                <option value="">{l}</option>
+                {airports.map(a => <option key={a.code} value={a.code}>{a.code} — {airportName(a.code)}</option>)}
+              </select>
+            ))}
+            <label className="text-gray-500 text-[10px]">Salida (local)
+              <input name="departureLocal" type="time" value={flightForm.departureLocal} onChange={hf}
+                className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300"/>
+            </label>
+            <label className="text-gray-500 text-[10px]">Llegada (local)
+              <input name="arrivalLocal" type="time" value={flightForm.arrivalLocal} onChange={hf}
+                className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300"/>
+            </label>
+            <label className="text-gray-500 text-[10px] col-span-2">Capacidad
+              <input name="capacity" type="number" min="1" value={flightForm.capacity} onChange={hf}
+                className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300"/>
+            </label>
+          </div>
+          <button onClick={submitFlight} disabled={!canFlight}
+            title={!canFlight ? "Carga aeropuertos primero" : ""}
+            className="w-full bg-teal hover:bg-teal/80 text-white text-xs py-1.5 rounded transition
+                       disabled:opacity-40 disabled:cursor-not-allowed">
+            Agregar Vuelo
+          </button>
+        </div>
+
+
+
         {/* Carga de archivo (drag & drop) */}
         <div className="bg-[#031525] border border-teal/20 rounded p-3">
-          <p className="text-teal text-xs font-bold uppercase mb-2">Cargar Archivo (txt)</p>
+          <p className="text-teal text-xs font-bold uppercase mb-2">Cargar Masiva por Archivo (txt)</p>
           <div className="flex gap-1 mb-2">
             {[["planes", "Vuelos"], ["airports", "Aeropuertos"], ["lots", "Lotes"]].map(([k, l]) => (
               <button key={k} onClick={() => setDropType(k)}
