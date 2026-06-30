@@ -16,14 +16,14 @@ const TITLE_H = 26;   // alto de la barra de título (también el alto al minimi
  */
 export default function FloatingPanel({
   title, x = 40, y = 40, w = 300, h = 360, mode = "normal", z = 30,
-  onFocus, onDrag, onResize, onMin, onMax, onClose, children,
+  onFocus, onTitleClick, onDrag, onResize, onMin, onMax, onClose, children,
 }) {
   const minimized = mode === "min";
   const maximized = mode === "max";
 
   return (
     <Rnd
-      size={{ width: w, height: minimized ? TITLE_H : h }}
+      size={{ width: minimized ? 168 : w, height: minimized ? TITLE_H : h }}
       position={{ x, y }}
       bounds="#dash-map-zone"
       dragHandleClassName="fp-drag"
@@ -45,7 +45,10 @@ export default function FloatingPanel({
         <div className="fp-drag flex items-center justify-between gap-1 px-2
                         bg-[#021020] border-b border-teal/20 cursor-move select-none"
              style={{ height: TITLE_H }}>
-          <span className="text-teal text-[10px] font-bold uppercase truncate">{title}</span>
+          <span onClick={onTitleClick}
+                className="text-teal text-[10px] font-bold uppercase truncate cursor-pointer flex-1">
+            {title}
+          </span>
           <span className="flex items-center gap-0.5 flex-shrink-0">
             <button onClick={onMin}
               className="fp-btn w-4 h-4 flex items-center justify-center rounded
@@ -58,7 +61,7 @@ export default function FloatingPanel({
             <button onClick={onClose}
               className="fp-btn w-4 h-4 flex items-center justify-center rounded
                          text-gray-400 hover:text-white hover:bg-red-700/70 text-[11px] leading-none"
-              title="Devolver a pestañas">✕</button>
+              title="Cerrar (minimizar a la izquierda)">✕</button>
           </span>
         </div>
 

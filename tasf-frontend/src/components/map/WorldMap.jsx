@@ -145,10 +145,10 @@ function planePosition(from, to, route, simulatedMinute) {
 // en la misma ruta no se colapsan, y los eventos duplicados del mismo vuelo sí.
 const routeKey = r => r.flightId || `${r.from}-${r.to}-${r.departureMinute ?? 0}`;
 
-// Vista inicial del mapa: centra y acerca a la franja donde están los
-// aeropuertos del dataset (sin impedir el zoom/arrastre manual posterior).
-const DEFAULT_CENTER = [8, 20];
-const DEFAULT_ZOOM   = 1.8;
+// Vista inicial del mapa: panorámica de toda la red (Sudamérica–Europa–Asia),
+// con Europa hacia arriba (sin impedir el zoom/arrastre manual posterior).
+const DEFAULT_CENTER = [15, 32];
+const DEFAULT_ZOOM   = 2.1;
 
 // Semáforo de ocupación: verde casi vacío, ámbar a media carga, rojo casi lleno.
 function loadColor(pct) {
@@ -575,11 +575,15 @@ export default function WorldMap({
                 <rect x={-s * 0.4} y={s * 0.3} width={s * 0.8} height={s * 0.7}
                       fill="#0b1f33" opacity={0.55}/>
               </g>
-              <text textAnchor="middle" y={-(s + 3)}
+              <text textAnchor="middle" y={-(s + 4)}
                 opacity={hl ? 1 : 0.25}
                 style={{
-                  fontSize: Math.max(5, 7 / Math.sqrt(zoom)),
-                  fill: isSel ? "#2dd4bf" : "#9DBDCC",
+                  fontSize: Math.max(9, 13 / Math.sqrt(zoom)),
+                  fontWeight: 600,
+                  fill: isSel ? "#2dd4bf" : "#cfe3ee",
+                  stroke: "#021020",
+                  strokeWidth: 0.6,
+                  paintOrder: "stroke",
                   fontFamily: "sans-serif",
                   pointerEvents: "none",
                 }}>

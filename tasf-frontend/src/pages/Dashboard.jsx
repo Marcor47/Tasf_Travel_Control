@@ -11,11 +11,17 @@ import FloatingPanel     from "../components/panels/FloatingPanel";
 import DateTimePicker    from "../components/panels/DateTimePicker";
 
 
-// Pestañas del panel de Información (también las que pueden flotar).
-const INFO_TABS = [
-  ["almacenes", "Almacenes"], ["vuelos", "Vuelos"],
-  ["envios", "Envíos"], ["sla", "SLA"],
+// Todos los paneles flotantes (sobre el mapa). Arrancan minimizados en una
+// columna a la izquierda (como la barra de Configuración) y se abren al clic.
+const ALL_PANELS = [
+  ["resumen",   "Resumen"],
+  ["almacenes", "Almacenes"],
+  ["vuelos",    "Vuelos"],
+  ["envios",    "Envíos"],
+  ["sla",       "SLA"],
 ];
+// Posición inicial de cada panel minimizado (columna izquierda, bajo Configuración).
+const minSlotPos = (slot) => ({ x: 8, y: 84 + slot * 30 });
 
 // Identidad de una ruta (igual que en WorldMap): por flightId, o por
 // origen-destino-salida si no lo trae.
@@ -90,19 +96,21 @@ export default function Dashboard({
   // Búsqueda del panel de Envíos (maletas/paquetes): se eleva aquí para
   // reflejarla también en el mapa y en los paneles de Vuelos y Almacenes.
   const [bagSearch, setBagSearch] = useState("");
-  // Paneles laterales colapsables — al inicio ambos cerrados para ver el mapa
-  const [leftOpen,  setLeftOpen]  = useState(false);
-  const [rightOpen, setRightOpen] = useState(false);
   // Barra de configuración (fecha/hora) — cerrada al inicio
   const [configOpen, setConfigOpen] = useState(false);
-  // Panel de información derecho: pestaña activa + sub-vista de almacenes
-  const [infoTab, setInfoTab] = useState("almacenes"); // almacenes/vuelos/envios/sla
-  const [whSub,   setWhSub]   = useState("capacidad");  // capacidad/movimientos
+  // Sub-vista de almacenes (capacidad / movimientos)
+  const [whSub,   setWhSub]   = useState("capacidad");
 
-  // ── Ventanas flotantes (una por pestaña de Información) ───────────────────
-  // floatWins[key] = { x, y, w, h, mode:"normal"|"min"|"max", restore? }.
-  // Estado de sesión: se pierde al recargar (no se persiste).
-  const [floatWins, setFloatWins] = useState({});
+  // ── Ventanas flotantes (TODOS los paneles, sobre el mapa) ────────────────
+  // floatWins[key] = { x, y, w, h, mode:"normal"|"min"|"max", slot, restore? }.
+  // Arrancan minimizadas en la columna izquierda. Estado de sesión.
+  const [floatWins, setFloatWins] = useState(() => {
+    const init = {};
+    ALL_PANELS.forEach(([k], i) => {
+      init[k] = { ...minSlotPos(i), w: 340, h: 400, mode: "min", slot: i };
+    });
+    return init;
+  });
   const [winZ,      setWinZ]      = useState({});   // key -> z-index
   const zCounter        = useRef(30);
   const mapContainerRef = useRef(null);
@@ -111,31 +119,27 @@ export default function Dashboard({
     zCounter.current += 1;
     setWinZ(z => ({ ...z, [key]: zCounter.current }));
   };
-  const focusRestore = (key) => {           // traer al frente y restaurar si está minimizada
+  const updateWin = (key, p) => setFloatWins(w => w[key] ? { ...w, [key]: { ...w[key], ...p } } : w);
+
+  // Minimizar/restaurar EN SITIO: solo cambia el modo (tamaño), NUNCA la posición.
+  // Cambiar posición y tamaño a la vez de forma externa rompe react-draggable bajo
+  // React 19, así que la ventana se expande/colapsa donde está.
+  const minimizeWin = (key) => {
     focusWin(key);
-    setFloatWins(w => (w[key]?.mode === "min"
-      ? { ...w, [key]: { ...w[key], mode: "normal" } } : w));
-  };
-  const popOut = (key) => {                  // sacar una pestaña a ventana flotante
     setFloatWins(w => {
-      if (w[key]) return w;                  // ya flota
-      const n = Object.keys(w).length;
-      return { ...w, [key]: { x: 36 + n * 26, y: 44 + n * 26, w: 300, h: 360, mode: "normal" } };
+      const win = w[key]; if (!win) return w;
+      return { ...w, [key]: { ...win, mode: win.mode === "min" ? "normal" : "min" } };
     });
-    focusWin(key);
-    // Si era la pestaña activa acoplada, mostrar otra que siga acoplada.
-    setInfoTab(prev => prev !== key ? prev
-      : (INFO_TABS.map(d => d[0]).find(k => k !== key && !floatWins[k]) || prev));
   };
-  const dockWin = (key) => {                 // devolver a las pestañas
-    setFloatWins(w => { const c = { ...w }; delete c[key]; return c; });
-    setInfoTab(key);
-  };
-  const updateWin   = (key, p) => setFloatWins(w => w[key] ? { ...w, [key]: { ...w[key], ...p } } : w);
-  const minimizeWin = (key) => setFloatWins(w => {
+  // Cerrar = colapsar a barra (las ventanas nunca desaparecen).
+  const collapseWin = (key) => setFloatWins(w => {
     const win = w[key]; if (!win) return w;
-    return { ...w, [key]: { ...win, mode: win.mode === "min" ? "normal" : "min" } };
+    return { ...w, [key]: { ...win, mode: "min" } };
   });
+  // Clic en el título: si está minimizada la abre; si no, la trae al frente.
+  const titleClickWin = (key) => {
+    if (floatWins[key]?.mode === "min") minimizeWin(key); else focusWin(key);
+  };
   const maximizeWin = (key) => setFloatWins(w => {
     const win = w[key]; if (!win) return w;
     if (win.mode === "max") return { ...w, [key]: { ...win, ...win.restore, mode: "normal" } };
@@ -359,6 +363,17 @@ export default function Dashboard({
   // acoplado y dentro de cada ventana flotante (mismo contenido y filtros).
   const infoBody = (key) => {
     switch (key) {
+      case "resumen":
+        return (
+          <SLAMonitor
+            kpis={kpis}
+            events={simulation?.history ?? []}
+            running={running}
+            simulatedNow={simulatedNow}
+            focusCodes={focusCodes}
+            focusFlightId={focusFlightId}
+            view="resumen"/>
+        );
       case "almacenes":
         return (
           <>
@@ -437,23 +452,8 @@ export default function Dashboard({
     <div className="flex flex-col gap-2 p-2 h-[calc(100vh-72px)]
                     overflow-y-auto md:overflow-hidden">
 
-      {/* ── Paneles principales ───────────────────────────────────────────── */}
-      <div className="flex flex-col md:flex-row gap-2 flex-1 min-h-0">
-
-        {/* Panel izquierdo — Resumen (contadores + KPIs) */}
-        <SidePanel title="Resumen" side="left"
-                   open={leftOpen} onToggle={() => setLeftOpen(o => !o)}
-                   widthClass="md:w-56">
-          <SLAMonitor
-            kpis={kpis}
-            events={simulation?.history ?? []}
-            running={running}
-            simulatedNow={simulatedNow}
-            focusCodes={focusCodes}
-            focusFlightId={focusFlightId}
-            view="resumen"
-          />
-        </SidePanel>
+      {/* ── Mapa a pantalla completa; los paneles FLOTAN encima (no empujan) ── */}
+      <div className="flex flex-1 min-h-0">
 
         {/* Mapa central */}
         <div ref={mapContainerRef} id="dash-map-zone"
@@ -580,9 +580,9 @@ export default function Dashboard({
 
           {/* ── Relojes flotantes (esquina inferior derecha) ──────────────── */}
           {running && (
-            <div className="absolute right-3 bottom-3 bg-[#021020]/90 border border-teal/20
-                            rounded px-2 py-1 z-10 flex flex-wrap items-center gap-x-3 gap-y-0.5
-                            max-w-[calc(100%-1.5rem)] justify-end">
+            <div className="absolute right-3 bottom-3 bg-[#021020]/95 border border-teal/30
+                            rounded-lg px-3 py-2 z-10 flex flex-wrap items-center gap-x-5 gap-y-1
+                            max-w-[calc(100%-1.5rem)] justify-end shadow-lg shadow-black/40">
               {[
                 ["Hora sim.",    simClock,                            "text-teal"],
                 ["Sim. transc.", formatSimTime(simElapsedMinutes),   "text-teal"],
@@ -590,127 +590,35 @@ export default function Dashboard({
                 ["Real transc.", formatRealTime(realSeconds),        "text-white"],
               ].map(([label, value, color]) => (
                 <div key={label} className="text-center">
-                  <p className="text-gray-500 text-[8px] uppercase leading-none">{label}</p>
-                  <p className={`text-[11px] font-mono font-bold leading-tight ${color}`}>{value}</p>
+                  <p className="text-gray-400 text-[10px] uppercase leading-none mb-0.5">{label}</p>
+                  <p className={`text-lg font-mono font-bold leading-tight ${color}`}>{value}</p>
                 </div>
               ))}
               {simulation?.message === "Pausado"
-                ? <span className="text-amber-400 text-[10px]">❚❚ Pausado</span>
-                : <span className="text-green-400 text-[10px] animate-pulse">● En curso</span>}
+                ? <span className="text-amber-400 text-sm font-semibold">❚❚ Pausado</span>
+                : <span className="text-green-400 text-sm font-semibold animate-pulse">● En curso</span>}
             </div>
           )}
 
-          {/* ── Ventanas flotantes (pestañas sacadas del panel) ─────────────── */}
-          {INFO_TABS.map(([k, l]) => floatWins[k] && (
+          {/* ── Ventanas flotantes: TODOS los paneles, sobre el mapa ─────────── */}
+          {ALL_PANELS.map(([k, l]) => floatWins[k] && (
             <FloatingPanel
               key={k} title={l}
               x={floatWins[k].x} y={floatWins[k].y}
               w={floatWins[k].w} h={floatWins[k].h}
               mode={floatWins[k].mode} z={winZ[k] ?? 30}
               onFocus={() => focusWin(k)}
+              onTitleClick={() => titleClickWin(k)}
               onDrag={(x, y) => updateWin(k, { x, y })}
               onResize={(w, h, x, y) => updateWin(k, { w, h, x, y })}
               onMin={() => minimizeWin(k)}
               onMax={() => maximizeWin(k)}
-              onClose={() => dockWin(k)}>
+              onClose={() => collapseWin(k)}>
               {infoBody(k)}
             </FloatingPanel>
           ))}
         </div>
-
-        {/* Panel derecho — Información en pestañas (Almacenes/Vuelos/Envíos/SLA) */}
-        <SidePanel title="Información" side="right"
-                   open={rightOpen} onToggle={() => setRightOpen(o => !o)}
-                   widthClass="md:w-72">
-          <div className="flex gap-1 mb-2 sticky top-0 z-10 items-stretch">
-            <div className="flex gap-1 flex-1">
-              {INFO_TABS.map(([k, l]) => {
-                const floating = !!floatWins[k];
-                return (
-                  <button key={k}
-                    onClick={() => floating ? focusRestore(k) : setInfoTab(k)}
-                    title={floating ? "En ventana flotante — clic para enfocarla" : l}
-                    className={`flex-1 text-[10px] px-1 py-1 rounded transition font-medium
-                      flex items-center justify-center gap-0.5
-                      ${floating ? "bg-[#021020] text-teal border border-teal/40 border-dashed"
-                        : infoTab === k ? "bg-teal text-white"
-                        : "bg-[#021020] text-gray-400 border border-white/10 hover:text-white"}`}>
-                    {l}{floating && <span className="text-[8px]">⧉</span>}
-                  </button>
-                );
-              })}
-            </div>
-            <button
-              onClick={() => popOut(infoTab)}
-              disabled={!!floatWins[infoTab]}
-              title="Abrir la pestaña activa como ventana flotante"
-              className="px-1.5 rounded text-[11px] bg-[#021020] text-gray-400
-                         border border-white/10 hover:text-teal hover:border-teal/40
-                         disabled:opacity-30 disabled:cursor-not-allowed transition">
-              ⧉
-            </button>
-          </div>
-
-          {floatWins[infoTab] ? (
-            <div className="text-center text-gray-500 text-[11px] py-6 px-3">
-              <p className="mb-2">«{INFO_TABS.find(t => t[0] === infoTab)?.[1]}» está en una ventana flotante.</p>
-              <button onClick={() => focusRestore(infoTab)}
-                className="px-2 py-1 rounded bg-teal/15 text-teal border border-teal/40
-                           hover:bg-teal/25 transition text-[10px]">
-                Enfocar ventana
-              </button>
-              <button onClick={() => dockWin(infoTab)}
-                className="ml-1 px-2 py-1 rounded bg-[#021020] text-gray-400 border border-white/10
-                           hover:text-white transition text-[10px]">
-                Devolver aquí
-              </button>
-            </div>
-          ) : (
-            infoBody(infoTab)
-          )}
-        </SidePanel>
       </div>
-    </div>
-  );
-}
-
-/**
- * Panel lateral colapsable y responsivo.
- * - Escritorio: abierto ocupa su ancho (md:w-72/64); colapsado se reduce a
- *   una franja vertical con el título girado.
- * - Móvil: ocupa todo el ancho y se apila; colapsado deja solo una barra de
- *   cabecera para expandirlo.
- */
-function SidePanel({ title, side, open, onToggle, widthClass, children }) {
-  if (!open) {
-    return (
-      <button
-        onClick={onToggle}
-        title={`Mostrar ${title}`}
-        className={`flex-shrink-0 w-full md:w-7 bg-[#031525] border border-teal/20 rounded
-                    flex md:flex-col items-center justify-between md:justify-start
-                    px-2 py-1 md:py-2 gap-1 hover:border-teal/50 transition`}>
-        <span className="text-gray-400 text-[10px] uppercase tracking-wide
-                         md:[writing-mode:vertical-rl]">
-          {title}
-        </span>
-        <span className="text-teal text-xs">
-          {side === "left" ? "▸" : "◂"}
-        </span>
-      </button>
-    );
-  }
-  return (
-    <div className={`${widthClass} w-full flex-shrink-0 overflow-y-auto
-                     max-h-[45vh] md:max-h-none`}>
-      <div className="flex items-center justify-between mb-1 px-0.5">
-        <span className="text-gray-500 text-[10px] uppercase tracking-wide">{title}</span>
-        <button onClick={onToggle} title={`Ocultar ${title}`}
-          className="text-gray-500 hover:text-white text-xs px-1">
-          {side === "left" ? "◂" : "▸"}
-        </button>
-      </div>
-      {children}
     </div>
   );
 }

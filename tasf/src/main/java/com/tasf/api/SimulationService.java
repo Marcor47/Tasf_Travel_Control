@@ -53,11 +53,14 @@ public class SimulationService {
     private static final int            ALNS_TIME_BUDGET_SEC = 25;
     private static final int            ALNS_MAX_ITERATIONS  = 0;
     private static final int            BROADCAST_INTERVAL_MS = 800;
-    // 📦 ÚNICO punto: tamaño máximo de un "sub-lote". Un lote más grande se parte
-    // en sub-lotes de ≤ este tamaño (IDs id-1, id-2, …) para que el planificador
-    // pueda repartirlo en VARIOS aviones (un avión solo no puede con 1000 maletas).
-    // Debe ser ≤ la capacidad típica de un vuelo para que cada sub-lote quepa.
-    private static final int            MAX_BAGS_PER_SUBLOT  = 150;
+    // 📦 División ADAPTATIVA de lotes. El tamaño de sub-lote = capacidad del avión
+    // MÁS PEQUEÑO de la red (currentBreakUnit), con un piso (SUBLOT_MIN_CHUNK) para
+    // no sobre-partir si hubiera un avión diminuto. Así: un lote que ya cabe en el
+    // avión más chico NO se parte; uno más grande se parte en trozos que SIEMPRE
+    // caben en cualquier avión. MAX_BAGS_PER_SUBLOT solo es el respaldo si aún no
+    // hay vuelos cargados. Todos son ÚNICO punto de ajuste.
+    private static final int            MAX_BAGS_PER_SUBLOT  = 150;   // respaldo sin vuelos
+    private static final int            SUBLOT_MIN_CHUNK     = 25;    // piso del sub-lote
 
     private final List<SseEmitter> emitters   = new CopyOnWriteArrayList<>();
     private final ExecutorService  executor   = Executors.newSingleThreadExecutor();
@@ -223,7 +226,25 @@ public class SimulationService {
      */
     public FeasibilityReport evaluateLot(String origin, String destination, int quantity) {
         try {
-            Map<String, Airport> airports = loadAirports();
+            // Red a evaluar: simulación en curso → contexto activo; preparación de
+            // Día a Día → lo cargado (staged); si no → dataset.
+            Map<String, Airport> airports;
+            List<FlightInstance> flights;
+            PlanningContext context;
+            if (running.get() && activeContext != null) {
+                context  = activeContext;
+                airports = context.getAirports();
+                flights  = context.getFlights();
+            } else if (!stagedAirports.isEmpty()) {
+                airports = new HashMap<>(stagedAirports);
+                flights  = new ArrayList<>(stagedFlights);
+                context  = new PlanningContext(airports, flights, ScenarioConfig.defaultWeek4());
+            } else {
+                airports = loadAirports();
+                flights  = repoFlights.loadFlights("data/planes_vuelo.txt", airports);
+                context  = new PlanningContext(airports, flights, ScenarioConfig.defaultWeek4());
+            }
+
             Airport o = airports.get(origin), d = airports.get(destination);
             if (o == null || d == null)
                 return FeasibilityReport.infeasible("Aeropuerto de origen o destino no válido");
@@ -232,15 +253,19 @@ public class SimulationService {
             if (quantity <= 0)
                 return FeasibilityReport.infeasible("La cantidad debe ser mayor que 0");
 
-            List<FlightInstance> flights = repoFlights.loadFlights("data/planes_vuelo.txt", airports);
-            PlanningContext context = new PlanningContext(airports, flights, ScenarioConfig.defaultWeek4());
-
             int     regMin        = Math.max(0, state.simulatedMinute());
             boolean sameContinent = o.getRegion().equals(d.getRegion());
             int     slaMin        = sameContinent ? 24 * 60 : 48 * 60;
 
+            // El lote grande se parte (adaptativo) en sub-lotes de ≤ unidad de
+            // corte; la viabilidad se evalúa sobre UN sub-lote (lo que de verdad
+            // sube a cada avión), no sobre el total.
+            int unit     = currentBreakUnit();
+            int subSize  = Math.min(quantity, unit);
+            int subCount = (quantity + unit - 1) / unit;
+
             BaggageLot lot = new BaggageLot("USER-EVAL", origin, destination,
-                    quantity, regMin, regMin + slaMin, false);
+                    subSize, regMin, regMin + slaMin, false);
             List<RoutePlan> candidates = new RouteEvaluator(context).enumerateCandidates(lot);
 
             int origPct = warehousePctFromState(origin);
@@ -257,14 +282,19 @@ public class SimulationService {
             path.add(best.getSegments().get(0).getOrigin());
             for (RouteSegment s : best.getSegments()) path.add(s.getDestination());
 
+            final List<FlightInstance> fFlights = flights;
             boolean capacityOk = best.getSegments().stream()
-                    .allMatch(s -> flightCapacity(flights, s.getFlightId()) >= quantity);
+                    .allMatch(s -> flightCapacity(fFlights, s.getFlightId()) >= subSize);
             double etaHours = best.getTotalTravelHours() / 60.0;
 
-            return new FeasibilityReport(capacityOk,
-                    capacityOk ? "Ruta viable encontrada"
-                               : "Ruta encontrada pero algún vuelo no tiene capacidad para "
-                                 + quantity + " maletas",
+            String reason = !capacityOk
+                    ? "Ningún vuelo de la ruta admite un sub-lote de " + subSize + " maletas"
+                    : subCount > 1
+                        ? "Ruta viable — se dividirá en " + subCount + " sub-lotes (≤ "
+                          + unit + " maletas c/u)"
+                        : "Ruta viable encontrada";
+
+            return new FeasibilityReport(capacityOk, reason,
                     sameContinent, slaMin / 60, best.transfers(),
                     Math.round(etaHours * 10) / 10.0, path, origPct, destPct);
         } catch (Exception e) {
@@ -312,26 +342,43 @@ public class SimulationService {
     }
 
     /**
-     * Parte un lote en sub-lotes de ≤ MAX_BAGS_PER_SUBLOT maletas. Si cabe entero
-     * devuelve un único lote con el ID base (sin sufijo). Si no, devuelve
-     * sub-lotes con IDs id-1, id-2, … cada uno con su porción de maletas; el
-     * planificador (ALNS) los asigna por separado, repartiéndolos entre aviones.
+     * Parte un lote de forma ADAPTATIVA en sub-lotes de ≤ currentBreakUnit()
+     * (capacidad del avión más pequeño de la red). Si el lote ya cabe en cualquier
+     * avión NO se parte (un solo lote con el ID base). Si no, devuelve sub-lotes
+     * con IDs id-1, id-2, …; el planificador (ALNS) los asigna por separado,
+     * repartiéndolos entre aviones, sin dividir más de lo necesario.
      */
     private List<BaggageLot> splitLot(String baseId, String origin, String dest,
                                       int qty, int regMin, int dueMin) {
+        int unit = currentBreakUnit();               // capacidad del avión más chico
         List<BaggageLot> out = new ArrayList<>();
-        if (qty <= MAX_BAGS_PER_SUBLOT) {
+        if (qty <= unit) {                            // ya cabe en cualquier avión → NO partir
             out.add(new BaggageLot(baseId, origin, dest, qty, regMin, dueMin, false));
             return out;
         }
-        int n = (qty + MAX_BAGS_PER_SUBLOT - 1) / MAX_BAGS_PER_SUBLOT;
+        int n = (qty + unit - 1) / unit;
         int remaining = qty;
         for (int k = 1; k <= n; k++) {
-            int chunk = Math.min(MAX_BAGS_PER_SUBLOT, remaining);
+            int chunk = Math.min(unit, remaining);
             remaining -= chunk;
             out.add(new BaggageLot(baseId + "-" + k, origin, dest, chunk, regMin, dueMin, false));
         }
         return out;
+    }
+
+    /**
+     * Tamaño de sub-lote ADAPTATIVO = capacidad del avión MÁS PEQUEÑO de la red
+     * actual (con piso SUBLOT_MIN_CHUNK). Garantiza que un sub-lote quepa en
+     * cualquier avión y evita partir lotes que ya caben. Si no hay vuelos aún,
+     * usa el respaldo MAX_BAGS_PER_SUBLOT.
+     */
+    private int currentBreakUnit() {
+        List<FlightInstance> flights = (running.get() && activeContext != null)
+                ? activeContext.getFlights() : stagedFlights;
+        int min = Integer.MAX_VALUE;
+        for (FlightInstance f : flights) min = Math.min(min, f.getCapacity());
+        if (min == Integer.MAX_VALUE) min = MAX_BAGS_PER_SUBLOT;   // sin vuelos cargados
+        return Math.max(SUBLOT_MIN_CHUNK, min);
     }
 
     private int flightCapacity(List<FlightInstance> flights, String flightId) {
