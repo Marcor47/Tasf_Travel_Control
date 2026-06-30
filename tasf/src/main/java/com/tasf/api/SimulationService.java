@@ -489,7 +489,40 @@ public synchronized SimulationState editFlight(String flightId, Integer capacity
 }
 
 
+/** Elimina un almacén. En staging lo quita por completo; en vivo lo cierra
+ *  (no se puede borrar de raíz una red en ejecución sin romper rutas ya
+ *  planificadas, así que equivale a closeAirport). */
+public synchronized SimulationState deleteAirport(String code) {
+    if (code == null) return state;
+    boolean live = running.get() && activeContext != null;
+    if (live) {
+        activeContext.closeAirport(code);
+        pendingAirportCloses.add(code.trim().toUpperCase());
+        pushAlert("eliminar", "Almacén " + code + " eliminado (cerrado en la red activa)");
+    } else {
+        stagedAirports.remove(code);
+        pushAlert("eliminar", "Almacén " + code + " eliminado");
+    }
+    return state;
+}
 
+/** Elimina un vuelo. En staging lo quita de la lista; en vivo lo cancela
+ *  (las maletas ya asignadas se replanifican como con cancelFlight). */
+public synchronized SimulationState deleteFlight(String flightId) {
+    if (flightId == null) return state;
+    boolean live = running.get() && activeContext != null;
+    List<FlightInstance> list = live ? activeContext.getFlights() : stagedFlights;
+    FlightInstance f = list.stream().filter(x -> x.getId().equals(flightId)).findFirst().orElse(null);
+    if (f == null) return state;
+    f.setCancelled(true);
+    if (live) {
+        pendingCancellations.add(flightId + "@-1");   // -1 = todas las instancias futuras
+    } else {
+        stagedFlights.remove(f);
+    }
+    pushAlert("eliminar", "Vuelo " + flightId + " eliminado");
+    return state;
+}
 
     /**
      * Carga masiva desde un archivo arrastrado (mismo formato que el dataset).
@@ -1896,7 +1929,7 @@ public ShipmentPath shipmentPath(String lotId) {
 public record EditAirportRequest(String code, Integer capacity) {}
 public record EditFlightRequest(String flightId, Integer capacity, String departureLocal, String arrivalLocal) {}
 
-
+public record DeleteFlightRequest(String flightId) {}
 
     public record UploadRequest(String type, String content, String origin) {}
 

@@ -58,6 +58,17 @@ public SimulationService.SimulationState editFlight(@RequestBody SimulationServi
         return simulationService.currentState();
     }
 
+
+@PostMapping("/deleteAirport")
+public SimulationService.SimulationState deleteAirport(@RequestBody SimulationService.CloseRequest r) {
+    return simulationService.deleteAirport(r.code());
+}
+
+@PostMapping("/deleteFlight")
+public SimulationService.SimulationState deleteFlight(@RequestBody SimulationService.DeleteFlightRequest r) {
+    return simulationService.deleteFlight(r.flightId());
+}
+
     @GetMapping(value = "/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter events() {
         return simulationService.subscribe();

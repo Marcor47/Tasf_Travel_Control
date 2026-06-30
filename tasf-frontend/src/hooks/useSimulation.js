@@ -321,6 +321,13 @@ const editFlight = useCallback(async (flightId, { capacity, departureLocal, arri
 [postJson]);
 
 
+const deleteAirport = useCallback(async (code) =>
+  postJson("deleteAirport", { code }),
+[postJson]);
+
+const deleteFlight = useCallback(async (flightId) =>
+  postJson("deleteFlight", { flightId }),
+[postJson]);
 
 
   const closeAirport = useCallback(async (code) =>
@@ -373,34 +380,35 @@ const editFlight = useCallback(async (flightId, { capacity, departureLocal, arri
     return () => clearInterval(id);
   }, [state.running, refreshPrep]);
 
-  return {
-    ...state,
-    history,
-    prepStatus,
-    resetPrep,
-    simStartMinute,
-    availableDates,
-    flights,
-    selectedDate,
-    setSelectedDate,
-    selectedNumDays,
-    setSelectedNumDays,
-    selectedStartMinute,
-    setSelectedStartMinute,
-    start,
-    stop,
-    pause,
-    resume,
-    paused,
-    cancelFlight,
-    addLot,
-    addFlight,
-    addAirport,
-    closeAirport,
-    uploadData,
-    fetchShipmentPath,
-    alerts,
-    realSeconds, // ← nuevo
-    editAirport, editFlight,
-  };
+return {
+  ...state,
+  history,
+  prepStatus,
+  resetPrep,
+  simStartMinute,
+  availableDates,
+  flights,
+  selectedDate,
+  setSelectedDate,
+  selectedNumDays,
+  setSelectedNumDays,
+  selectedStartMinute,
+  setSelectedStartMinute,
+  start,
+  stop,
+  pause,
+  resume,
+  paused,
+  cancelFlight,
+  addLot,
+  addFlight,
+  addAirport,
+  closeAirport,
+  uploadData,
+  fetchShipmentPath,
+  alerts,
+  realSeconds,
+  editAirport, editFlight,
+  deleteAirport, deleteFlight,   // ← agregar esta línea
+};
 }
