@@ -27,7 +27,7 @@ export default function RegisterLot({ simulation }) {
   // Día a Día = pizarra en blanco: se cargan datos ANTES de iniciar (staging) y
   // también en caliente mientras corre. La ingesta no aplica a periodo/colapso
   // en curso (esos usan el dataset).
-  const canIngest  = !running || mode === "diadia";
+  const canIngest  = true;
   const canAirport = canIngest;                                   // aeropuertos: base
   const canFlight  = canIngest && prep.airports > 0;              // vuelos: requieren aeropuertos
   const canAdd     = canIngest && prep.airports > 0 && prep.flights > 0; // paquetes: requieren ambos
@@ -134,7 +134,7 @@ const editableFlights = (() => {
   const [airportForm, setAirportForm] = useState({
     code: "", region: "Europa", lat: 0, lng: 0, gmtHours: 0, capacity: 400,
   });
-  const [closeCode, setCloseCode] = useState("");
+
   const [dropType,  setDropType]  = useState("planes");
   const [netMsg,    setNetMsg]    = useState(null);
 
@@ -162,10 +162,7 @@ const editableFlights = (() => {
       Number(airportForm.gmtHours) || 0, Number(airportForm.capacity) || 0);
     flash(ok ? "✓ Aeropuerto agregado" : "✕ No se pudo agregar el aeropuerto");
   };
-  const submitClose = async () => {
-    const ok = await simulation?.closeAirport(closeCode);
-    flash(ok ? `✓ Aeropuerto ${closeCode.toUpperCase()} cerrado` : "✕ No se pudo cerrar");
-  };
+
 
   // Drag-drop de archivo txt (el usuario elige el tipo). Aeropuertos en UTF-16
   // (formato del dataset), vuelos y lotes en UTF-8.
