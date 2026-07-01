@@ -280,6 +280,18 @@ const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
     return ok;
   }, [postJson, pushAlert]);
 
+  const updateAirport = useCallback(async (code, capacity, region) => {
+    const ok = await postJson("updateAirport", { code, capacity, region });
+    if (ok) pushAlert("register", `Aeropuerto ${code} actualizado (cap ${capacity})`);
+    return ok;
+  }, [postJson, pushAlert]);
+
+  const updateFlight = useCallback(async (flightId, capacity) => {
+    const ok = await postJson("updateFlight", { flightId, capacity });
+    if (ok) pushAlert("register", `Vuelo ${flightId} actualizado (cap ${capacity})`);
+    return ok;
+  }, [postJson, pushAlert]);
+
 
 
   // Pausa: el backend marca el estado con message="Pausado" mientras congela
@@ -336,7 +348,9 @@ const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
     addAirport,
     closeAirport,
     uploadData,
+    updateAirport,
+    updateFlight,
     alerts,
-    realSeconds, // ← nuevo
+    realSeconds,
   };
 }

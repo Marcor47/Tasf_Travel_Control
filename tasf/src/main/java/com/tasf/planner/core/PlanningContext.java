@@ -79,6 +79,25 @@ public class PlanningContext {
                 .add(flight);
     }
 
+    /** Reemplaza la capacidad de un vuelo existente por su ID. */
+    public boolean updateFlightCapacity(String flightId, int newCapacity) {
+        for (int i = 0; i < flights.size(); i++) {
+            FlightInstance f = flights.get(i);
+            if (f.getId().equals(flightId)) {
+                FlightInstance updated = new FlightInstance(
+                        f.getId(), f.getOrigin(), f.getDestination(),
+                        f.getDepartureHour(), f.getArrivalHour(), newCapacity, f.isCancelled());
+                flights.set(i, updated);
+                List<FlightInstance> byOrigin = flightsByOrigin.get(f.getOrigin());
+                if (byOrigin != null) {
+                    byOrigin.replaceAll(x -> x.getId().equals(flightId) ? updated : x);
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** Agrega (o reemplaza) un aeropuerto con su almacén. */
     public void addAirport(Airport airport) {
         airports.put(airport.getCode(), airport);

@@ -167,11 +167,14 @@ export default function WorldMap({
   routes = [],
   onAirportClick,        // (code) => void — clic en un aeropuerto (enfoca)
   onClearSelection,      // () => void — limpiar el foco
+  onRouteClick,          // (route) => void — clic en ruta/avión (notifica al padre)
   running = false,
   message = "",
   simulatedMinute = 0,
   activeFlightsCount = 0,
   highlightCodes = [],   // aeropuertos en foco (de clic o filtro) — controlado por el padre
+  externalSelectedRoute = null, // clave de ruta seleccionada desde el panel
+  tracedFlightIds = null,       // Set<string> de flightIds a trazar (ruta de envío)
 }) {
   useEffect(() => { injectAnimation(); }, []);
 
@@ -186,6 +189,9 @@ export default function WorldMap({
   // Ruta resaltada por clic (solo afecta al mapa). El foco de aeropuertos es
   // controlado por el padre vía highlightCodes (así también filtra las tarjetas).
   const [selectedRoute, setSelectedRoute] = useState(null);
+  // Tooltip HTML personalizado
+  const [tooltip, setTooltip] = useState(null); // { x, y, content }
+  const cursorRef = useRef({ x: 0, y: 0 });
 
   const dragStart    = useRef(null);
   const dragMoved    = useRef(false);
@@ -214,13 +220,12 @@ export default function WorldMap({
       });
   }, [running, routes]);
 
-  // Si la ruta seleccionada ya aterrizó y desapareció, se ignora (derivado).
+  // Ruta efectiva: la local (clic en mapa) tiene prioridad sobre la externa (panel).
   const activeRouteKey = useMemo(() => {
-    if (selectedRoute && allActive.some(r => routeKey(r) === selectedRoute)) {
-      return selectedRoute;
-    }
+    const candidate = selectedRoute ?? externalSelectedRoute;
+    if (candidate && allActive.some(r => routeKey(r) === candidate)) return candidate;
     return null;
-  }, [selectedRoute, allActive]);
+  }, [selectedRoute, externalSelectedRoute, allActive]);
 
   useEffect(() => {
     const el = mapRef.current;
@@ -241,6 +246,11 @@ export default function WorldMap({
   };
 
   const handleMouseMove = (e) => {
+    // Actualizar posición del cursor para el tooltip
+    const rect = mapRef.current?.getBoundingClientRect();
+    if (rect) {
+      cursorRef.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    }
     if (!dragging || !dragStart.current) return;
     const dx = (e.clientX - dragStart.current.x) / (zoom * 2);
     const dy = (e.clientY - dragStart.current.y) / (zoom * 2);
@@ -253,6 +263,11 @@ export default function WorldMap({
       dragStart.current.center[1] + dy,
     ]);
   };
+
+  const showTooltip = (content) => {
+    setTooltip({ ...cursorRef.current, content });
+  };
+  const hideTooltip = () => setTooltip(null);
 
   const handleMouseUp = () => {
     setDragging(false);
@@ -288,13 +303,19 @@ export default function WorldMap({
     : null;
   const hasFocus = focus.size > 0 || !!selRoute;
 
+  const isTraced = (r) => tracedFlightIds?.has(r.flightId || routeKey(r));
+
   const routeIsHighlighted = (r) => {
+    if (tracedFlightIds?.size > 0) return isTraced(r);
     if (selRoute) return routeKey(r) === activeRouteKey;
     if (focus.size > 0) return focus.has(r.from) || focus.has(r.to);
     return true;
   };
 
   const airportIsHighlighted = (code) => {
+    if (tracedFlightIds?.size > 0) {
+      return allActive.some(r => isTraced(r) && (r.from === code || r.to === code));
+    }
     if (selRoute) return selRoute.from === code || selRoute.to === code;
     if (focus.size === 0) return true;
     if (focus.has(code)) return true;
@@ -304,9 +325,12 @@ export default function WorldMap({
   };
 
   // Clic en una ruta (línea o avión): resaltar esa ruta y limpiar foco de aeropuerto
-  const clickRoute = (key) => {
+  const clickRoute = (key, route) => {
     onClearSelection?.();
-    setSelectedRoute(prev => (prev === key ? null : key));
+    const next = selectedRoute === key ? null : key;
+    setSelectedRoute(next);
+    if (next && route) onRouteClick?.(route);
+    else if (!next) onRouteClick?.(null);
   };
 
   // Clic en un aeropuerto: enfocar (lo gestiona el padre) y limpiar ruta
@@ -433,10 +457,11 @@ export default function WorldMap({
           const from = airportMap[r.from];
           const to   = airportMap[r.to];
           if (!from || !to) return null;
-          const hl  = routeIsHighlighted(r);
-          const key = routeKey(r);
-          const cap = r.capacity || 0;
-          const col = flightColor(r.bags, cap);
+          const hl    = routeIsHighlighted(r);
+          const traced = isTraced(r);
+          const key   = routeKey(r);
+          const cap   = r.capacity || 0;
+          const col   = traced ? "#2dd4bf" : flightColor(r.bags, cap);
           return (
             <g key={`active-${key}`}>
               {/* Corredor invisible y ancho para que la ruta sea fácil de clicar */}
@@ -444,15 +469,16 @@ export default function WorldMap({
                 from={from} to={to}
                 stroke="transparent" strokeWidth={8}
                 style={{ cursor: "pointer" }}
-                onClick={(e) => { e.stopPropagation(); clickRoute(key); }}/>
+                onClick={(e) => { e.stopPropagation(); clickRoute(key, r); }}/>
               <Line
                 from={from} to={to}
                 stroke={col}
-                strokeWidth={hasFocus && hl ? 1.8 : 1.2}
-                strokeLinecap="round" strokeDasharray="8 4"
+                strokeWidth={traced ? 2.2 : hasFocus && hl ? 1.8 : 1.2}
+                strokeLinecap="round"
+                strokeDasharray={traced ? "none" : "8 4"}
                 opacity={hl ? 1 : 0.12}
                 style={{ pointerEvents: "none" }}
-                className="route-active"/>
+                className={traced ? undefined : "route-active"}/>
             </g>
           );
         })}
@@ -461,26 +487,25 @@ export default function WorldMap({
           const from = airportMap[r.from];
           const to   = airportMap[r.to];
           if (!from || !to) return null;
-          const plane = planePosition(from, to, r, displayMinute);
-          const hl    = routeIsHighlighted(r);
-          const cap   = r.capacity || 0;
-          const load  = cap > 0 ? (r.bags || 0) / cap : 0;
-          const col   = flightColor(r.bags, cap);   // gris si vacío, si no semáforo
+          const plane  = planePosition(from, to, r, displayMinute);
+          const hl     = routeIsHighlighted(r);
+          const traced = isTraced(r);
+          const cap    = r.capacity || 0;
+          const load   = cap > 0 ? (r.bags || 0) / cap : 0;
+          const col    = traced ? "#2dd4bf" : flightColor(r.bags, cap);
+          const tipContent = `✈ ${r.flightId || ""} ${r.from}→${r.to}\n${(r.bags || 0).toLocaleString()}/${cap.toLocaleString()} maletas${cap > 0 ? ` · ${Math.round(load * 100)}% ocupado` : ""}`;
           return (
             <Marker
               key={`plane-${routeKey(r)}`}
               coordinates={plane.coordinates}
-              onClick={(e) => { e.stopPropagation(); clickRoute(routeKey(r)); }}>
-              {/* Tooltip nativo al pasar el ratón: ruta y carga/capacidad */}
-              <title>
-                {r.from}→{r.to} · {(r.bags || 0).toLocaleString()}/{cap.toLocaleString()} maletas
-                {cap > 0 ? ` (${Math.round(load * 100)}%)` : ""}
-              </title>
+              onMouseEnter={() => showTooltip(tipContent)}
+              onMouseMove={() => setTooltip(t => t ? { ...cursorRef.current, content: t.content } : null)}
+              onMouseLeave={hideTooltip}
+              onClick={(e) => { e.stopPropagation(); hideTooltip(); clickRoute(routeKey(r), r); }}>
               <g transform={`rotate(${plane.angle})`}
                  className="route-plane"
                  opacity={hl ? 1 : 0.15}
                  style={{ cursor: "pointer" }}>
-                {/* Fuselaje */}
                 <path d="M 10 0 L -6 -1.5 L -8 0 L -6 1.5 Z"
                       fill={col} stroke={col} strokeWidth={0.4}/>
                 <path d="M 2 -1 L -3 -8 L -6 -7 L -3 -1 Z"
@@ -499,23 +524,24 @@ export default function WorldMap({
         {/* Aeropuertos/almacenes: icono tipo bodega (cajón con techo y puerta)
             coloreado con el semáforo de ocupación; verde casi vacío → rojo lleno. */}
         {shownAirports.map(a => {
-          const pct   = Math.min(1, (a.current || 0) / Math.max(1, a.capacity || 1));
-          const col   = loadColor(pct);
-          const hl    = airportIsHighlighted(a.code);
-          const isSel = focus.has(a.code);
-          const s     = isSel ? 5.5 : 4.5;          // medio tamaño del cajón
+          const pct    = Math.min(1, (a.current || 0) / Math.max(1, a.capacity || 1));
+          const col    = loadColor(pct);
+          const hl     = airportIsHighlighted(a.code);
+          const isSel  = focus.has(a.code);
+          const s      = isSel ? 5.5 : 4.5;
+          const pctTxt = a.capacity ? ` · ${Math.round(pct * 100)}%` : "";
+          const tipContent = `🏭 ${a.code}${a.name ? ` — ${a.name}` : ""}\nAlmacén: ${(a.current || 0).toLocaleString()}/${(a.capacity || 0).toLocaleString()} unidades${pctTxt}${pct > 1 ? " ⚠ SOBRECAPACIDAD" : ""}`;
           return (
             <Marker key={a.code}
               coordinates={[a.lng, a.lat]}
+              onMouseEnter={() => showTooltip(tipContent)}
+              onMouseMove={() => setTooltip(t => t ? { ...cursorRef.current, content: t.content } : null)}
+              onMouseLeave={hideTooltip}
               onClick={(e) => {
                 e.stopPropagation();
+                hideTooltip();
                 clickAirport(a.code);
               }}>
-              <title>
-                {a.code}{a.name ? ` · ${a.name}` : ""} — almacén{" "}
-                {(a.current || 0).toLocaleString()}/{(a.capacity || 0).toLocaleString()}
-                {a.capacity ? ` (${Math.round(pct * 100)}%)` : ""}
-              </title>
               <g opacity={hl ? 1 : 0.25} style={{ cursor: "pointer" }}>
                 {/* techo */}
                 <polygon points={`${-s},${-s * 0.2} 0,${-s} ${s},${-s * 0.2}`}
@@ -539,10 +565,54 @@ export default function WorldMap({
                 }}>
                 {a.code}
               </text>
+              {/* Etiqueta de ocupación fija (siempre visible si zoom > 2) */}
+              {zoom > 2 && a.capacity > 0 && (
+                <text textAnchor="middle" y={s + 7}
+                  opacity={hl ? 0.85 : 0.2}
+                  style={{
+                    fontSize: Math.max(4, 5.5 / Math.sqrt(zoom)),
+                    fill: col,
+                    fontFamily: "monospace",
+                    pointerEvents: "none",
+                    fontWeight: "bold",
+                  }}>
+                  {Math.round(pct * 100)}%
+                </text>
+              )}
             </Marker>
           );
         })}
       </ComposableMap>
+
+      {/* Tooltip HTML personalizado — se posiciona cerca del cursor */}
+      {tooltip && (
+        <div
+          style={{
+            position: "absolute",
+            left: Math.min(tooltip.x + 14, (mapRef.current?.offsetWidth ?? 300) - 180),
+            top: Math.max(4, tooltip.y - 60),
+            pointerEvents: "none",
+            zIndex: 50,
+            background: "rgba(2,16,32,0.96)",
+            border: "1px solid rgba(45,212,191,0.35)",
+            borderRadius: 6,
+            padding: "6px 10px",
+            minWidth: 160,
+            maxWidth: 220,
+            boxShadow: "0 2px 12px rgba(0,0,0,0.6)",
+          }}>
+          {tooltip.content.split("\n").map((line, i) => (
+            <p key={i} style={{
+              margin: 0, padding: 0,
+              fontSize: i === 0 ? 11 : 10,
+              fontWeight: i === 0 ? "bold" : "normal",
+              color: i === 0 ? "#2dd4bf" : "#9ca3af",
+              lineHeight: "1.5",
+              fontFamily: "monospace",
+            }}>{line}</p>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -102,6 +102,19 @@ public class SimulationController {
         return simulationService.closeAirport(r.code());
     }
 
+    @PostMapping("/updateAirport")
+    public SimulationService.SimulationState updateAirport(
+            @RequestBody SimulationService.UpdateAirportRequest r) {
+        return simulationService.updateAirport(r.code(), r.capacity(), r.region());
+    }
+
+    @PostMapping("/updateFlight")
+    public SimulationService.SimulationState updateFlight(
+            @RequestBody SimulationService.UpdateFlightRequest r) {
+        return simulationService.updateFlightCapacity(r.flightId(),
+                r.capacity() == null ? 0 : r.capacity());
+    }
+
     @PostMapping("/uploadData")
     public SimulationService.SimulationState uploadData(
             @RequestBody SimulationService.UploadRequest r) {

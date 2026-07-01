@@ -56,6 +56,8 @@ export default function Dashboard({
   const [storageFilter, setStorageFilter] = useState("");
   // Aeropuerto enfocado por clic (mapa o tarjeta de almacenes)
   const [selectedAirport, setSelectedAirport] = useState(null);
+  // Vuelo seleccionado (panel ↔ mapa bidireccional)
+  const [selectedFlightKey, setSelectedFlightKey] = useState(null);
   // Paneles laterales colapsables — al inicio ambos cerrados para ver el mapa
   const [leftOpen,  setLeftOpen]  = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
@@ -97,9 +99,30 @@ export default function Dashboard({
   const handleFilterChange = (v) => { setStorageFilter(v); setSelectedAirport(null); };
   const handleAirportClick = (code) => {
     setStorageFilter("");
+    setSelectedFlightKey(null);
     setSelectedAirport(prev => (prev === code ? null : code));
   };
-  const clearFocus = () => { setStorageFilter(""); setSelectedAirport(null); };
+  const clearFocus = () => {
+    setStorageFilter("");
+    setSelectedAirport(null);
+    setSelectedFlightKey(null);
+  };
+
+  // Clic en vuelo del panel → resaltar en el mapa (y abrir panel izq. si estaba cerrado)
+  const handleFlightClick = (key) => {
+    setSelectedFlightKey(key);
+    setSelectedAirport(null);
+    setStorageFilter("");
+    if (key && !leftOpen) setLeftOpen(true);
+  };
+
+  // Clic en ruta del mapa → resaltar en panel de vuelos (y abrir panel izq.)
+  const handleRouteClick = (route) => {
+    if (!route) { setSelectedFlightKey(null); return; }
+    const key = route.flightId || `${route.from}-${route.to}-${route.departureMinute ?? 0}`;
+    setSelectedFlightKey(key);
+    if (!leftOpen) setLeftOpen(true);
+  };
 
 
 
@@ -138,12 +161,22 @@ export default function Dashboard({
             running={running}
             simulatedNow={simulatedNow}
             focusCodes={focusCodes}
+            onFocusFlight={(key) => {
+              handleFlightClick(key);
+              if (!leftOpen) setLeftOpen(true);
+            }}
+            onFocusAirport={(code) => {
+              handleAirportClick(code);
+              if (!rightOpen) setRightOpen(true);
+            }}
           />
           <FlightsCapacity
             routes={simulation?.routes ?? []}
             upcoming={simulation?.upcomingFlights ?? []}
             focusCodes={focusCodes}
-            running={running} />
+            running={running}
+            selectedFlightKey={selectedFlightKey}
+            onFlightClick={handleFlightClick} />
         </SidePanel>
 
         {/* Mapa central */}
@@ -157,7 +190,9 @@ export default function Dashboard({
           activeFlightsCount={kpis?.activeFlights ?? 0}
           highlightCodes={focusCodes}
           onAirportClick={handleAirportClick}
-          onClearSelection={clearFocus}/>
+          onClearSelection={clearFocus}
+          onRouteClick={handleRouteClick}
+          externalSelectedRoute={selectedFlightKey}/>
 
           {/* ── Configuración: ventana flotante colapsable sobre el mapa ───── */}
           <div className="absolute left-2 top-11 z-20 bg-[#031525]/95 border border-teal/20

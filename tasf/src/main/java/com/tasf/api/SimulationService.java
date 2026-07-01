@@ -301,6 +301,34 @@ public class SimulationService {
         return state;
     }
 
+    /** Actualiza la capacidad y/o región de un aeropuerto existente. */
+    public synchronized SimulationState updateAirport(String code, Integer newCapacity, String newRegion) {
+        PlanningContext ctx = activeContext;
+        if (ctx == null || code == null) return state;
+        String upper = code.trim().toUpperCase();
+        Airport existing = ctx.getAirports().get(upper);
+        if (existing == null) return state;
+        int    cap    = (newCapacity != null && newCapacity > 0) ? newCapacity : existing.getWarehouseCapacity();
+        String region = (newRegion   != null && !newRegion.isBlank())   ? newRegion   : existing.getRegion();
+        ctx.addAirport(new Airport(upper, region, cap, existing.getGmtOffset(),
+                                   existing.getLatitude(), existing.getLongitude()));
+        return state;
+    }
+
+    /** Actualiza la capacidad de un vuelo (UT) existente. */
+    public synchronized SimulationState updateFlightCapacity(String flightId, int newCapacity) {
+        PlanningContext ctx = activeContext;
+        if (ctx == null || flightId == null || newCapacity <= 0) return state;
+        boolean ok = ctx.updateFlightCapacity(flightId.trim(), newCapacity);
+        if (ok) {
+            // Actualizar también el índice de capacidad usado en los broadcasts
+            Map<String, Integer> mutable = new java.util.HashMap<>(flightCapacityById);
+            mutable.put(flightId.trim(), newCapacity);
+            flightCapacityById = Map.copyOf(mutable);
+        }
+        return state;
+    }
+
     /**
      * Carga masiva desde un archivo arrastrado (mismo formato que el dataset).
      * type = "planes" | "airports" | "lots". Para lots, `origin` es el código
@@ -1345,6 +1373,10 @@ public class SimulationService {
 
     public record AirportRequest(String code, String region, Double lat, Double lng,
                                  Integer gmtHours, Integer capacity) {}
+
+    public record UpdateAirportRequest(String code, Integer capacity, String region) {}
+
+    public record UpdateFlightRequest(String flightId, Integer capacity) {}
 
     public record CloseRequest(String code) {}
 

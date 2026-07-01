@@ -34,6 +34,15 @@ export default function RegisterLot({ simulation }) {
   const [dropType,  setDropType]  = useState("planes");
   const [netMsg,    setNetMsg]    = useState(null);
 
+  // Edición de aeropuerto existente
+  const [editAirportCode, setEditAirportCode]         = useState("");
+  const [editAirportCapacity, setEditAirportCapacity] = useState("");
+  const [editAirportRegion, setEditAirportRegion]     = useState("");
+
+  // Edición de vuelo/UT existente
+  const [editFlightId,       setEditFlightId]       = useState("");
+  const [editFlightCapacity, setEditFlightCapacity] = useState("");
+
   const handle = e => {
     setForm(f => ({ ...f, [e.target.name]: e.target.value }));
     setReport(null);
@@ -61,6 +70,29 @@ export default function RegisterLot({ simulation }) {
   const submitClose = async () => {
     const ok = await simulation?.closeAirport(closeCode);
     flash(ok ? `✓ Aeropuerto ${closeCode.toUpperCase()} cerrado` : "✕ No se pudo cerrar");
+  };
+
+  const submitUpdateAirport = async () => {
+    if (!editAirportCode) return;
+    const cap = Number(editAirportCapacity) || undefined;
+    const ok = await simulation?.updateAirport(editAirportCode, cap || null, editAirportRegion || null);
+    flash(ok ? `✓ Aeropuerto ${editAirportCode.toUpperCase()} actualizado` : "✕ No se pudo actualizar");
+  };
+
+  const submitUpdateFlight = async () => {
+    if (!editFlightId || !editFlightCapacity) return;
+    const ok = await simulation?.updateFlight(editFlightId, Number(editFlightCapacity));
+    flash(ok ? `✓ Vuelo ${editFlightId} actualizado` : "✕ No se pudo actualizar");
+  };
+
+  // Poblar formulario de edición al seleccionar aeropuerto
+  const onSelectEditAirport = (code) => {
+    setEditAirportCode(code);
+    const ap = airports.find(a => a.code === code);
+    if (ap) {
+      setEditAirportCapacity(ap.capacity ? String(ap.capacity) : "");
+      setEditAirportRegion(ap.region || "");
+    }
   };
 
   // Drag-drop de archivo txt (el usuario elige el tipo). Aeropuertos en UTF-16
@@ -314,8 +346,171 @@ export default function RegisterLot({ simulation }) {
         </div>
       </div>
 
+      {/* ── Mantenimiento de atributos (aeropuertos y UT) ─────────────────── */}
+      <h2 className="text-teal font-bold text-lg mt-6 mb-1">MANTENIMIENTO DE ATRIBUTOS</h2>
+      <p className="text-gray-500 text-xs mb-3">
+        Actualiza capacidad y región de almacenes de paso y unidades de transporte (UT).
+        {netMsg && <span className="text-teal ml-2">{netMsg}</span>}
+      </p>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+
+        {/* Editar atributos de almacén/aeropuerto */}
+        <div className="bg-[#031525] border border-teal/20 rounded p-3">
+          <p className="text-teal text-xs font-bold uppercase mb-2">
+            Editar Almacén de Paso (Aeropuerto)
+          </p>
+          <p className="text-gray-600 text-[10px] mb-2">
+            Selecciona un aeropuerto existente y actualiza su capacidad o región.
+          </p>
+          <div className="grid grid-cols-1 gap-2 mb-2">
+            <select
+              value={editAirportCode}
+              onChange={e => onSelectEditAirport(e.target.value)}
+              className="bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300">
+              <option value="">Seleccionar aeropuerto…</option>
+              {airports.map(a => (
+                <option key={a.code} value={a.code}>
+                  {a.code} — {a.name || a.region || a.code}{a.capacity ? ` (cap: ${a.capacity})` : ""}
+                </option>
+              ))}
+            </select>
+            {editAirportCode && (
+              <>
+                <label className="text-gray-500 text-[10px]">
+                  Nueva capacidad del almacén
+                  <input
+                    type="number" min="1" value={editAirportCapacity}
+                    onChange={e => setEditAirportCapacity(e.target.value)}
+                    placeholder="Ej: 500"
+                    className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1
+                               text-xs text-gray-300 mt-0.5"/>
+                </label>
+                <label className="text-gray-500 text-[10px]">
+                  Región (opcional)
+                  <input
+                    type="text" value={editAirportRegion}
+                    onChange={e => setEditAirportRegion(e.target.value)}
+                    placeholder="Ej: América del Sur"
+                    className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1
+                               text-xs text-gray-300 mt-0.5"/>
+                </label>
+              </>
+            )}
+          </div>
+          <button
+            onClick={submitUpdateAirport}
+            disabled={!editAirportCode || !editAirportCapacity}
+            className="w-full bg-teal hover:bg-teal/80 text-white text-xs py-1.5 rounded
+                       transition disabled:opacity-40 disabled:cursor-not-allowed">
+            Actualizar Almacén
+          </button>
+        </div>
+
+        {/* Editar atributos de UT (vuelo) */}
+        <div className="bg-[#031525] border border-teal/20 rounded p-3">
+          <p className="text-teal text-xs font-bold uppercase mb-2">
+            Editar Unidad de Transporte (UT / Vuelo)
+          </p>
+          <p className="text-gray-600 text-[10px] mb-2">
+            Selecciona un vuelo y actualiza su capacidad de carga.
+          </p>
+          <div className="grid grid-cols-1 gap-2 mb-2">
+            <select
+              value={editFlightId}
+              onChange={e => {
+                setEditFlightId(e.target.value);
+                const f = simulation?.flights?.find(fl => fl.id === e.target.value);
+                if (f) setEditFlightCapacity(String(f.capacity));
+              }}
+              className="bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300">
+              <option value="">Seleccionar vuelo (UT)…</option>
+              {(simulation?.flights ?? []).map(f => (
+                <option key={f.id} value={f.id}>
+                  {f.id} — {f.origin}→{f.destination} · sal. {(f.departureClock || "").split("  ")[1] || ""} · cap {f.capacity}
+                </option>
+              ))}
+            </select>
+            {editFlightId && (
+              <label className="text-gray-500 text-[10px]">
+                Nueva capacidad (maletas)
+                <input
+                  type="number" min="1" value={editFlightCapacity}
+                  onChange={e => setEditFlightCapacity(e.target.value)}
+                  placeholder="Ej: 350"
+                  className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1
+                             text-xs text-gray-300 mt-0.5"/>
+              </label>
+            )}
+          </div>
+          <button
+            onClick={submitUpdateFlight}
+            disabled={!editFlightId || !editFlightCapacity}
+            className="w-full bg-teal hover:bg-teal/80 text-white text-xs py-1.5 rounded
+                       transition disabled:opacity-40 disabled:cursor-not-allowed">
+            Actualizar UT
+          </button>
+        </div>
+      </div>
+
+      {/* ── Tramos configurados (listado de vuelos = tramos) ─────────────── */}
+      <h2 className="text-teal font-bold text-lg mt-2 mb-1">TRAMOS / RUTAS DE UT</h2>
+      <p className="text-gray-500 text-xs mb-3">
+        Los tramos son los vuelos configurados en la red. Cada tramo define origen, destino
+        y horarios de la unidad de transporte.
+        {netMsg && <span className="text-teal ml-2">{netMsg}</span>}
+      </p>
+      <div className="bg-[#031525] border border-teal/20 rounded p-3 mb-6 overflow-x-auto">
+        <p className="text-teal text-xs font-bold uppercase mb-2">
+          Tramos configurados
+          {simulation?.flights?.length > 0 && (
+            <span className="text-gray-500 normal-case ml-1">({simulation.flights.length})</span>
+          )}
+        </p>
+        {(simulation?.flights ?? []).length === 0 ? (
+          <p className="text-gray-600 text-[10px] py-2">
+            Sin vuelos cargados. Inicia la simulación o agrega vuelos abajo.
+          </p>
+        ) : (
+          <table className="w-full text-[10px]">
+            <thead>
+              <tr className="text-gray-500 border-b border-white/10">
+                <th className="text-left py-1 pr-2">ID</th>
+                <th className="text-left py-1 pr-2">Origen</th>
+                <th className="text-left py-1 pr-2">Destino</th>
+                <th className="text-left py-1 pr-2">Salida</th>
+                <th className="text-left py-1 pr-2">Llegada</th>
+                <th className="text-right py-1">Cap.</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(simulation?.flights ?? []).slice(0, 50).map(f => (
+                <tr key={f.id} className="border-b border-white/5 hover:bg-white/5 cursor-pointer"
+                    onClick={() => { setEditFlightId(f.id); setEditFlightCapacity(String(f.capacity)); }}
+                    title="Clic para editar este tramo">
+                  <td className="py-1 pr-2 text-teal font-mono">{f.id}</td>
+                  <td className="py-1 pr-2 text-gray-300">{f.origin}</td>
+                  <td className="py-1 pr-2 text-gray-300">{f.destination}</td>
+                  <td className="py-1 pr-2 text-gray-400 font-mono">
+                    {(f.departureClock || "").split("  ")[1] || f.departureClock}
+                  </td>
+                  <td className="py-1 pr-2 text-gray-400 font-mono">
+                    {(f.arrivalClock || "").split("  ")[1] || f.arrivalClock}
+                  </td>
+                  <td className="py-1 text-right text-gray-300">{f.capacity}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {(simulation?.flights ?? []).length > 50 && (
+          <p className="text-gray-600 text-[9px] mt-1">
+            Mostrando 50 de {simulation.flights.length} tramos.
+          </p>
+        )}
+      </div>
+
       {/* ── Edición de la red (vuelos / aeropuertos / carga de archivos) ───── */}
-      <h2 className="text-teal font-bold text-lg mt-6 mb-1">RED Y CARGA DE DATOS</h2>
+      <h2 className="text-teal font-bold text-lg mt-2 mb-1">AGREGAR A LA RED</h2>
       <p className="text-gray-500 text-xs mb-3">
         Agrega vuelos y aeropuertos, cierra aeropuertos o carga archivos txt
         (mismo formato del dataset) sobre la simulación en curso.

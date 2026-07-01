@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useEffect, useRef } from "react";
 import { getWarehouseColor } from "../../hooks/useStatusColor";
 
 // Minuto absoluto → "HH:MM" del día (igual que el backend para casar capacidades)
@@ -17,7 +17,12 @@ function hhmm(minute) {
  * origen-destino-hora de salida. Las maletas se suman por vuelo (un mismo vuelo
  * puede llevar varios grupos de lotes).
  */
-export default function FlightsCapacity({ routes = [], upcoming = [], running = false, focusCodes = [] }) {
+export default function FlightsCapacity({
+  routes = [], upcoming = [], running = false, focusCodes = [],
+  selectedFlightKey = null, // clave de vuelo resaltado externamente (desde el mapa)
+  onFlightClick,            // (flightKey) => void — usuario clicó un vuelo en el panel
+}) {
+  const selectedRowRef = useRef(null);
   // Cada ruta activa del backend ya es un vuelo con su capacidad y carga total.
   // Si hay un aeropuerto en foco, mostrar solo los vuelos que entran o salen.
   const activeFlights = useMemo(() => {
@@ -36,6 +41,13 @@ export default function FlightsCapacity({ routes = [], upcoming = [], running = 
       })
       .sort((a, b) => (b.pct ?? -1) - (a.pct ?? -1));
   }, [routes, focusCodes]);
+
+  // Desplazar automáticamente hacia el vuelo seleccionado externamente
+  useEffect(() => {
+    if (selectedFlightKey && selectedRowRef.current) {
+      selectedRowRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }, [selectedFlightKey]);
 
   // Vuelos PLANIFICADOS próximos (aún no despegan) con maletas asignadas —
   // el registro de lo que el sistema planea. Respeta el foco de aeropuertos.
@@ -73,21 +85,30 @@ export default function FlightsCapacity({ routes = [], upcoming = [], running = 
         <div className="flex flex-col gap-2 max-h-72 overflow-y-auto">
           {activeFlights.map(f => {
             const pct      = f.pct;
-            const empty    = (f.bags || 0) === 0;        // vuelo programado sin maletas
+            const empty    = (f.bags || 0) === 0;
             const clamp    = pct == null ? 0 : Math.min(100, pct);
             const color    = empty || pct == null ? null : getWarehouseColor(pct);
             const barColor = color === "green" ? "bg-green-500"
                            : color === "amber" ? "bg-yellow-500"
                            : color === "red"   ? "bg-red-500"
-                           : "bg-gray-600";       // gris = vacío
+                           : "bg-gray-600";
             const txtColor = color === "green" ? "text-green-400"
                            : color === "amber" ? "text-yellow-400"
                            : color === "red"   ? "text-red-400"
                            : "text-gray-400";
+            const isSelected = selectedFlightKey === f.key;
             return (
-              <div key={f.key}>
+              <div key={f.key}
+                ref={isSelected ? selectedRowRef : null}
+                onClick={() => onFlightClick?.(isSelected ? null : f.key)}
+                title="Clic para resaltar en el mapa"
+                className={`rounded px-1 py-0.5 cursor-pointer transition
+                  ${isSelected
+                    ? "bg-teal/15 border border-teal/40"
+                    : "hover:bg-white/5 border border-transparent"}`}>
                 <div className="flex justify-between items-center mb-0.5">
                   <span className="text-gray-300 truncate">
+                    {isSelected && <span className="text-teal mr-1">▶</span>}
                     <span className="text-teal">{f.from}</span>
                     <span className="text-gray-600 mx-1">→</span>
                     <span className="text-gray-200">{f.to}</span>

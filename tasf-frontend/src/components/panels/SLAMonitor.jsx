@@ -133,6 +133,8 @@ export default function SLAMonitor({
   message = "",
   simulatedMinute = 0,
   focusCodes = [],
+  onFocusFlight,   // (flightKey) => void — resaltar vuelo en mapa
+  onFocusAirport,  // (code) => void — enfocar aeropuerto en mapa
 }) {
   const [filterText, setFilterText] = useState("");
 
@@ -219,33 +221,62 @@ export default function SLAMonitor({
             <tr className="text-gray-500 border-b border-white/10">
               <th className="text-left py-1">Paquete / Ruta</th>
               <th className="text-center py-1">Maletas</th>
-              <th className="text-left py-1">Tipo SLA</th>
               <th className="text-left py-1">Estado</th>
+              <th className="text-center py-1">Mapa</th>
             </tr>
           </thead>
           <tbody>
             {recentEvents.length > 0 ? (
-              recentEvents.map((event, idx) => (
-                <tr key={`sla-${getPackageId(event)}-${idx}`}
-                    className="border-b border-white/5">
-                  <td className="py-1.5 text-gray-300">
-                    <span className="text-teal font-mono font-bold text-[10px]">
-                      {getPackageId(event)}
-                    </span>
-                    <br/>
-                    <span className="text-gray-500">{event.from} → {event.to}</span>
-                  </td>
-                  <td className="py-1.5 text-center text-gray-300 font-bold text-[10px]">
-                    {event.bags || 1}
-                  </td>
-                  <td className="py-1.5 text-gray-500 text-[10px]">
-                    {slaTypeLabel(event.slaLimitMinutes)}
-                  </td>
-                  <td className="py-1.5">
-                    <SLAStatusBadge event={event} simulatedMinute={simulatedMinute} />
-                  </td>
-                </tr>
-              ))
+              recentEvents.map((event, idx) => {
+                const flightKey = event.flightId || `${event.from}-${event.to}`;
+                return (
+                  <tr key={`sla-${getPackageId(event)}-${idx}`}
+                      className="border-b border-white/5">
+                    <td className="py-1.5 text-gray-300">
+                      <span className="text-teal font-mono font-bold text-[10px]">
+                        {getPackageId(event)}
+                      </span>
+                      <br/>
+                      <span className="text-gray-500 text-[10px]">
+                        {event.from} → {event.to}
+                      </span>
+                      <br/>
+                      <span className="text-gray-600 text-[9px]">
+                        {slaTypeLabel(event.slaLimitMinutes)}
+                      </span>
+                    </td>
+                    <td className="py-1.5 text-center text-gray-300 font-bold text-[10px]">
+                      {event.bags || 1}
+                    </td>
+                    <td className="py-1.5">
+                      <SLAStatusBadge event={event} simulatedMinute={simulatedMinute} />
+                    </td>
+                    <td className="py-1.5 text-center">
+                      <div className="flex flex-col gap-0.5 items-center">
+                        {event.flightId && (
+                          <button
+                            onClick={() => onFocusFlight?.(flightKey)}
+                            title={`Ver vuelo ${event.flightId} en mapa`}
+                            className="text-[9px] px-1.5 py-0.5 rounded bg-teal/10
+                                       border border-teal/30 text-teal hover:bg-teal/25
+                                       transition leading-tight whitespace-nowrap">
+                            ✈ UT
+                          </button>
+                        )}
+                        <button
+                          onClick={() => onFocusAirport?.(event.to)}
+                          title={`Enfocar ${event.to} en mapa`}
+                          className="text-[9px] px-1.5 py-0.5 rounded bg-blue-900/30
+                                     border border-blue-700/30 text-blue-400
+                                     hover:bg-blue-800/50 transition leading-tight
+                                     whitespace-nowrap">
+                          🏭 {event.to}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })
             ) : (
               <tr>
                 <td colSpan={4} className="py-4 text-center text-gray-600 text-[10px]">
