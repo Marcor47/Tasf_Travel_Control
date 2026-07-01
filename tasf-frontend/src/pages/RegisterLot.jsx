@@ -97,13 +97,16 @@ const buildEditableFlights = () => {
   return [...map.values()];
 };
 
-// Snapshot ESTÁTICO: solo se recalcula al montar o al pulsar "Actualizar".
-// Así la lista no salta/reordena en cada tick de la simulación mientras el
-// usuario busca o decide qué editar/eliminar.
+const hasData = (simulation?.upcomingFlights?.length ?? 0) > 0
+             || (simulation?.routes?.length ?? 0) > 0
+             || (simulation?.flights?.length ?? 0) > 0;
+
 useEffect(() => {
-  setFlightListSnapshot(buildEditableFlights());
+  if (hasData && flightListSnapshot.length === 0) {
+    setFlightListSnapshot(buildEditableFlights());
+  }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-}, []);
+}, [hasData]);
 
 const refreshFlightList = () => setFlightListSnapshot(buildEditableFlights());
 
