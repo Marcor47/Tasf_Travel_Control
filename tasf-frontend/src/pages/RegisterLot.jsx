@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { STATIC_AIRPORTS, AIRPORT_META, airportName } from "../data/staticAirports";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "";
@@ -21,21 +21,35 @@ const findRangeForRegion = (region) => {
 
 export default function RegisterLot({ simulation }) {
   const running = simulation?.running ?? false;
+const mode    = simulation?.mode ?? "diadia";
   const prep    = simulation?.prepStatus ?? { airports: 0, flights: 0, lots: 0, ready: false };
 
   // Día a Día = pizarra en blanco: se cargan datos ANTES de iniciar (staging) y
   // también en caliente mientras corre. La ingesta no aplica a periodo/colapso
   // en curso (esos usan el dataset).
   const canIngest  = true;
-  const canAirport = canIngest;                                   // aeropuertos: base
-  const canFlight  = canIngest && prep.airports > 0;              // vuelos: requieren aeropuertos
-  const canAdd     = canIngest && prep.airports > 0 && prep.flights > 0; // paquetes: requieren ambos
+const liveHasAirports = (simulation?.airports?.length ?? 0) > 0;
+const liveHasFlights  = ((simulation?.upcomingFlights?.length ?? 0)
+                       + (simulation?.routes?.length ?? 0)) > 0;
+const hasAirports = (running && mode !== "diadia") ? liveHasAirports : prep.airports > 0;
+const hasFlights  = (running && mode !== "diadia") ? liveHasFlights  : prep.flights  > 0;
+const canAirport = true;
+const canFlight  = hasAirports;
+const canAdd     = hasAirports && hasFlights;
 
   // Aeropuertos para los selectores: datos en vivo si hay, si no los del dataset
-  const airports = (simulation?.airports?.length
-    ? simulation.airports
-    : STATIC_AIRPORTS
-  ).slice().sort((a, b) => a.code.localeCompare(b.code));
+  const airports = useMemo(() => {
+  if (simulation?.airports?.length) {
+    return [...simulation.airports].sort((a, b) => a.code.localeCompare(b.code));
+  }
+  const stagedList = prep.airportList ?? [];
+  if (stagedList.length > 0) {
+    const stagedCodes = new Set(stagedList.map(a => a.code));
+    const staticOnly  = STATIC_AIRPORTS.filter(a => !stagedCodes.has(a.code));
+    return [...stagedList, ...staticOnly].sort((a, b) => a.code.localeCompare(b.code));
+  }
+  return STATIC_AIRPORTS.slice().sort((a, b) => a.code.localeCompare(b.code));
+}, [simulation?.airports, prep.airportList]);
 
   const [form, setForm] = useState({
     origin: "", destination: "", client: "", quantity: 150,
@@ -73,6 +87,19 @@ const flashEdit = (text) => { setEditMsg(text); setTimeout(() => setEditMsg(null
 // (IDs U1, U2…) — y de respaldo el dataset estático (simulation.flights).
 const buildEditableFlights = () => {
   const map = new Map();
+  
+for (const f of (prep.flightList ?? [])) {
+  if (!map.has(f.id)) {
+    const hh = String(Math.floor(f.departureHour / 60)).padStart(2, "0");
+    const mm = String(f.departureHour % 60).padStart(2, "0");
+    map.set(f.id, {
+      id: f.id, origin: f.origin, destination: f.destination,
+      departureMinute: f.departureHour,
+      departureClock: `${hh}:${mm}`,
+    });
+  }
+}
+
   for (const u of (simulation?.upcomingFlights ?? [])) {
     map.set(u.flightId, {
       id: u.flightId, origin: u.origin, destination: u.destination,

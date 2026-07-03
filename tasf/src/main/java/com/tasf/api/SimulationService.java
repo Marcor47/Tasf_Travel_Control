@@ -467,6 +467,18 @@ public synchronized SimulationState editAirport(String code, Integer capacity,
     boolean live = running.get() && activeContext != null;
     Map<String, Airport> ap = live ? activeContext.getAirports() : stagedAirports;
     Airport existing = ap.get(code);
+    // Si no está en staging, clonar del dataset para que el edit se aplique al iniciar
+    if (existing == null && !live) {
+        try {
+            Airport fromDataset = loadAirports().get(code);
+            if (fromDataset == null) return state;
+            Airport clone = new Airport(fromDataset.getCode(), fromDataset.getRegion(),
+                fromDataset.getWarehouseCapacity(), fromDataset.getGmtOffset(),
+                fromDataset.getLatitude(), fromDataset.getLongitude());
+            stagedAirports.put(code, clone);
+            existing = clone;
+        } catch (Exception ignored) { return state; }
+    }
     if (existing == null) return state;
     // Mutar el objeto EN SITIO (no reemplazar la entrada del mapa): así el
     // cambio es visible sin importar si PlanningContext mantiene una copia
@@ -500,6 +512,20 @@ public synchronized SimulationState editFlight(String flightId, Integer capacity
     boolean live = running.get() && activeContext != null;
     List<FlightInstance> list = live ? activeContext.getFlights() : stagedFlights;
     FlightInstance f = list.stream().filter(x -> x.getId().equals(flightId)).findFirst().orElse(null);
+    // Si no está en staging, clonar del dataset para que el edit se aplique al iniciar
+    if (f == null && !live) {
+        try {
+            Map<String, Airport> aps = loadAirports();
+            FlightInstance fromDataset = repoFlights.loadFlights("data/planes_vuelo.txt", aps)
+                .stream().filter(x -> x.getId().equals(flightId)).findFirst().orElse(null);
+            if (fromDataset == null) return state;
+            FlightInstance clone = new FlightInstance(fromDataset.getId(), fromDataset.getOrigin(),
+                fromDataset.getDestination(), fromDataset.getDepartureHour(),
+                fromDataset.getArrivalHour(), fromDataset.getCapacity(), false);
+            stagedFlights.add(clone);
+            f = clone;
+        } catch (Exception ignored) { return state; }
+    }
     if (f == null) return state;
     Map<String, Airport> ap = live ? activeContext.getAirports() : stagedAirports;
 
@@ -705,9 +731,38 @@ public synchronized SimulationState deleteFlight(String flightId) {
             return;
         }
         try {
-            // 1. Cargar datos
-            Map<String, Airport> airports = loadAirports();
-            List<FlightInstance> flights  = repoFlights.loadFlights("data/planes_vuelo.txt", airports);
+            // 1. Cargar datos — copiar aeropuertos para no mutar el caché entre runs
+            Map<String, Airport> airports = new HashMap<>();
+            for (Map.Entry<String, Airport> e : loadAirports().entrySet()) {
+                Airport a = e.getValue();
+                airports.put(e.getKey(), new Airport(a.getCode(), a.getRegion(),
+                    a.getWarehouseCapacity(), a.getGmtOffset(),
+                    a.getLatitude(), a.getLongitude()));
+            }
+            List<FlightInstance> flights = new ArrayList<>(
+                repoFlights.loadFlights("data/planes_vuelo.txt", airports));
+
+            // Aplicar ediciones staged (hechas antes de iniciar) al contexto recién cargado
+            for (Airport staged : stagedAirports.values()) {
+                Airport inDataset = airports.get(staged.getCode());
+                if (inDataset != null) {
+                    inDataset.setCapacity(staged.getWarehouseCapacity());
+                } else {
+                    airports.put(staged.getCode(), staged);
+                }
+            }
+            for (FlightInstance staged : stagedFlights) {
+                FlightInstance inDataset = flights.stream()
+                    .filter(fi -> fi.getId().equals(staged.getId())).findFirst().orElse(null);
+                if (inDataset != null) {
+                    inDataset.setCapacity(staged.getCapacity());
+                    inDataset.setDepartureHour(staged.getDepartureHour());
+                    inDataset.setArrivalHour(staged.getArrivalHour());
+                } else {
+                    flights.add(staged);
+                }
+            }
+
             PlanningContext      context  = new PlanningContext(airports, flights,
                                                                 ScenarioConfig.defaultWeek4());
             flightCapacityById = new ConcurrentHashMap<>(flights.stream().collect(Collectors.toMap(
@@ -1293,10 +1348,24 @@ public synchronized SimulationState deleteFlight(String flightId) {
 
     // ── Preparación (staging) de Día a Día ────────────────────────────────────
 
-    public PrepStatus prepStatus() {
-        return new PrepStatus(stagedAirports.size(), stagedFlights.size(), stagedLots.size(),
-                !stagedAirports.isEmpty() && !stagedFlights.isEmpty() && !stagedLots.isEmpty());
-    }
+public PrepStatus prepStatus() {
+    List<StagedAp> apList = stagedAirports.values().stream()
+        .sorted(Comparator.comparing(Airport::getCode))
+        .map(a -> new StagedAp(a.getCode(), a.getRegion(),
+                a.getLatitude(), a.getLongitude(),
+                a.getGmtOffset(), a.getWarehouseCapacity()))
+        .collect(Collectors.toList());
+    List<StagedFl> flList = stagedFlights.stream()
+        .map(f -> new StagedFl(f.getId(), f.getOrigin(), f.getDestination(),
+                f.getDepartureHour(), f.getArrivalHour(), f.getCapacity()))
+        .collect(Collectors.toList());
+    return new PrepStatus(
+        stagedAirports.size(), stagedFlights.size(), stagedLots.size(),
+        !stagedAirports.isEmpty() && !stagedFlights.isEmpty() && !stagedLots.isEmpty(),
+        apList, flList);
+}
+
+
 
     /** Vacía la preparación (aeropuertos/vuelos/paquetes cargados sin iniciar). */
     public SimulationState resetPrep() {
@@ -1307,7 +1376,14 @@ public synchronized SimulationState deleteFlight(String flightId) {
         return state;
     }
 
-    public record PrepStatus(int airports, int flights, int lots, boolean ready) {}
+
+    
+    public record PrepStatus(int airports, int flights, int lots, boolean ready,
+                         List<StagedAp> airportList, List<StagedFl> flightList) {}
+public record StagedAp(String code, String region, double lat, double lng,
+                       int gmtMinutes, int capacity) {}
+public record StagedFl(String id, String origin, String destination,
+                       int departureHour, int arrivalHour, int capacity) {}
 
     // ── Lookahead ALNS helper ────────────────────────────────────────────────
 
@@ -1534,11 +1610,15 @@ public synchronized SimulationState deleteFlight(String flightId) {
         int dayStart    = (simulatedNow / 1440) * 1440;
 
         return context.getFlights().stream()
-                .filter(f -> !f.isCancelled() && f.getDepartureHour() > minuteOfDay)
-                .filter(f -> !context.isInstanceCancelled(
-                        f.getId(), dayStart + f.getDepartureHour()))
-                .sorted(Comparator.comparingInt(FlightInstance::getDepartureHour))
-                .limit(30)
+            .filter(f -> !f.isCancelled() && f.getDepartureHour() > minuteOfDay)
+            .filter(f -> !context.isInstanceCancelled(
+                    f.getId(), dayStart + f.getDepartureHour()))
+            .filter(f -> {
+                int minsUntilDep = (dayStart + f.getDepartureHour()) - simulatedNow;
+                return minsUntilDep >= 0 && minsUntilDep <= 120;
+            })
+            .sorted(Comparator.comparingInt(FlightInstance::getDepartureHour))
+            .limit(30)
                 .map(f -> {
                     int depAbs   = dayStart + f.getDepartureHour();
                     int dur      = f.getArrivalHour() - f.getDepartureHour();

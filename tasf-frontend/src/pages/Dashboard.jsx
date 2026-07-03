@@ -14,11 +14,12 @@ import DateTimePicker    from "../components/panels/DateTimePicker";
 // Todos los paneles flotantes (sobre el mapa). Arrancan minimizados en una
 // columna a la izquierda (como la barra de Configuración) y se abren al clic.
 const ALL_PANELS = [
-  ["resumen",   "Resumen"],
-  ["almacenes", "Almacenes"],
-  ["vuelos",    "Vuelos"],
-  ["envios",    "Envíos"],
-  ["sla",       "SLA"],
+  ["resumen",       "Resumen"],
+  ["almacenes",     "Almacenes"],
+  ["vuelos",        "Vuelos"],
+  ["envios",        "Envíos"],
+  ["sla",           "SLA"],
+  ["cancelaciones", "Cancelar Vuelo"],
 ];
 // Posición inicial de cada panel minimizado (columna izquierda, bajo Configuración).
 const minSlotPos = (slot) => ({ x: 8, y: 84 + slot * 30 });
@@ -106,8 +107,9 @@ export default function Dashboard({
   // Arrancan minimizadas en la columna izquierda. Estado de sesión.
   const [floatWins, setFloatWins] = useState(() => {
     const init = {};
+    const panelSizes = { cancelaciones: { w: 500, h: 360 } };
     ALL_PANELS.forEach(([k], i) => {
-      init[k] = { ...minSlotPos(i), w: 340, h: 400, mode: "min", slot: i };
+      init[k] = { ...minSlotPos(i), ...(panelSizes[k] ?? { w: 340, h: 400 }), mode: "min", slot: i };
     });
     return init;
   });
@@ -491,7 +493,29 @@ export default function Dashboard({
             running={running} simulatedNow={simulatedNow}
             focusCodes={focusCodes} focusFlightId={focusFlightId} view="sla"/>
         );
-      default:
+
+
+
+case "cancelaciones":
+  return (simulation?.running && (mode === "diadia" || mode === "periodo")) ? (
+    <FlightCancelPanel
+      flights={(simulation?.upcomingFlights ?? []).filter(f => {
+        const min = f.departureMinute - simulatedNow;  // ← usar simulatedNow, no simulation?.simulatedMinute
+        return min >= 0 && min <= 120;
+      })}
+      onCancel={cancelFlight}
+      embedded={true}
+    />
+  ) : (
+    <p className="text-gray-600 text-[10px] text-center py-6">
+      Solo disponible durante la simulación (Día a Día o Período)
+    </p>
+  );
+
+
+
+
+        default:
         return null;
     }
   };
@@ -610,12 +634,7 @@ export default function Dashboard({
               kpis={kpis}/>
           )}
 
-          {(mode === "diadia" || mode === "periodo") && simulation?.running && (
-            <FlightCancelPanel
-              flights={simulation?.upcomingFlights ?? []}
-              onCancel={cancelFlight}
-            />
-          )}
+
 
           <div className="absolute left-3 bottom-3 bg-[#021020]/90
                           border border-teal/20 rounded p-2 text-xs

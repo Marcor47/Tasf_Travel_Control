@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { getWarehouseColor } from "../../hooks/useStatusColor";
-import { airportName } from "../../data/staticAirports";
+import { airportName, AIRPORT_META } from "../../data/staticAirports";
 
 // Categoría de semáforo de un vuelo (incluye "vacío").
 function flightSem(bags, capacity) {
@@ -64,11 +64,15 @@ export default function FlightsCapacity({
       .filter(r => !focusFlightId || r.flightId === focusFlightId)
       .filter(r => focus.size === 0 || focus.has(r.from) || focus.has(r.to))
       .filter(r => sem === "all" || flightSem(r.bags, r.capacity || 0) === sem)
-      .filter(r => !q
-        || (r.flightId || "").toLowerCase().includes(q)
-        || `${r.from}-${r.to}`.toLowerCase().includes(q)
-        || (r.from || "").toLowerCase().includes(q)
-        || (r.to   || "").toLowerCase().includes(q))
+      .filter(r => !q || (() => {
+        const norm = s => (s||"").toLowerCase()
+          .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+        const qn = norm(q);
+        const om = AIRPORT_META[r.from] || {};
+        const dm = AIRPORT_META[r.to]   || {};
+        return [r.flightId, r.from, r.to, om.name, om.country, dm.name, dm.country]
+          .some(s => norm(s).includes(qn));
+      })())
 .map(r => {
   const cap = r.capacity || 0;
   return {
