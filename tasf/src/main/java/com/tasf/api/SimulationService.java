@@ -109,7 +109,10 @@ public class SimulationService {
     private final ShipmentRepository repoShipments = new ShipmentRepository();
     private volatile Map<String, Airport> cachedAirports = null;
     private volatile List<FlightInfo>     cachedFlights  = null;
-    private volatile Map<String, Integer> flightCapacityById = Map.of();
+    // SIEMPRE mutable y thread-safe: editFlight/addFlight hacen put() desde el
+    // hilo de peticiones incluso antes de la primera corrida (Map.of() lanzaría
+    // UnsupportedOperationException) y el bucle de simulación lee en paralelo.
+    private volatile Map<String, Integer> flightCapacityById = new ConcurrentHashMap<>();
     private volatile List<FlightInstance> scheduledFlights   = List.of();
     private volatile PlanningContext      activeContext      = null;
 
@@ -452,7 +455,15 @@ public class SimulationService {
 
 
 public synchronized SimulationState editAirport(String code, Integer capacity) {
-    if (code == null || capacity == null || capacity <= 0) return state;
+    return editAirport(code, capacity, null, null);
+}
+
+/** Edita capacidad y/o ubicación (lat/lng) de un almacén. Cualquier campo null
+ *  se deja como está. La ubicación solo afecta al dibujo del mapa (el ruteo usa
+ *  códigos), así que es segura también con la simulación en curso. */
+public synchronized SimulationState editAirport(String code, Integer capacity,
+        Double lat, Double lng) {
+    if (code == null) return state;
     boolean live = running.get() && activeContext != null;
     Map<String, Airport> ap = live ? activeContext.getAirports() : stagedAirports;
     Airport existing = ap.get(code);
@@ -460,18 +471,52 @@ public synchronized SimulationState editAirport(String code, Integer capacity) {
     // Mutar el objeto EN SITIO (no reemplazar la entrada del mapa): así el
     // cambio es visible sin importar si PlanningContext mantiene una copia
     // defensiva del mapa — todas las copias apuntan al MISMO objeto Airport.
-    existing.setCapacity(capacity);
-    pushAlert("editar", "Almacén " + code + " actualizado: capacidad " + capacity);
+    List<String> cambios = new ArrayList<>();
+    if (capacity != null && capacity > 0) {
+        existing.setCapacity(capacity);
+        cambios.add("capacidad " + capacity);
+    }
+    if (lat != null && lng != null
+            && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+        existing.setLocation(lat, lng);
+        cambios.add("ubicación (" + lat + ", " + lng + ")");
+    }
+    if (cambios.isEmpty()) return state;
+    pushAlert("editar", "Almacén " + code + " actualizado: " + String.join(", ", cambios));
     return state;
 }
 
 public synchronized SimulationState editFlight(String flightId, Integer capacity,
         String departureLocal, String arrivalLocal) {
+    return editFlight(flightId, capacity, departureLocal, arrivalLocal, null, null);
+}
+
+/** Edita una UT. Capacidad y horas: en preparación o en vivo. Origen/destino:
+ *  SOLO en preparación (staging) — cambiar el tramo de un vuelo con maletas ya
+ *  planificadas invalidaría rutas en curso. Como origin/destination son final,
+ *  en staging se REEMPLAZA la instancia por una nueva con el mismo ID. */
+public synchronized SimulationState editFlight(String flightId, Integer capacity,
+        String departureLocal, String arrivalLocal, String origin, String destination) {
     boolean live = running.get() && activeContext != null;
     List<FlightInstance> list = live ? activeContext.getFlights() : stagedFlights;
     FlightInstance f = list.stream().filter(x -> x.getId().equals(flightId)).findFirst().orElse(null);
     if (f == null) return state;
     Map<String, Airport> ap = live ? activeContext.getAirports() : stagedAirports;
+
+    // 1. Cambio de tramo (solo staging): reemplazar la instancia conservando ID.
+    if ((origin != null || destination != null) && !live) {
+        String no = origin      != null ? origin.trim().toUpperCase()      : f.getOrigin();
+        String nd = destination != null ? destination.trim().toUpperCase() : f.getDestination();
+        if (!no.equals(nd) && ap.containsKey(no) && ap.containsKey(nd)) {
+            FlightInstance nf = new FlightInstance(f.getId(), no, nd,
+                    f.getDepartureHour(), f.getArrivalHour(), f.getCapacity(), f.isCancelled());
+            int idx = stagedFlights.indexOf(f);
+            if (idx >= 0) { stagedFlights.set(idx, nf); f = nf; }
+        }
+    }
+
+    // 2. Capacidad y horas (las horas locales se convierten con el GMT de los
+    //    aeropuertos ACTUALES del vuelo, ya con el tramo nuevo si cambió).
     if (capacity != null && capacity > 0) f.setCapacity(capacity);
     if (departureLocal != null || arrivalLocal != null) {
         Airport o = ap.get(f.getOrigin()), d = ap.get(f.getDestination());
@@ -484,7 +529,8 @@ public synchronized SimulationState editFlight(String flightId, Integer capacity
         }
     }
     flightCapacityById.put(flightId, f.getCapacity());
-    pushAlert("editar", "Vuelo " + flightId + " actualizado");
+    pushAlert("editar", "Vuelo " + flightId + " actualizado ("
+            + f.getOrigin() + "→" + f.getDestination() + ")");
     return state;
 }
 
@@ -664,8 +710,8 @@ public synchronized SimulationState deleteFlight(String flightId) {
             List<FlightInstance> flights  = repoFlights.loadFlights("data/planes_vuelo.txt", airports);
             PlanningContext      context  = new PlanningContext(airports, flights,
                                                                 ScenarioConfig.defaultWeek4());
-            flightCapacityById = flights.stream().collect(Collectors.toMap(
-                    FlightInstance::getId, FlightInstance::getCapacity, (a, b) -> a));
+            flightCapacityById = new ConcurrentHashMap<>(flights.stream().collect(Collectors.toMap(
+                    FlightInstance::getId, FlightInstance::getCapacity, (a, b) -> a)));
             scheduledFlights = context.getFlights();   // lista viva (incluye altas)
             activeContext    = context;                // cancelaciones + edición de red
 
@@ -781,6 +827,11 @@ public synchronized SimulationState deleteFlight(String flightId) {
                             nextBlockStart, nextBlockEnd,
                             nextBlockNo, solSnap);
                 }
+
+                // Snapshot del plan de ruteo del bloque recién planificado (para
+                // Reportes). Se SOBRESCRIBE en cada bloque: solo vive el último
+                // (sin histórico en RAM).
+                snapshotBlockPlan(blockNo, blockStart, blockEnd, blockLots, solution);
 
                 // Notificar inicio de bloque — contadores aún en estado previo,
                 // sin sumar nada del bloque actual (los lotes no son visibles aún).
@@ -1084,8 +1135,8 @@ public synchronized SimulationState deleteFlight(String flightId) {
             List<FlightInstance> flights  = new ArrayList<>(stagedFlights);
             PlanningContext context = new PlanningContext(airports, flights,
                     ScenarioConfig.defaultWeek4());
-            flightCapacityById = flights.stream().collect(Collectors.toMap(
-                    FlightInstance::getId, FlightInstance::getCapacity, (a, b) -> a));
+            flightCapacityById = new ConcurrentHashMap<>(flights.stream().collect(Collectors.toMap(
+                    FlightInstance::getId, FlightInstance::getCapacity, (a, b) -> a)));
             scheduledFlights = context.getFlights();
             activeContext    = context;
 
@@ -1095,6 +1146,7 @@ public synchronized SimulationState deleteFlight(String flightId) {
             List<BaggageLot> lots = new ArrayList<>(stagedLots);
             WorkingSolution solution = new WorkingSolution(context);
             planGreedy(context, solution, lots);
+            snapshotBlockPlan(1, dayStart, dayEnd, lots, solution);   // plan del día (Reportes)
 
             List<SimEvent> events = buildEvents(solution, lots, dayStart, dayEnd);
             events.sort(Comparator.comparingInt(SimEvent::minute).thenComparing(SimEvent::type));
@@ -1150,6 +1202,7 @@ public synchronized SimulationState deleteFlight(String flightId) {
                     events.sort(Comparator.comparingInt(SimEvent::minute).thenComparing(SimEvent::type));
                     nextEvent = 0;
                     while (nextEvent < events.size() && events.get(nextEvent).minute() < dayStart) nextEvent++;
+                    snapshotBlockPlan(1, dayStart, dayEnd, lots, solution);   // replan → refrescar Reportes
                 }
 
                 // Emitir los eventos cuyo minuto ya alcanzó el reloj real.
@@ -1716,6 +1769,7 @@ public synchronized SimulationState deleteFlight(String flightId) {
         synchronized (eventLog) { eventLog.clear(); eventLogKeys.clear(); }
         synchronized (alertLog) { alertLog.clear(); }
         pathByLot.clear();
+        lastBlockPlan = null;   // el plan del último bloque es de la corrida anterior
     }
 
     /** Vacía las colas de mutación para que una nueva corrida no herede
@@ -1736,16 +1790,12 @@ public synchronized SimulationState deleteFlight(String flightId) {
      * al seleccionar una maleta.
      */
 public ShipmentPath shipmentPath(String lotId) {
-    if (lotId == null) return new ShipmentPath(lotId, List.of());
-    String base = lotId.replaceFirst("-\\d+$", "");
-    List<ShipmentLeg> raw = new ArrayList<>();
-    for (Map.Entry<String, List<ShipmentLeg>> e : pathByLot.entrySet()) {
-        String key = e.getKey();
-        if (key.equals(lotId) || key.equals(base) || key.startsWith(base + "-")) {
-            raw.addAll(e.getValue());
-        }
-    }
-    if (raw.isEmpty()) return new ShipmentPath(lotId, List.of());
+    // Recorrido de UN solo lote/sub-lote (clave exacta). NO fusionar hermanos
+    // aquí: mezclar tramos de sub-lotes distintos en una sola lista era lo que
+    // hacía ilegibles las rutas divididas. Para ver el lote completo con sus
+    // divisiones usar shipmentPathsFor(lotId) (una ruta POR sub-lote).
+    List<ShipmentLeg> raw = (lotId == null) ? null : pathByLot.get(lotId);
+    if (raw == null) return new ShipmentPath(lotId, List.of());
     int now = state.simulatedMinute();
     List<ShipmentLeg> legs = new ArrayList<>(raw.size());
     for (ShipmentLeg l : raw) {
@@ -1755,8 +1805,91 @@ public ShipmentPath shipmentPath(String lotId) {
         legs.add(new ShipmentLeg(l.flightId(), l.from(), l.to(),
                 l.departureMinute(), l.arrivalMinute(), l.finalDestination(), st));
     }
-    legs.sort(Comparator.comparingInt(ShipmentLeg::departureMinute));
     return new ShipmentPath(lotId, legs);
+}
+
+/**
+ * Recorridos del lote COMPLETO: si el id pertenece a un lote dividido
+ * (sub-lotes base-1, base-2, …) devuelve UNA ruta por sub-lote, cada una
+ * independiente (así el mapa puede dibujarlas por separado con su etiqueta y
+ * verse que comparten destino final). Si no hay división, devuelve solo la suya.
+ *
+ * Derivación del lote base: un sub-lote SIEMPRE es «base-k» donde base termina
+ * a su vez en «-número» (USER-5, UF-3). Así «USER-5» NO se confunde con un
+ * sub-lote de «USER» (que agruparía lotes sin relación).
+ */
+public List<ShipmentPath> shipmentPathsFor(String lotId) {
+    if (lotId == null) return List.of();
+    // ¿Con qué base agrupar? El id clicado puede ser el base o un sub-lote.
+    String base = lotId;
+    var m = java.util.regex.Pattern.compile("^(.+-\\d+)-(\\d+)$").matcher(lotId);
+    if (m.matches()) {
+        // Es «(base-número)-k»: si el padre tiene más sub-lotes, agrupar por él.
+        String parent = m.group(1);
+        boolean hasSiblings = pathByLot.keySet().stream()
+                .anyMatch(id -> !id.equals(lotId) && id.startsWith(parent + "-"));
+        if (hasSiblings) base = parent;
+    }
+    final String b = base;
+    List<ShipmentPath> out = new ArrayList<>();
+    for (String id : pathByLot.keySet()) {
+        if (id.equals(b) || (id.startsWith(b + "-")
+                && id.substring(b.length() + 1).chars().allMatch(Character::isDigit))) {
+            out.add(shipmentPath(id));
+            if (out.size() >= 12) break;      // tope (RAM/legibilidad)
+        }
+    }
+    if (out.isEmpty()) out.add(shipmentPath(lotId));
+    out.sort(Comparator.comparing(ShipmentPath::lotId));
+    return out;
+}
+
+// ── Plan de ruteo del último bloque (Reportes) ─────────────────────────────
+
+/** Fila del plan: un paquete/lote con su ruta completa. */
+public record PlannedLot(String lotId, String origin, String destination, int qty,
+                         List<String> path, String departureClock, String arrivalClock,
+                         boolean late) {}
+/** Plan de ruteo de UN bloque. Se sobrescribe en cada bloque (sin histórico). */
+public record BlockPlan(int block, String blockStart, String blockEnd,
+                        int totalLots, List<PlannedLot> lots) {}
+
+private volatile BlockPlan lastBlockPlan = null;
+
+/** Último plan de bloque disponible (persiste tras detener; se limpia al iniciar). */
+public BlockPlan lastBlockPlan() {
+    BlockPlan p = lastBlockPlan;
+    return p != null ? p : new BlockPlan(0, "", "", 0, List.of());
+}
+
+/**
+ * Congela el plan de ruteo del bloque recién planificado, POR PAQUETE (lote →
+ * ruta completa). SOBRESCRIBE el anterior: solo se conserva el último bloque
+ * para no acumular RAM. Tope de filas por si un bloque trae miles de lotes.
+ */
+private void snapshotBlockPlan(int blockNo, int blockStart, int blockEnd,
+                               List<BaggageLot> blockLots, WorkingSolution solution) {
+    final int MAX_ROWS = 500;
+    List<PlannedLot> rows = new ArrayList<>(Math.min(blockLots.size(), MAX_ROWS));
+    for (BaggageLot lot : blockLots) {
+        if (rows.size() >= MAX_ROWS) break;
+        RoutePlan p = solution.getPlan(lot.getId());
+        if (p == null || p.getSegments().isEmpty()) {
+            rows.add(new PlannedLot(lot.getId(), lot.getOrigin(), lot.getDestination(),
+                    lot.getQuantity(), List.of(), "", "", false));
+            continue;
+        }
+        List<String> path = new ArrayList<>(p.getSegments().size() + 1);
+        path.add(p.getSegments().get(0).getOrigin());
+        for (RouteSegment s : p.getSegments()) path.add(s.getDestination());
+        rows.add(new PlannedLot(lot.getId(), lot.getOrigin(), lot.getDestination(),
+                lot.getQuantity(), path,
+                fmtClock(p.getSegments().get(0).getDepartureHour()),
+                fmtClock(p.arrivalHour()),
+                p.getTardinessHours() > 0));
+    }
+    lastBlockPlan = new BlockPlan(blockNo, fmtClock(blockStart), fmtClock(blockEnd),
+            blockLots.size(), rows);
 }
 
     private int daysForMode(String mode, int numDays) {
@@ -1926,8 +2059,10 @@ public ShipmentPath shipmentPath(String lotId) {
 
 
 
-public record EditAirportRequest(String code, Integer capacity) {}
-public record EditFlightRequest(String flightId, Integer capacity, String departureLocal, String arrivalLocal) {}
+public record EditAirportRequest(String code, Integer capacity, Double lat, Double lng) {}
+public record EditFlightRequest(String flightId, Integer capacity,
+                                String departureLocal, String arrivalLocal,
+                                String origin, String destination) {}
 
 public record DeleteFlightRequest(String flightId) {}
 

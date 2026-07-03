@@ -34,7 +34,7 @@ function clamp01(v) { return Math.max(0, Math.min(1, v)); }
  * dispararnos si el stream se atasca. El resultado es un minuto continuo
  * que avanza de forma fluida entre emisiones.
  */
-function useSmoothMinute(targetMinute, running) {
+function useSmoothMinute(targetMinute, running, realtime = false) {
   const [display, setDisplay] = useState(targetMinute);
   // Inicialización perezosa del ref (sin llamar a performance.now en render)
   const s = useRef(null);
@@ -52,6 +52,18 @@ function useSmoothMinute(targetMinute, running) {
     const dt   = now - r.curT;
     const inst = dt > 0 ? diff / dt : 0;
 
+    // Modo TIEMPO REAL (Día a Día): el backend emite el minuto ENTERO y solo
+    // cambia una vez por minuto, así que la velocidad estimada por muestras
+    // colapsa a ~0 entre saltos (aviones a tirones). Aquí la velocidad es
+    // CONOCIDA: 1 minuto simulado por minuto real. Fijarla y extrapolar.
+    if (realtime) {
+      if (diff < 0 || r.curT === 0) { r.disp = targetMinute; }
+      r.curVal = targetMinute;
+      r.curT   = now;
+      r.rate   = 1 / 60000;             // min simulados por ms real
+      return;
+    }
+
     // Reset (sin extrapolar) si: la simulación retrocede (nueva corrida),
     // es la primera muestra real (curT aún no establecido), o el salto
     // implica una velocidad absurda (ej. salto inicial de 0 al minuto
@@ -65,7 +77,7 @@ function useSmoothMinute(targetMinute, running) {
     r.rate = r.rate > 0 ? r.rate * 0.65 + inst * 0.35 : inst;
     r.curVal = targetMinute;
     r.curT   = now;
-  }, [targetMinute]);
+  }, [targetMinute, realtime]);
 
   // Bucle de animación: lee siempre del ref, así NO se reinicia con cada
   // muestra (reiniciar rAF cada 800 ms provocaba microcortes).
@@ -73,7 +85,8 @@ function useSmoothMinute(targetMinute, running) {
     if (!running) return;
     // Extrapolar hasta ~2 intervalos de broadcast antes de detenerse: evita
     // congelamientos si un broadcast llega con retraso (la cadencia es ~800 ms).
-    const NOMINAL_MS = 1500;
+    // En tiempo real el "broadcast útil" es 1/min → permitir extrapolar más.
+    const NOMINAL_MS = realtime ? 90000 : 1500;
     let raf;
     const tick = () => {
       const r = s.current;
@@ -86,7 +99,7 @@ function useSmoothMinute(targetMinute, running) {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [running]);
+  }, [running, realtime]);
 
   return running ? display : targetMinute;
 }
@@ -194,9 +207,10 @@ export default function WorldMap({
   activeFlightsCount = 0,
   highlightCodes = [],   // aeropuertos en foco (de clic o filtro) — controlado por el padre
   selectedRouteKey = null, // ruta resaltada — controlada por el padre (mapa o panel)
-  shipmentPath = null,   // [{ from, to, flightId, finalDestination, status, color }] — recorrido de un envío
+  shipmentPath = null,   // [{ lotId, label, legs:[{from,to,flightId,finalDestination,status,color}] }] — rutas del envío (una por sub-lote)
   flightSem = "all",     // filtro de semáforo de carga: solo dibuja aviones de ese color
   whSem = "all",         // filtro de semáforo de almacenes: solo dibuja almacenes de ese color
+  realtime = false,      // Día a Día: el reloj simulado ES el reloj real (1 min sim = 1 min real)
 }) {
   useEffect(() => { injectAnimation(); }, []);
 
@@ -216,7 +230,22 @@ export default function WorldMap({
   // Minuto continuo y suavizado para mover los aviones sin saltos.
   // En pausa congelamos la interpolación (los aviones quedan quietos).
   const paused        = message === "Pausado";
-  const displayMinute = useSmoothMinute(simulatedMinute, running && !paused);
+  const displayMinute = useSmoothMinute(simulatedMinute, running && !paused, realtime);
+
+  // ── Tooltip propio de aviones (el <title> nativo no admite estilos) ────────
+  // { x, y (px relativos al contenedor), flightId, from, to, bags, cap }
+  const [tip, setTip] = useState(null);
+  const showPlaneTip = (e, r) => {
+    const rect = mapRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setTip({
+      x: e.clientX - rect.left, y: e.clientY - rect.top,
+      maxX: rect.width - 190,             // tope para no salirse del contenedor
+      flightId: r.flightId || "—", from: r.from, to: r.to,
+      bags: r.bags || 0, cap: r.capacity || 0,
+    });
+  };
+  const hideTip = () => setTip(null);
 
   // Rutas en el aire según el backend (departed y aún no aterrizadas). El
   // conjunto SOLO cambia cuando llega un broadcast (no cada frame); la POSICIÓN
@@ -304,9 +333,16 @@ export default function WorldMap({
 
   // Filtro por semáforo de carga (del panel de Vuelos): solo dibuja aviones cuyo
   // color de carga coincide con el seleccionado (vacío/verde/ámbar/rojo).
-  const semActive = flightSem === "all"
+  let semActive = flightSem === "all"
     ? allActive
     : allActive.filter(r => flightSemCat(r.bags, r.capacity || 0) === flightSem);
+
+  // Si el semáforo de ALMACENES oculta aeropuertos, ocultar también las líneas/
+  // aviones que tocan un almacén oculto (antes quedaban líneas "hacia la nada").
+  if (whSem !== "all") {
+    const drawn = new Set(shownAirports.map(a => a.code));
+    semActive = semActive.filter(r => drawn.has(r.from) && drawn.has(r.to));
+  }
 
   const visibleRoutes = lineMode === "limited"
     ? semActive.slice(0, 40)
@@ -316,7 +352,12 @@ export default function WorldMap({
   // rutas/aviones para que solo se vea su recorrido (con transbordos).
   const shipmentMode = Array.isArray(shipmentPath) && shipmentPath.length > 0;
 
-  const activeRoutes = (showLines || showPlanes) && !shipmentMode ? visibleRoutes : [];
+  // Orden de PINTADO: los aviones CARGADOS se dibujan al final (encima). Evita
+  // que un vuelo duplicado vacío (gris) en la misma coordenada tape al cargado
+  // (causa del "avión vacío" con datos toy que duplican horarios).
+  const activeRoutes = (showLines || showPlanes) && !shipmentMode
+    ? [...visibleRoutes].sort((a, b) => (a.bags || 0) - (b.bags || 0))
+    : [];
 
   const isCalculating = running && message.startsWith("Planificando");
 
@@ -494,7 +535,7 @@ export default function WorldMap({
               <Line
                 from={from} to={to}
                 stroke={col}
-                strokeWidth={hasFocus && hl ? 1.8 : 1.2}
+                strokeWidth={hasFocus && hl ? 1.2 : 0.8}
                 strokeLinecap="round" strokeDasharray="8 4"
                 opacity={hl ? 1 : 0.12}
                 style={{ pointerEvents: "none" }}
@@ -510,19 +551,16 @@ export default function WorldMap({
           const plane = planePosition(from, to, r, displayMinute);
           const hl    = routeIsHighlighted(r);
           const cap   = r.capacity || 0;
-          const load  = cap > 0 ? (r.bags || 0) / cap : 0;
           const col   = flightColor(r.bags, cap);   // gris si vacío, si no semáforo
           return (
             <Marker
               key={`plane-${routeKey(r)}`}
               coordinates={plane.coordinates}
-              onClick={(e) => { e.stopPropagation(); clickRoute(routeKey(r)); }}>
-              {/* Tooltip nativo al pasar el ratón: ruta y carga/capacidad */}
-              <title>
-                {r.from}→{r.to} · {(r.bags || 0).toLocaleString()}/{cap.toLocaleString()} maletas
-                {cap > 0 ? ` (${Math.round(load * 100)}%)` : ""}
-              </title>
-              <g transform={`rotate(${plane.angle})`}
+              onClick={(e) => { e.stopPropagation(); clickRoute(routeKey(r)); }}
+              onMouseMove={(e) => showPlaneTip(e, r)}
+              onMouseLeave={hideTip}>
+              {/* Icono reducido (scale) — tooltip propio estilizado, no <title> */}
+              <g transform={`rotate(${plane.angle}) scale(0.75)`}
                  className="route-plane"
                  opacity={hl ? 1 : 0.15}
                  style={{ cursor: "pointer" }}>
@@ -575,6 +613,18 @@ export default function WorldMap({
                 <rect x={-s * 0.4} y={s * 0.3} width={s * 0.8} height={s * 0.7}
                       fill="#0b1f33" opacity={0.55}/>
               </g>
+            </Marker>
+          );
+        })}
+
+        {/* Etiquetas de aeropuertos en PASADA SEPARADA (después de todos los
+            iconos): así ningún icono tapa el nombre de otro aeropuerto. */}
+        {shownAirports.map(a => {
+          const hl    = airportIsHighlighted(a.code);
+          const isSel = focus.has(a.code);
+          const s     = isSel ? 5.5 : 4.5;
+          return (
+            <Marker key={`lbl-${a.code}`} coordinates={[a.lng, a.lat]}>
               <text textAnchor="middle" y={-(s + 4)}
                 opacity={hl ? 1 : 0.25}
                 style={{
@@ -593,16 +643,22 @@ export default function WorldMap({
           );
         })}
 
-        {/* ── Recorrido del envío seleccionado (todos los tramos) ───────────
-            Cada tramo usa el COLOR de carga de su vuelo (mismo semáforo que el
-            mapa). El ESTADO distingue, por estilo + icono:
+        {/* ── Recorrido del envío seleccionado ───────────────────────────────
+            shipmentPath = ARRAY de rutas [{lotId, label, legs}], UNA por
+            sub-lote si el paquete fue dividido. Cada ruta se dibuja con un
+            pequeño desplazamiento vertical y su etiqueta (-1, -2, …) para que
+            las divisiones no se mezclen y se vea que comparten destino final.
+            Por tramo: color = carga de su vuelo; estilo por estado:
               · completado (done)  → punteado tenue + ✓
-              · actual    (current)→ sólido animado + ✈   (tramo principal)
-              · próximo   (upcoming)→ a trazos + ›         (siguiente tramo)
-            El destino de cada tramo: verde = destino final; ámbar ⇄ = transbordo. */}
-        {Array.isArray(shipmentPath) && shipmentPath.length > 0 && (
-          <g style={{ pointerEvents: "none" }}>
-            {shipmentPath.map((leg, i) => {
+              · actual    (current)→ sólido animado + ✈
+              · próximo   (upcoming)→ a trazos + ›
+            Destino de cada tramo: verde = destino final; ámbar ⇄ = transbordo. */}
+        {shipmentMode && shipmentPath.map((p, pi) => {
+          const off = shipmentPath.length > 1 ? (pi - (shipmentPath.length - 1) / 2) * 2.4 : 0;
+          return (
+          <g key={`sp-${p.lotId ?? pi}`} style={{ pointerEvents: "none" }}
+             transform={`translate(0, ${off})`}>
+            {p.legs.map((leg, i) => {
               const from = airportMap[leg.from];
               const to   = airportMap[leg.to];
               if (!from || !to) return null;
@@ -616,7 +672,7 @@ export default function WorldMap({
                           : leg.status === "upcoming" ? "›" : "✓";
               const mid   = [(from[0] + to[0]) / 2, (from[1] + to[1]) / 2];
               return (
-                <g key={`leg-${i}`}>
+                <g key={`leg-${pi}-${i}`}>
                   <Line from={from} to={to}
                         stroke={leg.color || "#6b7280"}
                         strokeWidth={width} strokeLinecap="round"
@@ -627,32 +683,66 @@ export default function WorldMap({
                       style={{ fontSize: Math.max(5, 8 / Math.sqrt(zoom)),
                                fill: leg.color || "#6b7280",
                                fontFamily: "sans-serif", fontWeight: "bold" }}>
-                      {icon}
+                      {icon}{shipmentPath.length > 1 && i === 0 ? ` ${p.label}` : ""}
                     </text>
                   </Marker>
                   <Marker coordinates={to}>
                     <circle r={leg.finalDestination ? 3 : 2.4}
                       fill={leg.finalDestination ? "#22c55e" : "#f59e0b"}
                       stroke="#fff" strokeWidth={0.5}/>
-                    <text textAnchor="middle" y={-5}
-                      style={{ fontSize: Math.max(4, 6 / Math.sqrt(zoom)),
-                               fill: leg.finalDestination ? "#22c55e" : "#f59e0b",
-                               fontFamily: "sans-serif" }}>
-                      {leg.finalDestination ? "destino final" : "⇄ transbordo"}
-                    </text>
+                    {/* la etiqueta del destino solo en la primera ruta (comparten punto) */}
+                    {pi === 0 && (
+                      <text textAnchor="middle" y={-5}
+                        style={{ fontSize: Math.max(4, 6 / Math.sqrt(zoom)),
+                                 fill: leg.finalDestination ? "#22c55e" : "#f59e0b",
+                                 fontFamily: "sans-serif" }}>
+                        {leg.finalDestination ? "destino final" : "⇄ transbordo"}
+                      </text>
+                    )}
                   </Marker>
                 </g>
               );
             })}
             {/* origen del recorrido */}
-            {airportMap[shipmentPath[0].from] && (
-              <Marker coordinates={airportMap[shipmentPath[0].from]}>
+            {p.legs[0] && airportMap[p.legs[0].from] && (
+              <Marker coordinates={airportMap[p.legs[0].from]}>
                 <circle r={2.6} fill="#fff" stroke="#0b1f33" strokeWidth={0.6}/>
               </Marker>
             )}
           </g>
-        )}
+          );
+        })}
       </ComposableMap>
+
+      {/* Tooltip de avión: recuadro estilizado con el código del vuelo (F###),
+          tramo y carga con color de semáforo. Reemplaza al <title> nativo. */}
+      {tip && (() => {
+        const pct  = tip.cap > 0 ? Math.round((tip.bags / tip.cap) * 100) : 0;
+        const semC = tip.bags === 0 ? "#9ca3af"
+                   : pct >= 85 ? "#ef4444" : pct >= 60 ? "#f59e0b" : "#22c55e";
+        return (
+          <div className="absolute z-50 pointer-events-none"
+               style={{ left: Math.min(tip.x + 14, tip.maxX), top: tip.y + 12 }}>
+            <div className="bg-[#021020]/95 border-2 rounded-lg px-3 py-2 shadow-xl shadow-black/60"
+                 style={{ borderColor: semC, minWidth: 170 }}>
+              <p className="font-mono font-bold text-sm" style={{ color: semC }}>
+                ✈ {tip.flightId}
+              </p>
+              <p className="text-gray-200 text-xs">
+                {airportName(tip.from)} → {airportName(tip.to)}
+                <span className="text-gray-500 ml-1">({tip.from}→{tip.to})</span>
+              </p>
+              <p className="text-xs mt-0.5">
+                <span style={{ color: semC }} className="font-bold">
+                  {tip.bags.toLocaleString()}/{tip.cap.toLocaleString()}
+                </span>
+                <span className="text-gray-400"> maletas{tip.cap > 0 ? ` · ${pct}%` : ""}</span>
+                {tip.bags === 0 && <span className="text-gray-500 ml-1">(vacío)</span>}
+              </p>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

@@ -47,10 +47,13 @@ export default function WarehouseCapacity({
   // Filtro por foco + texto (código/país/región) + semáforo, ORDENADO por
   // ocupación. Sin filtros: top 10 por ocupación (comportamiento original).
   const matched = useMemo(() => {
+    // Si el filtro es un ID de UT (F123/U5), NO filtrar por texto de aeropuerto:
+    // el Dashboard ya tradujo la UT a sus almacenes origen/destino en focusCodes.
+    const isUtQuery = /^[FU]\d+$/i.test(filter.trim());
     const base = [...source]
       .filter(a => airports.length > 0 ? a.capacity > 0 : true)
       .filter(a => focusSet.size ? focusSet.has(a.code) : true)
-      .filter(a => filter.trim() ? airportMatches(a, filter) : true)
+      .filter(a => (filter.trim() && !isUtQuery) ? airportMatches(a, filter) : true)
       .filter(a => sem === "all" || whSem(a) === sem);
     if (sortBy === "alfabetico") {
   return base.sort((a, b) =>

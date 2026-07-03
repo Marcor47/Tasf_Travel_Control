@@ -138,6 +138,7 @@ export default function SLAMonitor({
   view = "all",   // "all" | "sla" | "envios" | "resumen"
   selectedShipment = null, onShipmentClick,
   searchText, onSearchChange,   // búsqueda de maletas — controlada por el padre si se pasa
+  fleetFill = null,             // % llenado de flota (mismo cálculo que Reportes)
 }) {
   const [internalFilter, setInternalFilter] = useState("");
   // Búsqueda controlada (la eleva el Dashboard para reflejarla en el mapa y los
@@ -382,6 +383,23 @@ export default function SLAMonitor({
           ].map(([label, val]) => (
             <div key={label} className="bg-[#021020] rounded p-2 text-center">
               <p className="text-2xl font-bold text-white">{val}</p>
+              <p className="text-gray-500 text-[10px] uppercase">{label}</p>
+            </div>
+          ))}
+        </div>
+        {/* Llenado de flota (mismo cálculo que Reportes) y de almacenes (%) */}
+        <div className="grid grid-cols-2 gap-1 mt-1">
+          {[
+            ["Llenado de Flota",     fleetFill == null ? "—" : `${fleetFill}%`,
+              fleetFill ?? 0],
+            ["Llenado de Almacenes", `${safeKpis.occupancyPercent ?? 0}%`,
+              safeKpis.occupancyPercent ?? 0],
+          ].map(([label, val, pct]) => (
+            <div key={label} className="bg-[#021020] rounded p-2 text-center">
+              <p className={`text-2xl font-bold ${
+                pct > 85 ? "text-red-400" : pct > 60 ? "text-yellow-400" : "text-white"}`}>
+                {val}
+              </p>
               <p className="text-gray-500 text-[10px] uppercase">{label}</p>
             </div>
           ))}

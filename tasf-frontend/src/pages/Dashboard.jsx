@@ -214,11 +214,24 @@ export default function Dashboard({
     if (selectedAirport) return [selectedAirport];
     if (bagSearch.trim()) return bagFocusCodes || [];
     if (!storageFilter.trim()) return [];
+    // Búsqueda por UT (F123 / U5) en el filtro de almacenes: enfoca el almacén
+    // ORIGEN y DESTINO de ese vuelo (activo, planificado o del dataset).
+    const q = storageFilter.trim().toUpperCase();
+    if (/^[FU]\d+$/.test(q)) {
+      const r = (simulation?.routes ?? []).find(x => (x.flightId || "").toUpperCase() === q);
+      if (r) return [r.from, r.to];
+      const u = (simulation?.upcomingFlights ?? []).find(x => (x.flightId || "").toUpperCase() === q);
+      if (u) return [u.origin, u.destination];
+      const f = (simulation?.flights ?? []).find(x => (x.id || "").toUpperCase() === q);
+      if (f) return [f.origin, f.destination];
+      return [];   // UT no encontrada: sin coincidencias
+    }
     const src = (liveAirports && liveAirports.length) ? liveAirports : STATIC_AIRPORTS;
     return src
       .filter(a => airportMatches(a, storageFilter))
       .map(a => a.code);
-  }, [pinnedCodes, selectedAirport, bagSearch, bagFocusCodes, storageFilter, liveAirports]);
+  }, [pinnedCodes, selectedAirport, bagSearch, bagFocusCodes, storageFilter, liveAirports,
+      simulation?.routes, simulation?.upcomingFlights, simulation?.flights]);
 
   // Limpia los focos "de ruta/envío" (los que compiten con un foco de aeropuerto).
   const clearRouteFoci = () => {
@@ -242,6 +255,28 @@ export default function Dashboard({
   // cualquier foco de clic/ruta/envío para no confundir.
   const handleFilterChange = (v) => { setStorageFilter(v); setSelectedAirport(null); clearRouteFoci(); };
   const handleSemChange    = (s) => { setWhSemFilter(s);   setSelectedAirport(null); clearRouteFoci(); };
+
+  // Enter en la búsqueda del panel de Vuelos: aplica los resultados como filtro
+  // del mapa (enfoca los aeropuertos de los vuelos coincidentes). Si hay UN solo
+  // vuelo activo, además resalta su ruta.
+  const handleFlightsSearchEnter = (matches) => {
+    if (!matches?.length) return;
+    setStorageFilter(""); setWhSemFilter("all"); setSelectedAirport(null); setBagSearch("");
+    setSelectedShipment(null); setSelectedShipmentPath(null);
+    const codes = [...new Set(matches.flatMap(f => [f.from, f.to]))];
+    setPinnedCodes(codes);
+    const actives = matches.filter(f => f.active);
+    setSelectedRouteKey(actives.length === 1 ? actives[0].key : null);
+  };
+
+  // Llenado de flota (mismo cálculo que Reportes): maletas en el aire respecto
+  // a la capacidad total de los aviones en el aire.
+  const fleetFill = useMemo(() => {
+    const act = (simulation?.routes ?? []).filter(r => r.status === "departed");
+    const cap = act.reduce((s, r) => s + (r.capacity || 0), 0);
+    if (cap === 0) return 0;
+    return Math.round(act.reduce((s, r) => s + (r.bags || 0), 0) * 100 / cap);
+  }, [simulation?.routes]);
 
   const handleAirportClick = (code) => {
     setStorageFilter(""); setWhSemFilter("all"); clearRouteFoci();
@@ -298,21 +333,32 @@ export default function Dashboard({
       from: bag.from, to: bag.to, minute: bag.minute, bagId: pkgId,
     });
 
-    let legs = [];
+    // TODAS las rutas del lote: una por sub-lote (divisiones SEPARADAS, no
+    // mezcladas). Cada una lleva su etiqueta (-1, -2, …) para distinguirlas.
+    let paths = [];
     if (bag.lotId) {
-      const path = await simulation?.fetchShipmentPath?.(bag.lotId);
-      legs = path?.legs ?? [];
+      paths = (await simulation?.fetchShipmentPaths?.(bag.lotId)) ?? [];
     }
-    if (!legs.length) {
-      // Respaldo (sin lotId o lote ya fuera de caché): solo el tramo clicado.
-      legs = [{
+    if (!paths.length || paths.every(p => !(p.legs?.length))) {
+      // Respaldo (sin lotId o lote fuera de caché): solo el tramo clicado.
+      paths = [{ lotId: bag.lotId || bag.pkgId, legs: [{
         flightId: bag.flightId, from: bag.from, to: bag.to,
         finalDestination: !!bag.finalDestination, status: "current",
-      }];
+      }] }];
     }
-    const colored = legs.map(l => ({ ...l, color: legColor(l) }));
-    setSelectedShipmentPath(colored);
-    setPinnedCodes(Array.from(new Set(colored.flatMap(l => [l.from, l.to]))));
+    const multi = paths
+      .filter(p => p.legs?.length)
+      .map((p, i) => ({
+        lotId: p.lotId,
+        // etiqueta corta: el sufijo del sub-lote si existe (-1, -2…), si no el id
+        label: paths.length > 1
+          ? (/-(\d+)$/.exec(p.lotId || "")?.[0] ?? p.lotId ?? `#${i + 1}`)
+          : (p.lotId ?? ""),
+        legs: p.legs.map(l => ({ ...l, color: legColor(l) })),
+      }));
+    setSelectedShipmentPath(multi);
+    setPinnedCodes(Array.from(new Set(
+      multi.flatMap(p => p.legs.flatMap(l => [l.from, l.to])))));
   };
 
   // Clic en una ruta del mapa: idéntico a clicar un vuelo activo — resalta la
@@ -372,6 +418,7 @@ export default function Dashboard({
             simulatedNow={simulatedNow}
             focusCodes={focusCodes}
             focusFlightId={focusFlightId}
+            fleetFill={fleetFill}
             view="resumen"/>
         );
       case "almacenes":
@@ -423,7 +470,8 @@ export default function Dashboard({
             selectedRouteKey={selectedRouteKey}
             pinnedCodes={pinnedCodes}
             onFlightClick={handleFlightClick}
-            
+            onSearchEnter={handleFlightsSearchEnter}
+            history={simulation?.history ?? []}
             running={running}/>
         );
       case "envios":
@@ -470,6 +518,7 @@ export default function Dashboard({
           shipmentPath={selectedShipmentPath}
           flightSem={flightSemFilter}
           whSem={whSemFilter}
+          realtime={mode === "diadia"}
           onAirportClick={handleAirportClick}
           onRouteClick={handleRouteClick}
           onClearSelection={clearFocus}/>

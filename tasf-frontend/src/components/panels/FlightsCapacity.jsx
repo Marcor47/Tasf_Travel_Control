@@ -45,10 +45,12 @@ export default function FlightsCapacity({
   focusFlightId = null,   // si está, muestra SOLO ese vuelo
   sem = "all", onSemChange,   // semáforo controlado por el padre (también filtra el mapa)
   selectedRouteKey = null, pinnedCodes = null, onFlightClick,
-
+  onSearchEnter,          // Enter en la búsqueda → aplicar resultados al mapa
+  history = [],           // historial de eventos (sub-pestaña Historial)
 }) {
   const [search, setSearch] = useState("");
   const [sortBy,   setSortBy]   = useState("ocupacion");
+  const [bottomTab, setBottomTab] = useState("planificados"); // planificados | historial
 
 
 
@@ -121,9 +123,11 @@ export default function FlightsCapacity({
   }, [routes, focusCodes, focusFlightId, search, sem, sortBy]);
 
   // Vuelos PLANIFICADOS próximos (aún no despegan) con maletas asignadas —
-  // el registro de lo que el sistema planea. Respeta el foco de aeropuertos.
+  // el registro de lo que el sistema planea. Respeta el foco de aeropuertos
+  // Y el buscador de la tarjeta (igual que los activos).
   const plannedFlights = useMemo(() => {
     const focus = new Set(focusCodes);
+    const q = search.trim().toLowerCase();
     return upcoming
       .filter(u => (u.assigned || 0) > 0)
       .filter(u =>
@@ -132,6 +136,13 @@ export default function FlightsCapacity({
 )
       .filter(u => !focusFlightId || u.flightId === focusFlightId)
       .filter(u => focus.size === 0 || focus.has(u.origin) || focus.has(u.destination))
+      .filter(u => !q
+        || (u.flightId || "").toLowerCase().includes(q)
+        || `${u.origin}-${u.destination}`.toLowerCase().includes(q)
+        || (u.origin || "").toLowerCase().includes(q)
+        || (u.destination || "").toLowerCase().includes(q)
+        || airportName(u.origin).toLowerCase().includes(q)
+        || airportName(u.destination).toLowerCase().includes(q))
       .map(u => ({
     key: u.flightId,
     active: false,
@@ -182,7 +193,24 @@ export default function FlightsCapacity({
 
   return (b.pct ?? -1) - (a.pct ?? -1);
 });
-}, [upcoming, focusCodes, focusFlightId, sortBy, sem]);
+}, [upcoming, focusCodes, focusFlightId, sortBy, sem, search]);
+
+  // Historial de eventos integrado (sub-pestaña): respeta foco y buscador.
+  const filteredHistory = useMemo(() => {
+    const focus = new Set(focusCodes);
+    const q = search.trim().toLowerCase();
+    return history
+      .filter(e => !focusFlightId || e.flightId === focusFlightId)
+      .filter(e => focus.size === 0 || focus.has(e.from) || focus.has(e.to))
+      .filter(e => !q
+        || (e.flightId || "").toLowerCase().includes(q)
+        || (e.lotId    || "").toLowerCase().includes(q)
+        || (e.from || "").toLowerCase().includes(q)
+        || (e.to   || "").toLowerCase().includes(q)
+        || airportName(e.from).toLowerCase().includes(q)
+        || airportName(e.to).toLowerCase().includes(q))
+      .slice(0, 40);
+  }, [history, focusCodes, focusFlightId, search]);
 
   return (
     <div className="bg-[#031525] border border-teal/20 rounded p-2 mt-2">
@@ -204,11 +232,18 @@ export default function FlightsCapacity({
         </div>
       </div>
 
-      {/* Búsqueda por código/tramo + filtro por semáforo (incluye vacío) */}
+      {/* Búsqueda por código/tramo + filtro por semáforo (incluye vacío).
+          ENTER: aplica los resultados como filtro en el MAPA (enfoca los
+          aeropuertos de los vuelos coincidentes). */}
       <input
         value={search}
         onChange={e => setSearch(e.target.value)}
-        placeholder="Buscar por ID, origen o destino (LIM-MAD)…"
+        onKeyDown={e => {
+          if (e.key === "Enter" && search.trim()) {
+            onSearchEnter?.([...activeFlights, ...plannedFlights]);
+          }
+        }}
+        placeholder="Buscar por ID, origen o destino (Enter → mapa)…"
         className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1
                    text-[11px] text-gray-300 mb-1.5 focus:outline-none focus:border-teal"
       />
@@ -294,12 +329,26 @@ style={{ width: `${clamp}%` }}/>
         </div>
       )}
 
-      {/* ── Vuelos planificados (próximos, aún sin despegar) ──────────────── */}
-      {plannedFlights.length > 0 && (
-        <div className="mt-3 pt-2 border-t border-white/10">
-          <p className="text-gray-500 text-[10px] font-bold uppercase mb-1">
-            Planificados (próximos)
-          </p>
+      {/* ── Sección inferior: Planificados | Historial (integrado, req. #11).
+             Ambas sub-pestañas responden al buscador de la tarjeta. ─────────── */}
+      <div className="mt-3 pt-2 border-t border-white/10">
+        <div className="flex gap-1 mb-1.5">
+          {[["planificados", `Planificados (${plannedFlights.length})`],
+            ["historial",    `Historial (${filteredHistory.length})`]].map(([k, l]) => (
+            <button key={k} onClick={() => setBottomTab(k)}
+              className={`text-[10px] px-2 py-0.5 rounded transition border
+                ${bottomTab === k
+                  ? "bg-teal/20 text-teal border-teal/40"
+                  : "bg-[#021020] text-gray-500 border-white/10 hover:text-white"}`}>
+              {l}
+            </button>
+          ))}
+        </div>
+
+        {bottomTab === "planificados" && (
+          plannedFlights.length === 0 ? (
+            <p className="text-gray-600 text-[10px] text-center py-2">Sin vuelos planificados</p>
+          ) : (
           <div className="flex flex-col gap-1 max-h-40 overflow-y-auto">
             {plannedFlights.map(f => {
               const isSel = pinnedCodes
@@ -327,8 +376,43 @@ style={{ width: `${clamp}%` }}/>
               );
             })}
           </div>
-        </div>
-      )}
+          )
+        )}
+
+        {bottomTab === "historial" && (
+          filteredHistory.length === 0 ? (
+            <p className="text-gray-600 text-[10px] text-center py-2">
+              {search.trim() ? "Sin eventos para esa búsqueda" : "Aún no hay eventos"}
+            </p>
+          ) : (
+          <div className="flex flex-col gap-1 max-h-40 overflow-y-auto">
+            {filteredHistory.map((e, i) => {
+              const tag = e.type === "departed" ? ["Salida", "text-yellow-400"]
+                        : e.finalDestination    ? ["Entregado", "text-green-400"]
+                        : ["Transbordo", "text-blue-400"];
+              return (
+                <div key={`h-${e.minute}-${e.flightId}-${i}`}
+                     className="flex items-center justify-between text-[10px] px-1 py-0.5">
+                  <span className="flex items-center gap-1 min-w-0">
+                    <span className="text-gray-400 font-mono">{e.flightId || "—"}</span>
+                    <span className="text-teal truncate">{airportName(e.from)}</span>
+                    <span className="text-gray-600">→</span>
+                    <span className="text-gray-200 truncate">{airportName(e.to)}</span>
+                  </span>
+                  <span className="flex items-center gap-1.5 flex-shrink-0">
+                    <span className="text-gray-500 tabular-nums">{e.bags ?? 0}</span>
+                    <span className="text-gray-600 font-mono">
+                      {(e.clock || "").split("  ")[1] || ""}
+                    </span>
+                    <span className={tag[1]}>{tag[0]}</span>
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+          )
+        )}
+      </div>
     </div>
   );
 }

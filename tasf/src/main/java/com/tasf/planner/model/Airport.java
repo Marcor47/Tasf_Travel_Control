@@ -14,8 +14,8 @@ public class Airport {
     private final String region;
     private int    warehouseCapacity;
     private final int    gmtOffset;          // en minutos respecto a UTC
-    private final double latitude;
-    private final double longitude;
+    private double latitude;                 // editable desde Registro
+    private double longitude;
  
     public Airport(String code, String region, int warehouseCapacity, int gmtOffset) {
         this(code, region, warehouseCapacity, gmtOffset, 0.0, 0.0);
@@ -39,6 +39,14 @@ public class Airport {
 
     public void setCapacity(int warehouseCapacity) {
         this.warehouseCapacity = warehouseCapacity;
+    }
+
+    /** Edita la ubicación (mutación EN SITIO, mismo patrón que setCapacity:
+     *  todas las copias del mapa apuntan al mismo objeto). Solo afecta al
+     *  dibujo del mapa; el ruteo usa códigos, no coordenadas. */
+    public void setLocation(double latitude, double longitude) {
+        this.latitude  = latitude;
+        this.longitude = longitude;
     }
  
     /**

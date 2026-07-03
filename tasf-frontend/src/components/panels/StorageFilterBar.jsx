@@ -19,7 +19,7 @@ export default function StorageFilterBar({
         <input
           value={filter}
           onChange={e => onFilterChange?.(e.target.value)}
-          placeholder="Filtrar por código, país o región…"
+          placeholder="Filtrar por código, país, región o UT (F123)…"
           className="w-full bg-[#021020] border border-white/10 rounded
                      px-2 py-1 pr-6 text-[11px] text-gray-300
                      focus:outline-none focus:border-teal"

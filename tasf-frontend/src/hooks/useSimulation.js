@@ -283,6 +283,31 @@ const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
     }
   }, []);
 
+  // Recorridos del lote COMPLETO: una ruta por sub-lote (divisiones separadas).
+  const fetchShipmentPaths = useCallback(async (lotId) => {
+    if (!lotId) return [];
+    try {
+      const r = await fetch(
+        `${API_BASE}/api/simulation/shipmentPaths?lotId=${encodeURIComponent(lotId)}`);
+      if (!r.ok) return [];
+      return await r.json();
+    } catch {
+      return [];
+    }
+  }, []);
+
+  // Plan de ruteo del último bloque planificado (Reportes).
+  const fetchLastBlockPlan = useCallback(async () => {
+    try {
+      const r = await fetch(`${API_BASE}/api/simulation/lastBlockPlan`);
+      if (!r.ok) return null;
+      const p = await r.json();
+      return p && p.block > 0 ? p : null;
+    } catch {
+      return null;
+    }
+  }, []);
+
   // ── Edición de la red en caliente ─────────────────────────────────────────
   const postJson = useCallback(async (path, body) => {
     try {
@@ -312,12 +337,20 @@ const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
 
 
 
-const editAirport = useCallback(async (code, capacity) =>
-  postJson("editAirport", { code, capacity }),
-[postJson]);
+// Editar almacén: capacidad y/o ubicación (lat/lng). Segunda firma compatible:
+// editAirport(code, capacity) sigue funcionando; editAirport(code, {capacity,
+// lat, lng}) permite editar la ubicación.
+const editAirport = useCallback(async (code, arg) => {
+  const body = (arg !== null && typeof arg === "object")
+    ? { code, ...arg }
+    : { code, capacity: arg };
+  return postJson("editAirport", body);
+}, [postJson]);
 
-const editFlight = useCallback(async (flightId, { capacity, departureLocal, arrivalLocal }) =>
-  postJson("editFlight", { flightId, capacity, departureLocal, arrivalLocal }),
+// Editar UT: capacidad/horas (siempre) y origen/destino (solo en preparación —
+// el backend ignora el cambio de tramo con la simulación en curso).
+const editFlight = useCallback(async (flightId, { capacity, departureLocal, arrivalLocal, origin, destination }) =>
+  postJson("editFlight", { flightId, capacity, departureLocal, arrivalLocal, origin, destination }),
 [postJson]);
 
 
@@ -406,6 +439,8 @@ return {
   closeAirport,
   uploadData,
   fetchShipmentPath,
+  fetchShipmentPaths,
+  fetchLastBlockPlan,
   alerts,
   realSeconds,
   editAirport, editFlight,

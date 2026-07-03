@@ -129,7 +129,8 @@ export default function DateTimePicker({
     const iso = toISO(view.y, view.m, d);
     if (!validSet.has(iso)) return;       // solo fechas del dataset
     onDateChange?.(iso);
-    setOpen(false);
+    // NO cerrar aquí: el usuario puede seguir ajustando hora/minuto.
+    // El popover se cierra con el botón «Aceptar» (o clic fuera).
   };
 
   // ── Reloj de inicio (hora / minuto) ──────────────────────────────────────
@@ -335,6 +336,15 @@ export default function DateTimePicker({
                 ),
               )}
             </div>
+
+            {/* Confirmar fecha + hora elegidas y cerrar */}
+            <button type="button"
+              onClick={() => setOpen(false)}
+              disabled={!selectedDate}
+              className="w-full mt-3 bg-teal hover:bg-teal/80 text-white text-xs font-bold
+                         py-1.5 rounded transition disabled:opacity-40 disabled:cursor-not-allowed">
+              Aceptar — {prettyDate} · {prettyTime}
+            </button>
           </div>
         </div>
       )}

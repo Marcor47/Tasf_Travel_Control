@@ -21,7 +21,6 @@ const findRangeForRegion = (region) => {
 
 export default function RegisterLot({ simulation }) {
   const running = simulation?.running ?? false;
-  const mode    = simulation?.mode ?? "diadia";
   const prep    = simulation?.prepStatus ?? { airports: 0, flights: 0, lots: 0, ready: false };
 
   // Día a Día = pizarra en blanco: se cargan datos ANTES de iniciar (staging) y
@@ -49,10 +48,14 @@ export default function RegisterLot({ simulation }) {
 
 const [editAirportCode, setEditAirportCode] = useState("");
 const [editAirportCap,  setEditAirportCap]  = useState("");
+const [editAirportLat,  setEditAirportLat]  = useState("");
+const [editAirportLng,  setEditAirportLng]  = useState("");
 const [editFlightId,    setEditFlightId]    = useState("");
 const [editFlightCap,   setEditFlightCap]   = useState("");
 const [editFlightDep,   setEditFlightDep]   = useState("");
 const [editFlightArr,   setEditFlightArr]   = useState("");
+const [editFlightOrig,  setEditFlightOrig]  = useState("");
+const [editFlightDest,  setEditFlightDest]  = useState("");
 
 const [flightSearch, setFlightSearch]   = useState("");
 const [flightSortBy, setFlightSortBy]   = useState("salida"); // "salida" | "alfabetico"
@@ -628,17 +631,40 @@ const airportFormValid = airportForm.code.trim() !== ""
       );
     })}
   </select>
-  <label className="text-gray-500 text-[10px]">Nueva capacidad
-    <input type="number" min="1" value={editAirportCap}
-      onChange={e => setEditAirportCap(e.target.value)}
-      className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300"/>
-  </label>
+  <div className="grid grid-cols-3 gap-2">
+    <label className="text-gray-500 text-[10px]">Nueva capacidad
+      <input type="number" min="1" value={editAirportCap}
+        onChange={e => setEditAirportCap(e.target.value)}
+        className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300"/>
+    </label>
+    <label className="text-gray-500 text-[10px]">Latitud
+      <input type="number" step="0.01" min="-90" max="90" value={editAirportLat}
+        onChange={e => setEditAirportLat(e.target.value)}
+        placeholder="-12.02"
+        className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300"/>
+    </label>
+    <label className="text-gray-500 text-[10px]">Longitud
+      <input type="number" step="0.01" min="-180" max="180" value={editAirportLng}
+        onChange={e => setEditAirportLng(e.target.value)}
+        placeholder="-77.11"
+        className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300"/>
+    </label>
+  </div>
+  <p className="text-gray-600 text-[9px] mt-1">
+    Ubicación: rellena latitud Y longitud juntas (solo cambia el dibujo en el mapa).
+  </p>
   <div className="flex gap-2 mt-2">
     <button onClick={async () => {
-        const ok = await simulation?.editAirport?.(editAirportCode, Number(editAirportCap) || 0);
+        const hasLoc = editAirportLat !== "" && editAirportLng !== "";
+        const ok = await simulation?.editAirport?.(editAirportCode, {
+          capacity: editAirportCap ? Number(editAirportCap) : undefined,
+          lat: hasLoc ? Number(editAirportLat) : undefined,
+          lng: hasLoc ? Number(editAirportLng) : undefined,
+        });
         flashEdit(ok ? "✓ Almacén actualizado" : "✕ No se pudo actualizar");
       }}
-      disabled={!editAirportCode || !editAirportCap}
+      disabled={!editAirportCode
+        || (!editAirportCap && !(editAirportLat !== "" && editAirportLng !== ""))}
       className="flex-1 bg-teal hover:bg-teal/80 text-white text-xs py-1.5 rounded transition
                  disabled:opacity-40 disabled:cursor-not-allowed">
       Guardar Cambios
@@ -736,14 +762,40 @@ const airportFormValid = airportForm.code.trim() !== ""
     </label>
   </div>
 
+  {/* Cambio de tramo: SOLO en preparación (sin simulación en curso). */}
+  <div className="grid grid-cols-2 gap-2 mb-2">
+    {[["Nuevo origen", editFlightOrig, setEditFlightOrig],
+      ["Nuevo destino", editFlightDest, setEditFlightDest]].map(([lbl, val, set]) => (
+      <label key={lbl} className="text-gray-500 text-[10px]">{lbl}
+        <select value={val} onChange={e => set(e.target.value)} disabled={running}
+          title={running ? "El tramo solo se puede cambiar antes de iniciar la simulación" : ""}
+          className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs
+                     text-gray-300 disabled:opacity-40 disabled:cursor-not-allowed">
+          <option value="">(sin cambio)</option>
+          {airports.map(a => (
+            <option key={a.code} value={a.code}>{a.code} — {airportName(a.code)}</option>
+          ))}
+        </select>
+      </label>
+    ))}
+  </div>
+  {running && (editFlightOrig || editFlightDest) && (
+    <p className="text-yellow-400 text-[9px] mb-2">
+      El cambio de origen/destino se ignora con la simulación en curso.
+    </p>
+  )}
+
   <div className="flex gap-2">
     <button onClick={async () => {
         const ok = await simulation?.editFlight?.(editFlightId, {
           capacity: editFlightCap ? Number(editFlightCap) : undefined,
           departureLocal: editFlightDep || undefined,
           arrivalLocal: editFlightArr || undefined,
+          origin: (!running && editFlightOrig) || undefined,
+          destination: (!running && editFlightDest) || undefined,
         });
         flashEdit(ok ? "✓ Vuelo actualizado" : "✕ No se pudo actualizar");
+        if (ok) { setEditFlightOrig(""); setEditFlightDest(""); refreshFlightList(); }
       }}
       disabled={!editFlightId}
       className="flex-1 bg-teal hover:bg-teal/80 text-white text-xs py-1.5 rounded transition

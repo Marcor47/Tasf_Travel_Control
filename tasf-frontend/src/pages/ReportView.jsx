@@ -8,6 +8,24 @@ export default function ReportView({ simulation }) {
   const kpis    = simulation?.kpis    ?? {};
   const running = simulation?.running ?? false;
   const clock   = simulation?.clock   ?? "";
+  const block   = simulation?.block   ?? 0;
+
+  // Plan de ruteo del ÚLTIMO bloque planificado (el backend solo conserva el
+  // último — sin histórico en RAM). Se refresca al cambiar de bloque, al
+  // detener/terminar, y de fondo mientras corre (por replanes de día a día).
+  const [blockPlan, setBlockPlan] = useState(null);
+  const [planQuery, setPlanQuery] = useState("");
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      const p = await simulation?.fetchLastBlockPlan?.();
+      if (alive && p) setBlockPlan(p);
+    };
+    load();
+    const id = setInterval(load, 5000);
+    return () => { alive = false; clearInterval(id); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [block, running]);
 
   // Acumular puntos de la gráfica a lo largo de la simulación
   const [flowHistory, setFlowHistory] = useState([]);
@@ -205,6 +223,82 @@ export default function ReportView({ simulation }) {
           </p>
         </div>
       </div>
+
+      {/* ── Plan de ruteo del último bloque planificado ────────────────────
+          Solo se conserva EL ÚLTIMO plan (el backend lo sobrescribe por bloque
+          para no acumular RAM). Persiste al detener/terminar la simulación. */}
+      {blockPlan && blockPlan.lots?.length > 0 && (
+        <div className="mt-4 bg-[#031525] border border-teal/20 rounded p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+            <p className="text-teal text-xs font-bold uppercase">
+              Plan de Ruteo — Bloque {blockPlan.block}
+              <span className="text-gray-500 normal-case font-normal ml-2">
+                {blockPlan.blockStart} → {blockPlan.blockEnd}
+                {" · "}{blockPlan.totalLots.toLocaleString()} paquete{blockPlan.totalLots === 1 ? "" : "s"}
+                {blockPlan.totalLots > blockPlan.lots.length &&
+                  ` (mostrando ${blockPlan.lots.length})`}
+              </span>
+            </p>
+            <input
+              value={planQuery}
+              onChange={e => setPlanQuery(e.target.value)}
+              placeholder="Filtrar por ID, origen o destino…"
+              className="bg-[#021020] border border-white/10 rounded px-2 py-1
+                         text-[11px] text-gray-300 focus:outline-none focus:border-teal w-56"/>
+          </div>
+          <div className="max-h-72 overflow-y-auto">
+            <table className="w-full text-[11px]">
+              <thead className="sticky top-0 bg-[#031525]">
+                <tr className="text-gray-500 border-b border-white/10 text-[10px] uppercase">
+                  <th className="text-left py-1">Paquete</th>
+                  <th className="text-right py-1 pr-3">Maletas</th>
+                  <th className="text-left py-1">Ruta</th>
+                  <th className="text-left py-1">Salida</th>
+                  <th className="text-left py-1">Llegada</th>
+                  <th className="text-left py-1">Estado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {blockPlan.lots
+                  .filter(l => {
+                    const q = planQuery.trim().toLowerCase();
+                    return !q
+                      || (l.lotId || "").toLowerCase().includes(q)
+                      || (l.origin || "").toLowerCase().includes(q)
+                      || (l.destination || "").toLowerCase().includes(q);
+                  })
+                  .slice(0, 200)
+                  .map(l => (
+                  <tr key={l.lotId} className="border-b border-white/5">
+                    <td className="py-1 text-teal font-mono text-[10px] break-all">{l.lotId}</td>
+                    <td className="py-1 text-right pr-3 text-gray-300 tabular-nums">
+                      {l.qty.toLocaleString()}
+                    </td>
+                    <td className="py-1 text-gray-300">
+                      {l.path.length === 0
+                        ? <span className="text-red-400">sin ruta</span>
+                        : l.path.join(" → ")}
+                    </td>
+                    <td className="py-1 text-gray-500 font-mono text-[10px]">
+                      {(l.departureClock || "").split("  ")[1] || "—"}
+                    </td>
+                    <td className="py-1 text-gray-500 font-mono text-[10px]">
+                      {(l.arrivalClock || "").split("  ")[1] || "—"}
+                    </td>
+                    <td className="py-1">
+                      {l.path.length === 0
+                        ? <span className="text-red-400">✕ no planificado</span>
+                        : l.late
+                          ? <span className="text-yellow-400">⚠ con retraso</span>
+                          : <span className="text-green-400">✓ a tiempo</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Panel de incidente si hay colapso */}
       {simulation?.collapsed && (

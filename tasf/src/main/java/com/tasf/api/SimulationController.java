@@ -38,12 +38,13 @@ public class SimulationController {
 
 @PostMapping("/editAirport")
 public SimulationService.SimulationState editAirport(@RequestBody SimulationService.EditAirportRequest req) {
-    return simulationService.editAirport(req.code(), req.capacity());
+    return simulationService.editAirport(req.code(), req.capacity(), req.lat(), req.lng());
 }
 
 @PostMapping("/editFlight")
 public SimulationService.SimulationState editFlight(@RequestBody SimulationService.EditFlightRequest req) {
-    return simulationService.editFlight(req.flightId(), req.capacity(), req.departureLocal(), req.arrivalLocal());
+    return simulationService.editFlight(req.flightId(), req.capacity(),
+            req.departureLocal(), req.arrivalLocal(), req.origin(), req.destination());
 }
 
 
@@ -139,6 +140,18 @@ public SimulationService.SimulationState deleteFlight(@RequestBody SimulationSer
     @GetMapping("/shipmentPath")
     public SimulationService.ShipmentPath shipmentPath(@RequestParam String lotId) {
         return simulationService.shipmentPath(lotId);
+    }
+
+    /** Recorridos del lote completo: una ruta POR sub-lote (divisiones visibles). */
+    @GetMapping("/shipmentPaths")
+    public List<SimulationService.ShipmentPath> shipmentPaths(@RequestParam String lotId) {
+        return simulationService.shipmentPathsFor(lotId);
+    }
+
+    /** Plan de ruteo del último bloque planificado (para Reportes). */
+    @GetMapping("/lastBlockPlan")
+    public SimulationService.BlockPlan lastBlockPlan() {
+        return simulationService.lastBlockPlan();
     }
 
     /** Estado de preparación de Día a Día (aeropuertos/vuelos/paquetes cargados). */
