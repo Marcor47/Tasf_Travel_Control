@@ -687,23 +687,28 @@ export default function WorldMap({
               const dash  = leg.status === "done" ? "1 3"
                           : leg.status === "upcoming" ? "6 4" : undefined;
               const width = leg.status === "current" ? 2.6
-                          : leg.status === "done"    ? 1.4 : 1.8;
-              const op    = leg.status === "done" ? 0.45
-                          : leg.status === "upcoming" ? 0.85 : 1;
+                          : leg.status === "done"    ? 1.4 : 2;
+              const op    = leg.status === "done" ? 0.5 : 1;
               const icon  = leg.status === "current" ? "✈"
                           : leg.status === "upcoming" ? "›" : "✓";
+              // Color por tramo: los tramos AÚN NO recorridos ("resto del
+              // trayecto") van en celeste claro bien visible — antes tomaban el
+              // gris de carga y apenas se distinguían del mapa.
+              const legCol = leg.status === "upcoming"
+                          ? "#7dd3fc"
+                          : (leg.color || "#94a3b8");
               const mid   = [(from[0] + to[0]) / 2, (from[1] + to[1]) / 2];
               return (
                 <g key={`leg-${pi}-${i}`}>
                   <Line from={from} to={to}
-                        stroke={leg.color || "#6b7280"}
+                        stroke={legCol}
                         strokeWidth={width} strokeLinecap="round"
                         strokeDasharray={dash} opacity={op}
                         className={leg.status === "current" ? "route-active" : undefined}/>
                   <Marker coordinates={mid}>
                     <text textAnchor="middle" dy={-2}
                       style={{ fontSize: Math.max(5, 8 / Math.sqrt(zoom)),
-                               fill: leg.color || "#6b7280",
+                               fill: legCol,
                                fontFamily: "sans-serif", fontWeight: "bold" }}>
                       {icon}{shipmentPath.length > 1 && i === 0 ? ` ${p.label}` : ""}
                     </text>

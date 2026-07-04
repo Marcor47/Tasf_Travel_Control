@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { AIRPORT_META, airportName } from "../../data/staticAirports";
 
 // Cuántos almacenes mostrar cuando no hay filtro (para no saturar la vista)
@@ -16,6 +16,11 @@ const MAX_ROWS_PER_STORAGE   = 8;
  * Mismo estilo de tarjeta; vive dentro de un panel lateral colapsable.
  */
 export default function StorageMovements({ history = [], upcoming = [], focusCodes = [], airports = [] }) {
+  // Nivel de detalle: por VUELO (código de avión F###) o por PAQUETE (código de
+  // lote/sub-lote UF-1-2 que entra/sale). Mismos tags (Salida/Final/Transbordo).
+  const [groupBy, setGroupBy] = useState("vuelo");   // "vuelo" | "paquete"
+  const byPkg = groupBy === "paquete";
+
   const nameByCode = useMemo(() => {
     const m = {};
     airports.forEach(a => { if (a.code) m[a.code] = a.name; });
@@ -26,32 +31,37 @@ export default function StorageMovements({ history = [], upcoming = [], focusCod
   //  · historial: 'landed' = entrada al destino, 'departed' = salida del origen.
   //  · planificado (upcoming, aún sin despegar): salida planeada desde el origen
   //    y entrada planeada en el destino — el registro de lo que el sistema planea.
+  // En modo PAQUETE solo se usa el historial (tiene lotId); lo planificado es
+  // agregado por vuelo y no tiene granularidad de paquete.
   const byAirport = useMemo(() => {
     const acc = {};
     for (const e of history) {
+      if (byPkg && !e.lotId) continue;    // modo paquete: solo eventos con lote
       if (e.type === "departed" && e.from) {
         (acc[e.from] ??= []).push({ ...e, dir: "out" });
       } else if (e.type === "landed" && e.to) {
         (acc[e.to] ??= []).push({ ...e, dir: "in" });
       }
     }
-    for (const u of upcoming) {
-      if (!u.assigned) continue;          // solo vuelos planeados con maletas
-      if (u.origin)
-        (acc[u.origin] ??= []).push({
-          dir: "out", planned: true, flightId: u.flightId, to: u.destination,
-          bags: u.assigned, minute: u.departureMinute, clock: u.departureClock });
-      if (u.destination)
-        (acc[u.destination] ??= []).push({
-          dir: "in", planned: true, finalDestination: false, flightId: u.flightId,
-          from: u.origin, bags: u.assigned, minute: u.arrivalMinute, clock: u.arrivalClock });
+    if (!byPkg) {
+      for (const u of upcoming) {
+        if (!u.assigned) continue;        // solo vuelos planeados con maletas
+        if (u.origin)
+          (acc[u.origin] ??= []).push({
+            dir: "out", planned: true, flightId: u.flightId, to: u.destination,
+            bags: u.assigned, minute: u.departureMinute, clock: u.departureClock });
+        if (u.destination)
+          (acc[u.destination] ??= []).push({
+            dir: "in", planned: true, finalDestination: false, flightId: u.flightId,
+            from: u.origin, bags: u.assigned, minute: u.arrivalMinute, clock: u.arrivalClock });
+      }
     }
     // Ordenar por minuto descendente: lo planeado (futuro) queda arriba.
     for (const code of Object.keys(acc)) {
       acc[code].sort((a, b) => (b.minute || 0) - (a.minute || 0));
     }
     return acc;
-  }, [history, upcoming]);
+  }, [history, upcoming, byPkg]);
 
   const focus     = useMemo(() => new Set(focusCodes), [focusCodes]);
   const hasFilter = focus.size > 0;
@@ -65,14 +75,25 @@ export default function StorageMovements({ history = [], upcoming = [], focusCod
 
   return (
     <div className="bg-[#031525] border border-teal/20 rounded p-2 mt-2">
-      <p className="text-teal font-bold mb-2 uppercase tracking-wide text-[10px]">
-        Movimientos por Almacén
-        {hasFilter && (
-          <span className="text-gray-500 normal-case ml-1">
-            ({codes.length})
-          </span>
-        )}
-      </p>
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-teal font-bold uppercase tracking-wide text-[10px]">
+          Movimientos por Almacén
+          {hasFilter && (
+            <span className="text-gray-500 normal-case ml-1">({codes.length})</span>
+          )}
+        </p>
+        {/* Toggle nivel de detalle: por vuelo (avión) o por paquete (lote). */}
+        <div className="flex gap-1">
+          {[["vuelo", "Vuelo"], ["paquete", "Paquete"]].map(([k, l]) => (
+            <button key={k} onClick={() => setGroupBy(k)}
+              className={`text-[9px] px-1.5 py-0.5 rounded transition border
+                ${groupBy === k ? "bg-teal/20 text-teal border-teal/40"
+                                : "bg-[#021020] text-gray-500 border-white/10 hover:text-white"}`}>
+              {l}
+            </button>
+          ))}
+        </div>
+      </div>
 
       {history.length === 0 && upcoming.length === 0 ? (
         <p className="text-gray-600 text-center py-4 text-[10px]">
@@ -105,7 +126,7 @@ export default function StorageMovements({ history = [], upcoming = [], focusCod
                 <div className="flex flex-col gap-0.5">
                   {rows.map((e, i) => (
                     <MovementRow key={`${code}-${e.minute}-${e.flightId}-${e.dir}-${i}`}
-                                 e={e} />
+                                 e={e} byPkg={byPkg} />
                   ))}
                 </div>
               </div>
@@ -117,7 +138,7 @@ export default function StorageMovements({ history = [], upcoming = [], focusCod
   );
 }
 
-function MovementRow({ e }) {
+function MovementRow({ e, byPkg }) {
   const isIn    = e.dir === "in";
   const planned = !!e.planned;
   const time    = (e.clock && e.clock.split("  ")[1]) || e.clock || "--:--";
@@ -128,6 +149,8 @@ function MovementRow({ e }) {
     ? "text-blue-300"
     : !isIn ? "text-yellow-400"
     : e.finalDestination ? "text-green-400" : "text-blue-400";
+  // Código mostrado: paquete/sub-lote (lotId) o vuelo (flightId) según el modo.
+  const label = byPkg ? (e.lotId || "—") : (e.flightId || "—");
 
   return (
     <div className={`flex items-center justify-between text-[10px] ${planned ? "opacity-70" : ""}`}>
@@ -135,8 +158,9 @@ function MovementRow({ e }) {
         <span className={isIn ? "text-green-400" : "text-yellow-400"}>
           {planned ? "⌛" : isIn ? "↓" : "↑"}
         </span>
-        <span className="text-gray-300 font-mono truncate">
-          {e.flightId || "—"}
+        <span className={`font-mono truncate ${byPkg ? "text-teal" : "text-gray-300"}`}
+              title={byPkg ? `Vuelo ${e.flightId || "—"}` : undefined}>
+          {label}
         </span>
         <span className="text-gray-600 truncate"
               title={isIn ? `← ${e.from}` : `→ ${e.to}`}>

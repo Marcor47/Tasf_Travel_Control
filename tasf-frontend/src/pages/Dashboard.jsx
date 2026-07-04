@@ -514,6 +514,7 @@ export default function Dashboard({
             kpis={kpis} events={simulation?.history ?? []}
             running={running} simulatedNow={simulatedNow}
             focusCodes={focusCodes} focusFlightId={focusFlightId} view="envios"
+            focusRoute={selectedRouteObj}
             selectedShipment={selectedShipment}
             onShipmentClick={handleShipmentClick}
             searchText={bagSearch} onSearchChange={handleBagSearch}
@@ -526,6 +527,7 @@ export default function Dashboard({
             kpis={kpis} events={simulation?.history ?? []}
             running={running} simulatedNow={simulatedNow}
             focusCodes={focusCodes} focusFlightId={focusFlightId}
+            focusRoute={selectedRouteObj}
             focusLotId={focusLotId} view="sla"/>
         );
 

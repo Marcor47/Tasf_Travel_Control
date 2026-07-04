@@ -147,6 +147,7 @@ export default function SLAMonitor({
   focusCodes = [],
   focusFlightId = null,
   focusLotId = null,   // paquete (UF-1) o maleta (UF-1-2) seleccionados en Envíos
+  focusRoute = null,   // ruta (vuelo) enfocada en el mapa: {flightId,from,to,bags,capacity}
   view = "all",
   selectedShipment = null, onShipmentClick,
   searchText, onSearchChange,
@@ -198,6 +199,11 @@ export default function SLAMonitor({
   const flightFallback = focusFlightId
     && !events.some(e => e.flightId === focusFlightId)
     && focusCodes.length > 0;
+  // Carga real del vuelo enfocado según el mapa (RouteState). Un avión puede ir
+  // EN EL AIRE con maletas cuyo evento aún no llegó al historial del cliente
+  // (tope/dedup): en ese caso NO es "vacío" — hay que decir que lleva N maletas.
+  const focusFlightBags = (focusRoute && focusRoute.flightId === focusFlightId)
+    ? (focusRoute.bags || 0) : 0;
 
 
 
@@ -390,7 +396,9 @@ const packageRows = useMemo(() => {
                   {focusLotId
                     ? `${focusLotId} aún no registra eventos (esperando salida)`
                     : focusFlightId
-                      ? `El vuelo ${focusFlightId} no lleva paquetes registrados (vacío)`
+                      ? (focusFlightBags > 0
+                          ? `El vuelo ${focusFlightId} lleva ${focusFlightBags} maletas en vuelo — su detalle aparece al aterrizar`
+                          : `El vuelo ${focusFlightId} va vacío (sin maletas)`)
                       : focusCodes.length
                         ? "Sin paquetes para el filtro actual"
                         : running ? "Esperando eventos..." : "Inicia la simulación"}
@@ -429,9 +437,14 @@ const packageRows = useMemo(() => {
           Detalle por Paquete
         </p>
         {flightFallback && (
-          <p className="text-yellow-400/80 text-[10px] mb-2 leading-tight">
-            El vuelo {focusFlightId} aún no registra paquetes (en vuelo o vacío) —
-            mostrando los que pasan por su origen/destino.
+          <p className={`text-[10px] mb-2 leading-tight ${
+            focusFlightBags > 0 ? "text-teal/90" : "text-yellow-400/80"}`}>
+            {focusFlightBags > 0
+              ? <>El vuelo {focusFlightId} lleva <b>{focusFlightBags}</b> maletas en
+                  vuelo — su detalle por paquete aparece al aterrizar; abajo, los
+                  paquetes que pasan por su ruta.</>
+              : <>El vuelo {focusFlightId} va vacío (sin maletas) — mostrando los
+                  que pasan por su origen/destino.</>}
           </p>
         )}
         <input
@@ -567,7 +580,9 @@ const packageRows = useMemo(() => {
           {filterText
             ? "Sin coincidencias"
             : focusFlightId
-              ? `El vuelo ${focusFlightId} no lleva paquetes registrados`
+              ? (focusFlightBags > 0
+                  ? `El vuelo ${focusFlightId} lleva ${focusFlightBags} maletas en vuelo — su detalle aparece al aterrizar`
+                  : `El vuelo ${focusFlightId} va vacío (sin maletas)`)
               : focusCodes.length
                 ? "Sin paquetes para el filtro actual"
                 : running ? "Esperando datos..." : "Inicia la simulación"}

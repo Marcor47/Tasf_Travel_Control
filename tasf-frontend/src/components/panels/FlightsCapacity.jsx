@@ -280,7 +280,13 @@ export default function FlightsCapacity({
         onChange={e => setSearch(e.target.value)}
         onKeyDown={e => {
           if (e.key === "Enter" && search.trim()) {
-            onSearchEnter?.([...activeFlights, ...plannedFlights]);
+            const q = search.trim().toLowerCase();
+            const all = [...activeFlights, ...plannedFlights];
+            // Priorizar coincidencia EXACTA de ID de vuelo: "f104" + Enter debe
+            // enfocar solo F104, no F10443 (que sí casa por substring en la lista).
+            const exact = all.filter(f =>
+              (f.flightId || f.key || "").toLowerCase() === q);
+            onSearchEnter?.(exact.length ? exact : all);
           }
         }}
         placeholder="Buscar por ID, origen o destino (Enter → mapa)…"
