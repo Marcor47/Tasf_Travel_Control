@@ -140,13 +140,16 @@ export default function FlightsCapacity({
 )
       .filter(u => !focusFlightId || u.flightId === focusFlightId)
       .filter(u => focus.size === 0 || focus.has(u.origin) || focus.has(u.destination))
-      .filter(u => !q
-        || (u.flightId || "").toLowerCase().includes(q)
-        || `${u.origin}-${u.destination}`.toLowerCase().includes(q)
-        || (u.origin || "").toLowerCase().includes(q)
-        || (u.destination || "").toLowerCase().includes(q)
-        || airportName(u.origin).toLowerCase().includes(q)
-        || airportName(u.destination).toLowerCase().includes(q))
+      .filter(u => !q || (() => {
+        const norm = s => (s||"").toLowerCase()
+          .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+        const qn = norm(q);
+        const om = AIRPORT_META[u.origin]      || {};
+        const dm = AIRPORT_META[u.destination] || {};
+        return [u.flightId, u.origin, u.destination,
+                om.name, om.country, dm.name, dm.country]
+          .some(s => norm(s).includes(qn));
+      })())
       .map(u => ({
     key: u.flightId,
     active: false,
@@ -206,13 +209,16 @@ export default function FlightsCapacity({
     return history
       .filter(e => !focusFlightId || e.flightId === focusFlightId)
       .filter(e => focus.size === 0 || focus.has(e.from) || focus.has(e.to))
-      .filter(e => !q
-        || (e.flightId || "").toLowerCase().includes(q)
-        || (e.lotId    || "").toLowerCase().includes(q)
-        || (e.from || "").toLowerCase().includes(q)
-        || (e.to   || "").toLowerCase().includes(q)
-        || airportName(e.from).toLowerCase().includes(q)
-        || airportName(e.to).toLowerCase().includes(q))
+      .filter(e => !q || (() => {
+        const norm = s => (s||"").toLowerCase()
+          .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+        const qn = norm(q);
+        const om = AIRPORT_META[e.from] || {};
+        const dm = AIRPORT_META[e.to]   || {};
+        return [e.flightId, e.lotId, e.from, e.to,
+                om.name, om.country, dm.name, dm.country]
+          .some(s => norm(s).includes(qn));
+      })())
       .slice(0, 40);
   }, [history, focusCodes, focusFlightId, search]);
 

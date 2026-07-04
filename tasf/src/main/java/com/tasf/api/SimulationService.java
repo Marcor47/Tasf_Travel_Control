@@ -330,7 +330,9 @@ public class SimulationService {
         if (ap.isEmpty() || !haveFlights) return state;   // sin aeropuertos/vuelos no se puede
         Airport o = ap.get(origin), d = ap.get(destination);
         if (o == null || d == null || origin.equals(destination) || quantity <= 0) return state;
-        int     regMin = registrationMinuteFor(clientEpochMs);
+        int     regMin = (live && !"diadia".equals(state.mode()))
+                ? state.simulatedMinute()
+                : registrationMinuteFor(clientEpochMs);
         boolean same   = o.getRegion().equals(d.getRegion());
         int     dueMin = regMin + (same ? 24 * 60 : 48 * 60);
         // Partir lotes grandes en sub-lotes (id-1, id-2, …) para que el

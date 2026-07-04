@@ -27,7 +27,7 @@ const minSlotPos = (slot) => ({ x: 8, y: 84 + slot * 30 });
 // Identidad de una ruta (igual que en WorldMap): por flightId, o por
 // origen-destino-salida si no lo trae.
 const routeKey = r => r.flightId || `${r.from}-${r.to}-${r.departureMinute ?? 0}`;
-import { STATIC_AIRPORTS, airportMatches } from "../data/staticAirports";
+import { STATIC_AIRPORTS, AIRPORT_META, airportMatches } from "../data/staticAirports";
 
 // Color de semáforo de un vuelo por su carga (idéntico al del mapa): gris si va
 // vacío, si no verde/ámbar/rojo. Sirve para pintar cada tramo de un envío con el
@@ -188,16 +188,18 @@ export default function Dashboard({
   // los orígenes/destinos de los eventos del historial que coinciden con el
   // término. Sirven para reflejar la búsqueda en el mapa y los demás paneles.
   const bagFocusCodes = useMemo(() => {
-    const q = bagSearch.trim().toLowerCase();
-    if (!q) return null;
+    const raw = bagSearch.trim();
+    if (!raw) return null;
+    const norm = s => (s||"").toLowerCase()
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const q = norm(raw);
     const codes = new Set();
     for (const e of (simulation?.history ?? [])) {
-      const pkg = `pkg-${e.from || ""}${e.to || ""}-${e.minute ?? ""}`.toLowerCase();
-      if ((e.lotId || "").toLowerCase().includes(q) ||
-          (e.flightId || "").toLowerCase().includes(q) ||
-          (e.from || "").toLowerCase().includes(q) ||
-          (e.to   || "").toLowerCase().includes(q) ||
-          pkg.includes(q)) {
+      const om = AIRPORT_META[e.from] || {};
+      const dm = AIRPORT_META[e.to]   || {};
+      if ([e.lotId, e.flightId, e.from, e.to,
+           om.name, om.country, dm.name, dm.country]
+          .some(s => norm(s).includes(q))) {
         if (e.from) codes.add(e.from);
         if (e.to)   codes.add(e.to);
       }
@@ -490,7 +492,9 @@ export default function Dashboard({
             focusCodes={focusCodes} focusFlightId={focusFlightId} view="envios"
             selectedShipment={selectedShipment}
             onShipmentClick={handleShipmentClick}
-            searchText={bagSearch} onSearchChange={handleBagSearch}/>
+            searchText={bagSearch} onSearchChange={handleBagSearch}
+            fetchShipmentPaths={simulation?.fetchShipmentPaths}
+            />
         );
       case "sla":
         return (

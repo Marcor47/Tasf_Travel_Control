@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { airportName } from "../../data/staticAirports";
+import { airportName, AIRPORT_META } from "../../data/staticAirports";
 
 // ── Constantes SLA ────────────────────────────────────────────────────────────
 // El backend envía registrationMinute y slaLimitMinutes por evento.
@@ -120,6 +120,11 @@ function getPackageId(event) {
   return `PKG-${from}${to}-${event.minute || "00"}`;
 }
 
+const parseLotId = (lotId) => {
+  const m = /^(.+)-(\d+)$/.exec(lotId || "");
+  return m ? { base: m[1], suffix: `-${m[2]}` } : { base: lotId || "—", suffix: "" };
+};
+
 /** Etiqueta legible del SLA (mismo / distinto continente) */
 function slaTypeLabel(slaLimitMinutes) {
   if (slaLimitMinutes == null) return "";
@@ -134,13 +139,38 @@ export default function SLAMonitor({
   message = "",
   simulatedMinute = 0,
   focusCodes = [],
-  focusFlightId = null,   // si está, filtra a las maletas de ESE vuelo
-  view = "all",   // "all" | "sla" | "envios" | "resumen"
+  focusFlightId = null,
+  view = "all",
   selectedShipment = null, onShipmentClick,
-  searchText, onSearchChange,   // búsqueda de maletas — controlada por el padre si se pasa
-  fleetFill = null,             // % llenado de flota (mismo cálculo que Reportes)
+  searchText, onSearchChange,
+  fleetFill = null,
+  fetchShipmentPaths = null,
 }) {
   const [internalFilter, setInternalFilter] = useState("");
+  const [slaSearch, setSlaSearch] = useState("");
+  const [expandedLot, setExpandedLot]   = useState(null);
+const [lotPaths,    setLotPaths]       = useState({});
+const [loadingLot,  setLoadingLot]     = useState(null);
+
+
+
+const expandLot = async (lotId) => {
+  if (expandedLot === lotId) { setExpandedLot(null); return; }
+  setExpandedLot(lotId);
+  if (lotPaths[lotId]) return;  // ya cargado
+  if (!fetchShipmentPaths) return;
+  setLoadingLot(lotId);
+  try {
+    const paths = await fetchShipmentPaths(lotId);
+    setLotPaths(p => ({ ...p, [lotId]: paths ?? [] }));
+  } catch (e) {
+    setLotPaths(p => ({ ...p, [lotId]: [] }));
+  } finally {
+    setLoadingLot(null);
+  }
+};
+
+
   // Búsqueda controlada (la eleva el Dashboard para reflejarla en el mapa y los
   // demás paneles) o interna si no se controla.
   const filterText    = searchText !== undefined ? searchText : internalFilter;
@@ -182,41 +212,74 @@ export default function SLAMonitor({
     && !events.some(e => e.flightId === focusFlightId)
     && focusCodes.length > 0;
 
+
+
+const lotEndpoints = useMemo(() => {
+  const map = new Map();
+  for (const e of events) {
+    const id = e.lotId;
+    if (!id) continue;
+    if (!map.has(id)) map.set(id, { from: e.from, to: e.to });
+    if (e.type === "landed" && e.finalDestination) {
+      map.get(id).to = e.to;
+    }
+  }
+  return map;
+}, [events]);
+
+
+
   // ── Últimos 5 eventos para el monitor de plazos general ───────────────────
   const recentEvents = useMemo(() => {
     if (!focusedEvents.length) return [];
-    return [...focusedEvents].reverse().slice(0, 5);
-  }, [focusedEvents]);
+    let list = [...focusedEvents].reverse();
+    if (slaSearch.trim()) {
+      const norm = s => (s||"").toLowerCase()
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+      const q = norm(slaSearch.trim());
+      list = list.filter(e => {
+        const om = AIRPORT_META[e.from] || {};
+        const dm = AIRPORT_META[e.to]   || {};
+        return [e.lotId, e.flightId, e.from, e.to,
+                om.name, om.country, dm.name, dm.country]
+          .some(s => norm(s).includes(q));
+      });
+    }
+    return list.slice(0, slaSearch.trim() ? 20 : 5);
+  }, [focusedEvents, slaSearch]);
 
   // ── Una fila por PAQUETE (lote), con su ID real (lotId) ───────────────────
   // El lote es la unidad: todas sus maletas viajan juntas por la misma ruta
   // (con transbordos). Deduplicamos por lotId y mostramos el ID real.
-  const bagLevelDetails = useMemo(() => {
-    if (!focusedEvents.length) return [];
+const bagLevelDetails = useMemo(() => {
+  if (!focusedEvents.length) return [];
 
-    const seen = new Set();
-    let result = [];
-    for (const e of [...focusedEvents].reverse()) {
-      const pkgId = e.lotId || getPackageId(e);   // lotId real; fallback si faltara
-      if (seen.has(pkgId)) continue;
-      seen.add(pkgId);
-      result.push({ ...e, pkgId });
-      if (result.length >= 60) break;
+  const byLot = new Map();
+  for (const e of focusedEvents) {
+    const lotId = e.lotId || getPackageId(e);
+    if (!byLot.has(lotId) || e.minute > byLot.get(lotId).minute) {
+      byLot.set(lotId, { ...e, pkgId: lotId });
     }
+  }
 
-    if (filterText.trim()) {
-      const q = filterText.toLowerCase();
-      result = result.filter(b =>
-        (b.pkgId   && b.pkgId.toLowerCase().includes(q)) ||
-        (b.flightId && b.flightId.toLowerCase().includes(q)) ||
-        (b.from && b.from.toLowerCase().includes(q)) ||
-        (b.to   && b.to.toLowerCase().includes(q))
-      );
-    }
+  let result = [...byLot.values()].sort((a, b) => b.minute - a.minute);
 
-    // Retornamos las primeras 6 para que la tabla no sea inmensa
-    return result.slice(0, 6);
-  }, [focusedEvents, filterText]);
+  if (filterText.trim()) {
+    const norm = s => (s||"").toLowerCase()
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const q = norm(filterText.trim());
+    result = result.filter(b => {
+      const ep = lotEndpoints.get(b.pkgId);
+      const om = AIRPORT_META[ep?.from || b.from] || {};
+      const dm = AIRPORT_META[ep?.to   || b.to]   || {};
+      return [b.pkgId, b.flightId, ep?.from || b.from, ep?.to || b.to,
+              om.name, om.country, dm.name, dm.country]
+        .some(s => norm(s).includes(q));
+    });
+  }
+
+  return result.slice(0, 30);
+}, [focusedEvents, filterText, lotEndpoints]);
 
   // ── Contadores globales ───────────────────────────────────────────────────
   const delivered = safeKpis.deliveredOnTime;
@@ -241,6 +304,14 @@ export default function SLAMonitor({
         <p className="text-teal font-bold mb-2 uppercase tracking-wide text-[10px]">
           Monitor de Plazos (SLA)
         </p>
+        <input
+          value={slaSearch}
+          onChange={e => setSlaSearch(e.target.value)}
+          placeholder="Buscar por ID, vuelo, ciudad o país…"
+          className="w-full bg-[#021020] border border-white/10 rounded
+                     px-2 py-1 text-[11px] text-gray-300 mb-2
+                     focus:outline-none focus:border-teal"
+        />
         <table className="w-full">
           <thead>
             <tr className="text-gray-500 border-b border-white/10">
@@ -260,9 +331,16 @@ export default function SLAMonitor({
                       {event.lotId || getPackageId(event)}
                     </span>
                     <br/>
-                    <span className="text-gray-500" title={`${event.from} → ${event.to}`}>
-                      {airportName(event.from)} → {airportName(event.to)}
-                    </span>
+                    {(() => {
+  const ep = lotEndpoints.get(event.lotId);
+  const origin = ep?.from || event.from;
+  const dest   = ep?.to   || event.to;
+  return (
+    <span className="text-gray-500" title={`${origin} → ${dest}`}>
+      {airportName(origin)} → {airportName(dest)}
+    </span>
+  );
+})()}
                   </td>
                   <td className="py-1.5 text-center text-gray-300 font-bold text-[10px]">
                     {event.bags || 1}
@@ -332,58 +410,137 @@ export default function SLAMonitor({
                      focus:outline-none focus:border-teal"
         />
         <table className="w-full">
-          <thead>
-            <tr className="text-gray-500 border-b border-white/10">
-              <th className="text-left py-1">ID Paquete</th>
-              <th className="text-left py-1">Vuelo / Ruta</th>
-              <th className="text-left py-1">Estado SLA</th>
+  <thead>
+    <tr className="text-gray-500 border-b border-white/10">
+      <th className="text-left py-1 w-4"/>
+      <th className="text-left py-1">Paquete</th>
+      <th className="text-left py-1">Origen → Destino</th>
+      <th className="text-center py-1">Maletas</th>
+      <th className="text-left py-1">SLA</th>
+    </tr>
+  </thead>
+  <tbody>
+    {bagLevelDetails.length > 0 ? (
+      bagLevelDetails.map((bag, idx) => {
+        const ep       = lotEndpoints.get(bag.pkgId);
+        const origin   = ep?.from || bag.from;
+        const dest     = ep?.to   || bag.to;
+        const { base, suffix } = parseLotId(bag.pkgId);
+        const isSel    = selectedShipment?.bagId === bag.pkgId;
+        const isExp    = expandedLot === bag.pkgId;
+        const isLoading = loadingLot === bag.pkgId;
+        const paths    = lotPaths[bag.pkgId] ?? [];
+
+        // Estado global del sub-lote basado en su evento más reciente
+        const isDelivered = bag.type === "landed" && bag.finalDestination;
+        const isInAir     = bag.type === "departed";
+        const globalStatus = isDelivered ? ["✓ Entregado",  "text-green-400"]
+                           : isInAir     ? ["✈ En vuelo",   "text-yellow-400"]
+                           :               ["⇄ En escala",  "text-blue-400"];
+
+        return (
+          <>
+            {/* ── Fila del paquete (nivel 1) ── */}
+            <tr key={`pkg-${bag.pkgId}-${idx}`}
+                className={`border-b border-white/5 transition
+                  ${isSel ? "bg-teal/10" : "hover:bg-white/5"}`}>
+              <td className="py-1.5">
+                <button onClick={() => expandLot(bag.pkgId)}
+                  className="text-gray-500 hover:text-teal transition text-[10px] px-1">
+                  {isLoading ? "…" : isExp ? "▴" : "▾"}
+                </button>
+              </td>
+              <td className="py-1.5 text-[10px] cursor-pointer"
+                  onClick={() => onShipmentClick?.(bag)}>
+                <span className="text-gray-300 font-mono font-bold">{base}</span>
+                {suffix && <span className="text-teal font-mono">{suffix}</span>}
+                <span className={`ml-1.5 text-[9px] ${globalStatus[1]}`}>
+                  {globalStatus[0]}
+                </span>
+              </td>
+              <td className="py-1.5 text-[10px] text-gray-400 cursor-pointer"
+                  onClick={() => onShipmentClick?.(bag)}
+                  title={`${origin} → ${dest}`}>
+                <span className="text-gray-300">{airportName(origin)}</span>
+                <span className="text-gray-600 mx-1">→</span>
+                <span className="text-gray-300">{airportName(dest)}</span>
+              </td>
+              <td className="py-1.5 text-center text-gray-300 font-bold text-[10px]">
+                {bag.bags || 0}
+              </td>
+              <td className="py-1.5">
+                <SLAStatusBadge event={{ ...bag, from: origin, to: dest }}
+                                simulatedMinute={simulatedMinute} />
+              </td>
             </tr>
-          </thead>
-          <tbody>
-            {bagLevelDetails.length > 0 ? (
-              bagLevelDetails.map((bag, idx) => {
-                const isSel = selectedShipment
-                  && selectedShipment.bagId === bag.pkgId;
-                return (
-                <tr key={`pkg-${bag.pkgId}-${idx}`}
-                    onClick={() => onShipmentClick?.(bag)}
-                    title="Ver la ruta de este paquete en el mapa"
-                    className={`border-b border-white/5 cursor-pointer transition
-                      ${isSel ? "bg-teal/15" : "hover:bg-white/5"}`}>
-                  <td className="py-1.5 text-teal font-mono font-bold text-[10px] break-all">
-                    {bag.pkgId}
-                  </td>
-                  <td className="py-1.5 text-gray-400 text-[10px]">
-                    <span className="text-gray-300">{bag.flightId || `FLT`}</span>
-                    <br />
-                    <span title={`${bag.from} → ${bag.to}`}>
-                      {airportName(bag.from)} → {airportName(bag.to)}
-                    </span>
-                    {!bag.finalDestination && (
-                      <span className="text-amber-400 ml-1" title="Continúa en otro vuelo">⇄</span>
-                    )}
-                  </td>
-                  <td className="py-1.5">
-                    <SLAStatusBadge event={bag} simulatedMinute={simulatedMinute} />
+
+            {/* ── Filas de tramos (nivel 2, expandible) ── */}
+            {isExp && (
+              isLoading ? (
+                <tr key={`loading-${bag.pkgId}`}>
+                  <td colSpan={5} className="py-1 pl-6 text-gray-600 text-[10px]">
+                    Cargando tramos…
                   </td>
                 </tr>
-                );
-              })
-            ) : (
-              <tr>
-                <td colSpan={3} className="py-3 text-center text-gray-600 text-[10px]">
-                  {filterText
-                    ? "Sin coincidencias"
-                    : focusFlightId
-                      ? `El vuelo ${focusFlightId} no lleva paquetes registrados (vacío)`
-                      : focusCodes.length
-                        ? "Sin paquetes para el filtro actual"
-                        : running ? "Esperando datos..." : "Inicia la simulación"}
-                </td>
-              </tr>
+              ) : paths.length === 0 ? (
+                <tr key={`empty-${bag.pkgId}`}>
+                  <td colSpan={5} className="py-1 pl-6 text-gray-600 text-[10px]">
+                    Sin tramos disponibles
+                  </td>
+                </tr>
+              ) : (
+                paths.flatMap((path, pi) =>
+                  (path.legs ?? []).map((leg, li) => {
+                    const statusIcon = leg.status === "done"     ? ["✓", "text-green-400"]
+                                     : leg.status === "current"  ? ["✈", "text-yellow-400"]
+                                     :                             ["○", "text-gray-500"];
+                    return (
+                      <tr key={`leg-${bag.pkgId}-${pi}-${li}`}
+                          className="border-b border-white/5 bg-[#021020]/40">
+                        <td className="py-1 pl-4 text-[9px] text-gray-600">└</td>
+                        <td className="py-1 text-[9px]">
+                          <span className={`mr-1 ${statusIcon[1]}`}>{statusIcon[0]}</span>
+                          <span className="text-gray-500 font-mono">{leg.flightId || "—"}</span>
+                        </td>
+                        <td className="py-1 text-[9px] text-gray-500"
+                            title={`${leg.from} → ${leg.to}`}>
+                          <span>{airportName(leg.from)}</span>
+                          <span className="text-gray-700 mx-1">→</span>
+                          <span>{airportName(leg.to)}</span>
+                          {leg.finalDestination && (
+                            <span className="text-green-500 ml-1">★</span>
+                          )}
+                        </td>
+                        <td className="py-1 text-center text-gray-600 text-[9px]">—</td>
+                        <td className="py-1 text-gray-600 text-[9px] font-mono">
+                          {leg.status === "done"    ? "Completado"
+                         : leg.status === "current" ? "En curso"
+                         :                            "Pendiente"}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )
+              )
             )}
-          </tbody>
-        </table>
+          </>
+        );
+      })
+    ) : (
+      <tr>
+        <td colSpan={5} className="py-3 text-center text-gray-600 text-[10px]">
+          {filterText
+            ? "Sin coincidencias"
+            : focusFlightId
+              ? `El vuelo ${focusFlightId} no lleva paquetes registrados`
+              : focusCodes.length
+                ? "Sin paquetes para el filtro actual"
+                : running ? "Esperando datos..." : "Inicia la simulación"}
+        </td>
+      </tr>
+    )}
+  </tbody>
+</table>
       </div>
       )}
 
