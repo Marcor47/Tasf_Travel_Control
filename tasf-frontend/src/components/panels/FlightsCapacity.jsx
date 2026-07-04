@@ -40,9 +40,13 @@ function hhmm(minute) {
  * origen-destino-hora de salida. Las maletas se suman por vuelo (un mismo vuelo
  * puede llevar varios grupos de lotes).
  */
+// ¿`id` (lote) pertenece al foco `focus`? (exacto, o sub-lote de ese paquete)
+const lotMatches = (id, focus) => !!id && (id === focus || id.startsWith(focus + "-"));
+
 export default function FlightsCapacity({
   routes = [], upcoming = [], running = false, focusCodes = [],
   focusFlightId = null,   // si está, muestra SOLO ese vuelo
+  focusLotId = null,      // paquete (UF-1) o maleta (UF-1-2) seleccionados en Envíos
   sem = "all", onSemChange,   // semáforo controlado por el padre (también filtra el mapa)
   selectedRouteKey = null, pinnedCodes = null, onFlightClick,
   onSearchEnter,          // Enter en la búsqueda → aplicar resultados al mapa
@@ -52,6 +56,24 @@ export default function FlightsCapacity({
   const [sortBy,   setSortBy]   = useState("ocupacion");
   const [bottomTab, setBottomTab] = useState("planificados"); // planificados | historial
 
+  // Vuelos que transportan un lote según el historial. Permite buscar por ID de
+  // paquete/maleta (UF-1 / UF-1-2) y filtrar por la selección de Envíos.
+  const flightsByLotQuery = (q) => {
+    const ids = new Set();
+    for (const e of history) {
+      if (e.flightId && e.lotId && e.lotId.toLowerCase().includes(q)) ids.add(e.flightId);
+    }
+    return ids;
+  };
+  const lotFlightIds = useMemo(() => {
+    if (!focusLotId) return null;
+    const ids = new Set();
+    for (const e of history) {
+      if (e.flightId && lotMatches(e.lotId, focusLotId)) ids.add(e.flightId);
+    }
+    return ids;
+  }, [history, focusLotId]);
+
 
 
   // Cada ruta activa del backend ya es un vuelo con su capacidad y carga total.
@@ -59,12 +81,14 @@ export default function FlightsCapacity({
   const activeFlights = useMemo(() => {
     const focus = new Set(focusCodes);
     const q = search.trim().toLowerCase();
+    const qLotFlights = q ? flightsByLotQuery(q) : null;
     return routes
       .filter(r => r.status === "departed")
       .filter(r => !focusFlightId || r.flightId === focusFlightId)
+      .filter(r => !lotFlightIds || lotFlightIds.has(r.flightId))
       .filter(r => focus.size === 0 || focus.has(r.from) || focus.has(r.to))
       .filter(r => sem === "all" || flightSem(r.bags, r.capacity || 0) === sem)
-      .filter(r => !q || (() => {
+      .filter(r => !q || qLotFlights.has(r.flightId) || (() => {
         const norm = s => (s||"").toLowerCase()
           .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
         const qn = norm(q);
@@ -124,7 +148,8 @@ export default function FlightsCapacity({
 
   return (b.pct ?? -1) - (a.pct ?? -1);
 });
-  }, [routes, focusCodes, focusFlightId, search, sem, sortBy]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [routes, focusCodes, focusFlightId, lotFlightIds, history, search, sem, sortBy]);
 
   // Vuelos PLANIFICADOS próximos (aún no despegan) con maletas asignadas —
   // el registro de lo que el sistema planea. Respeta el foco de aeropuertos
@@ -132,6 +157,7 @@ export default function FlightsCapacity({
   const plannedFlights = useMemo(() => {
     const focus = new Set(focusCodes);
     const q = search.trim().toLowerCase();
+    const qLotFlights = q ? flightsByLotQuery(q) : null;
     return upcoming
       .filter(u => (u.assigned || 0) > 0)
       .filter(u =>
@@ -139,8 +165,10 @@ export default function FlightsCapacity({
   flightSem(u.assigned, u.capacity || 0) === sem
 )
       .filter(u => !focusFlightId || u.flightId === focusFlightId)
+      // Selección de Envíos: los tramos FUTUROS del lote aún no tienen eventos,
+      // así que los planificados se restringen por aeropuertos del foco (abajo).
       .filter(u => focus.size === 0 || focus.has(u.origin) || focus.has(u.destination))
-      .filter(u => !q || (() => {
+      .filter(u => !q || qLotFlights.has(u.flightId) || (() => {
         const norm = s => (s||"").toLowerCase()
           .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
         const qn = norm(q);
@@ -200,7 +228,8 @@ export default function FlightsCapacity({
 
   return (b.pct ?? -1) - (a.pct ?? -1);
 });
-}, [upcoming, focusCodes, focusFlightId, sortBy, sem, search]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [upcoming, focusCodes, focusFlightId, history, sortBy, sem, search]);
 
   // Historial de eventos integrado (sub-pestaña): respeta foco y buscador.
   const filteredHistory = useMemo(() => {
@@ -208,6 +237,7 @@ export default function FlightsCapacity({
     const q = search.trim().toLowerCase();
     return history
       .filter(e => !focusFlightId || e.flightId === focusFlightId)
+      .filter(e => !focusLotId || lotMatches(e.lotId, focusLotId))
       .filter(e => focus.size === 0 || focus.has(e.from) || focus.has(e.to))
       .filter(e => !q || (() => {
         const norm = s => (s||"").toLowerCase()
@@ -220,7 +250,7 @@ export default function FlightsCapacity({
           .some(s => norm(s).includes(qn));
       })())
       .slice(0, 40);
-  }, [history, focusCodes, focusFlightId, search]);
+  }, [history, focusCodes, focusFlightId, focusLotId, search]);
 
   return (
     <div className="bg-[#031525] border border-teal/20 rounded p-2 mt-2">

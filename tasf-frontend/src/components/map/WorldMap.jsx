@@ -87,14 +87,23 @@ function useSmoothMinute(targetMinute, running, realtime = false) {
     // congelamientos si un broadcast llega con retraso (la cadencia es ~800 ms).
     // En tiempo real el "broadcast útil" es 1/min → permitir extrapolar más.
     const NOMINAL_MS = realtime ? 90000 : 1500;
-    let raf;
+    // Actualizar el estado a ~15 fps, NO a 60: cada setDisplay re-renderiza el
+    // mapa COMPLETO (países + aviones + líneas). A 60 fps eso quema CPU/GC del
+    // cliente y en sesiones largas puede tumbar la pestaña ("la página está
+    // teniendo problemas"). A 15 fps el movimiento sigue siendo fluido.
+    const MIN_FRAME_MS = 66;
+    let raf, lastSet = 0;
     const tick = () => {
-      const r = s.current;
-      const elapsed = Math.min(performance.now() - r.curT, NOMINAL_MS);
-      let est = r.curVal + r.rate * elapsed;
-      if (est < r.disp) est = r.disp;   // monotónico: nunca retrocede (sin tirones)
-      r.disp = est;
-      setDisplay(est);                  // dentro del callback de rAF (asíncrono)
+      const now = performance.now();
+      if (now - lastSet >= MIN_FRAME_MS) {
+        lastSet = now;
+        const r = s.current;
+        const elapsed = Math.min(now - r.curT, NOMINAL_MS);
+        let est = r.curVal + r.rate * elapsed;
+        if (est < r.disp) est = r.disp; // monotónico: nunca retrocede (sin tirones)
+        r.disp = est;
+        setDisplay(est);                // mismo valor ⇒ React no re-renderiza (bail-out)
+      }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);

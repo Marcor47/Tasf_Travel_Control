@@ -230,12 +230,27 @@ export default function Dashboard({
       if (f) return [f.origin, f.destination];
       return [];   // UT no encontrada: sin coincidencias
     }
+    // Búsqueda por ID de paquete (UF-1) o de maleta/sub-lote (UF-1-1): enfoca
+    // los almacenes que su recorrido toca según el historial.
+    if (/^[A-Z]+[-_]\d+(-\d+)?$/.test(q)) {
+      const codes = new Set();
+      for (const e of (simulation?.history ?? [])) {
+        const id = (e.lotId || "").toUpperCase();
+        if (id === q || id.startsWith(q + "-")) {
+          if (e.from) codes.add(e.from);
+          if (e.to)   codes.add(e.to);
+        }
+      }
+      if (codes.size) return [...codes];
+      // sin eventos aún: caer al filtro normal de aeropuertos
+    }
     const src = (liveAirports && liveAirports.length) ? liveAirports : STATIC_AIRPORTS;
     return src
       .filter(a => airportMatches(a, storageFilter))
       .map(a => a.code);
   }, [pinnedCodes, selectedAirport, bagSearch, bagFocusCodes, storageFilter, liveAirports,
-      simulation?.routes, simulation?.upcomingFlights, simulation?.flights]);
+      simulation?.routes, simulation?.upcomingFlights, simulation?.flights,
+      simulation?.history]);
 
   // Limpia los focos "de ruta/envío" (los que compiten con un foco de aeropuerto).
   const clearRouteFoci = () => {
@@ -321,9 +336,10 @@ export default function Dashboard({
     return "#6b7280";
   };
 
-  // Clic en un envío/maleta: pide al backend TODOS sus tramos y los dibuja en el
-  // mapa (cada uno con el color de su vuelo) distinguiendo completado/actual/
-  // próximo. Enfoca todos los aeropuertos del recorrido.
+  // Clic en un envío. Dos niveles (tarjeta de Envíos):
+  //  · PAQUETE (fila base, ej. UF-1): dibuja TODAS sus rutas, una por sub-lote.
+  //  · SUB-LOTE (fila desplegada, ej. UF-1-2, bag.sub=true): dibuja SOLO esa ruta.
+  // Los demás paneles filtran por la selección vía focusLotId (paquete o maleta).
   const handleShipmentClick = async (bag) => {
     if (!bag?.from || !bag?.to) return;
     const pkgId = bag.pkgId || bag.lotId;
@@ -334,14 +350,16 @@ export default function Dashboard({
     setStorageFilter(""); setWhSemFilter("all"); setSelectedAirport(null); setBagSearch("");
     setSelectedRouteKey(null);
     setSelectedShipment({
-      from: bag.from, to: bag.to, minute: bag.minute, bagId: pkgId,
+      from: bag.from, to: bag.to, minute: bag.minute, bagId: pkgId, sub: !!bag.sub,
     });
 
-    // TODAS las rutas del lote: una por sub-lote (divisiones SEPARADAS, no
-    // mezcladas). Cada una lleva su etiqueta (-1, -2, …) para distinguirlas.
+    // Rutas a dibujar: todas las del paquete (una por sub-lote) o SOLO la del
+    // sub-lote clicado.
     let paths = [];
     if (bag.lotId) {
-      paths = (await simulation?.fetchShipmentPaths?.(bag.lotId)) ?? [];
+      paths = bag.sub
+        ? [await simulation?.fetchShipmentPath?.(bag.lotId)].filter(Boolean)
+        : (await simulation?.fetchShipmentPaths?.(bag.lotId)) ?? [];
     }
     if (!paths.length || paths.every(p => !(p.legs?.length))) {
       // Respaldo (sin lotId o lote fuera de caché): solo el tramo clicado.
@@ -389,6 +407,11 @@ export default function Dashboard({
   // "cargando" con vuelos cortos.
   const focusFlightId = selectedRouteObj?.flightId
     ?? (selectedRouteKey && /^[FU]\d+$/i.test(selectedRouteKey) ? selectedRouteKey : null);
+
+  // Lote en foco por la selección de Envíos: PAQUETE base (UF-1 → incluye todos
+  // sus sub-lotes) o MALETA/sub-lote exacto (UF-1-2). Los paneles SLA y Vuelos
+  // filtran por él.
+  const focusLotId = selectedShipment?.bagId ?? null;
 
   const clearFocus = () => {
     setStorageFilter(""); setWhSemFilter("all"); setSelectedAirport(null);
@@ -475,6 +498,7 @@ export default function Dashboard({
             upcoming={simulation?.upcomingFlights ?? []}
             focusCodes={focusCodes}
             focusFlightId={focusFlightId}
+            focusLotId={focusLotId}
             sem={flightSemFilter}
             onSemChange={setFlightSemFilter}
             selectedRouteKey={selectedRouteKey}
@@ -501,7 +525,8 @@ export default function Dashboard({
           <SLAMonitor
             kpis={kpis} events={simulation?.history ?? []}
             running={running} simulatedNow={simulatedNow}
-            focusCodes={focusCodes} focusFlightId={focusFlightId} view="sla"/>
+            focusCodes={focusCodes} focusFlightId={focusFlightId}
+            focusLotId={focusLotId} view="sla"/>
         );
 
 
@@ -682,6 +707,7 @@ case "cancelaciones":
           {ALL_PANELS.map(([k, l]) => floatWins[k] && (
             <FloatingPanel
               key={k} title={l}
+              accent={k === "cancelaciones" ? "red" : "teal"}
               x={floatWins[k].x} y={floatWins[k].y}
               w={floatWins[k].w} h={floatWins[k].h}
               mode={floatWins[k].mode} z={winZ[k] ?? 30}

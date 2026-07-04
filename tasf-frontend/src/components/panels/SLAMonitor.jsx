@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { airportName, AIRPORT_META } from "../../data/staticAirports";
 
 // ── Constantes SLA ────────────────────────────────────────────────────────────
@@ -120,10 +120,16 @@ function getPackageId(event) {
   return `PKG-${from}${to}-${event.minute || "00"}`;
 }
 
-const parseLotId = (lotId) => {
-  const m = /^(.+)-(\d+)$/.exec(lotId || "");
-  return m ? { base: m[1], suffix: `-${m[2]}` } : { base: lotId || "—", suffix: "" };
+// Paquete base de un sub-lote: un sub-lote SIEMPRE es «base-k» donde base
+// termina a su vez en número (UF-1-2 → UF-1; SPIM_204-3 → SPIM_204). Así
+// «UF-1» (lote sin dividir) NO se confunde con un sub-lote de «UF».
+const packageBase = (lotId) => {
+  const m = /^(.+\d)-(\d+)$/.exec(lotId || "");
+  return m ? m[1] : (lotId || "—");
 };
+
+// ¿`id` pertenece al foco `focus`? (exacto, o sub-lote de ese paquete)
+const matchesLot = (id, focus) => !!id && (id === focus || id.startsWith(focus + "-"));
 
 /** Etiqueta legible del SLA (mismo / distinto continente) */
 function slaTypeLabel(slaLimitMinutes) {
@@ -140,35 +146,16 @@ export default function SLAMonitor({
   simulatedMinute = 0,
   focusCodes = [],
   focusFlightId = null,
+  focusLotId = null,   // paquete (UF-1) o maleta (UF-1-2) seleccionados en Envíos
   view = "all",
   selectedShipment = null, onShipmentClick,
   searchText, onSearchChange,
   fleetFill = null,
-  fetchShipmentPaths = null,
 }) {
   const [internalFilter, setInternalFilter] = useState("");
   const [slaSearch, setSlaSearch] = useState("");
-  const [expandedLot, setExpandedLot]   = useState(null);
-const [lotPaths,    setLotPaths]       = useState({});
-const [loadingLot,  setLoadingLot]     = useState(null);
-
-
-
-const expandLot = async (lotId) => {
-  if (expandedLot === lotId) { setExpandedLot(null); return; }
-  setExpandedLot(lotId);
-  if (lotPaths[lotId]) return;  // ya cargado
-  if (!fetchShipmentPaths) return;
-  setLoadingLot(lotId);
-  try {
-    const paths = await fetchShipmentPaths(lotId);
-    setLotPaths(p => ({ ...p, [lotId]: paths ?? [] }));
-  } catch (e) {
-    setLotPaths(p => ({ ...p, [lotId]: [] }));
-  } finally {
-    setLoadingLot(null);
-  }
-};
+  // Paquete desplegado en la tarjeta de Envíos (muestra sus sub-lotes debajo).
+  const [expandedPkg, setExpandedPkg] = useState(null);
 
 
   // Búsqueda controlada (la eleva el Dashboard para reflejarla en el mapa y los
@@ -233,6 +220,8 @@ const lotEndpoints = useMemo(() => {
   const recentEvents = useMemo(() => {
     if (!focusedEvents.length) return [];
     let list = [...focusedEvents].reverse();
+    // Selección de Envíos: restringir al paquete (incluye sub-lotes) o maleta.
+    if (focusLotId) list = list.filter(e => matchesLot(e.lotId, focusLotId));
     if (slaSearch.trim()) {
       const norm = s => (s||"").toLowerCase()
         .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
@@ -245,15 +234,16 @@ const lotEndpoints = useMemo(() => {
           .some(s => norm(s).includes(q));
       });
     }
-    return list.slice(0, slaSearch.trim() ? 20 : 5);
-  }, [focusedEvents, slaSearch]);
+    return list.slice(0, slaSearch.trim() || focusLotId ? 20 : 5);
+  }, [focusedEvents, slaSearch, focusLotId]);
 
-  // ── Una fila por PAQUETE (lote), con su ID real (lotId) ───────────────────
-  // El lote es la unidad: todas sus maletas viajan juntas por la misma ruta
-  // (con transbordos). Deduplicamos por lotId y mostramos el ID real.
-const bagLevelDetails = useMemo(() => {
+  // ── Tarjeta de Envíos: una fila por PAQUETE (lote base) ──────────────────
+  //  · Clic en el paquete → TODAS sus rutas (una por sub-lote) en el mapa.
+  //  · Desplegar (▾) → sub-lotes/maletas debajo; clic en uno → SOLO su ruta.
+const packageRows = useMemo(() => {
   if (!focusedEvents.length) return [];
 
+  // Estado más reciente de cada sub-lote/lote.
   const byLot = new Map();
   for (const e of focusedEvents) {
     const lotId = e.lotId || getPackageId(e);
@@ -262,18 +252,41 @@ const bagLevelDetails = useMemo(() => {
     }
   }
 
-  let result = [...byLot.values()].sort((a, b) => b.minute - a.minute);
+  // Agrupar sub-lotes por su paquete base: fila nivel 1 = PAQUETE (UF-1),
+  // filas nivel 2 (desplegables) = sub-lotes/maletas (UF-1-1, UF-1-2\u2026).
+  const groups = new Map();
+  for (const row of byLot.values()) {
+    const base = packageBase(row.pkgId);
+    if (!groups.has(base)) groups.set(base, []);
+    groups.get(base).push(row);
+  }
+
+  let result = [...groups.entries()].map(([base, subs]) => {
+    subs.sort((a, b) =>
+      a.pkgId.localeCompare(b.pkgId, undefined, { numeric: true }));
+    const latest = subs.reduce((x, y) => (y.minute > x.minute ? y : x));
+    // Extremos del paquete (origen y destino FINAL, com\u00fan a los sub-lotes).
+    const ep     = lotEndpoints.get(latest.pkgId);
+    const origin = ep?.from || latest.from;
+    const dest   = ep?.to   || latest.to;
+    return {
+      base, subs, latest, origin, dest,
+      bags: subs.reduce((s, x) => s + (x.bags || 0), 0),
+      delivered: subs.every(s => s.type === "landed" && s.finalDestination),
+      inAir:     subs.some(s => s.type === "departed"),
+    };
+  }).sort((a, b) => b.latest.minute - a.latest.minute);
 
   if (filterText.trim()) {
     const norm = s => (s||"").toLowerCase()
       .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
     const q = norm(filterText.trim());
-    result = result.filter(b => {
-      const ep = lotEndpoints.get(b.pkgId);
-      const om = AIRPORT_META[ep?.from || b.from] || {};
-      const dm = AIRPORT_META[ep?.to   || b.to]   || {};
-      return [b.pkgId, b.flightId, ep?.from || b.from, ep?.to || b.to,
-              om.name, om.country, dm.name, dm.country]
+    // Coincide por paquete (UF-1), maleta/sub-lote (UF-1-2), vuelo o ruta.
+    result = result.filter(p => {
+      const om = AIRPORT_META[p.origin] || {};
+      const dm = AIRPORT_META[p.dest]   || {};
+      return [p.base, p.origin, p.dest, om.name, om.country, dm.name, dm.country,
+              ...p.subs.flatMap(s => [s.pkgId, s.flightId])]
         .some(s => norm(s).includes(q));
     });
   }
@@ -420,110 +433,105 @@ const bagLevelDetails = useMemo(() => {
     </tr>
   </thead>
   <tbody>
-    {bagLevelDetails.length > 0 ? (
-      bagLevelDetails.map((bag, idx) => {
-        const ep       = lotEndpoints.get(bag.pkgId);
-        const origin   = ep?.from || bag.from;
-        const dest     = ep?.to   || bag.to;
-        const { base, suffix } = parseLotId(bag.pkgId);
-        const isSel    = selectedShipment?.bagId === bag.pkgId;
-        const isExp    = expandedLot === bag.pkgId;
-        const isLoading = loadingLot === bag.pkgId;
-        const paths    = lotPaths[bag.pkgId] ?? [];
-
-        // Estado global del sub-lote basado en su evento más reciente
-        const isDelivered = bag.type === "landed" && bag.finalDestination;
-        const isInAir     = bag.type === "departed";
-        const globalStatus = isDelivered ? ["✓ Entregado",  "text-green-400"]
-                           : isInAir     ? ["✈ En vuelo",   "text-yellow-400"]
-                           :               ["⇄ En escala",  "text-blue-400"];
+    {packageRows.length > 0 ? (
+      packageRows.map((pkg) => {
+        const isSel   = selectedShipment?.bagId === pkg.base;
+        const isExp   = expandedPkg === pkg.base;
+        const hasSubs = pkg.subs.length > 1
+          || (pkg.subs.length === 1 && pkg.subs[0].pkgId !== pkg.base);
+        const globalStatus = pkg.delivered ? ["✓ Entregado", "text-green-400"]
+                           : pkg.inAir     ? ["✈ En vuelo",  "text-yellow-400"]
+                           :                 ["⇄ En escala", "text-blue-400"];
+        // Clic en el paquete: TODAS las rutas del lote (el backend agrupa por base).
+        const clickPkg = () => onShipmentClick?.({
+          ...pkg.latest, pkgId: pkg.base, lotId: pkg.base,
+          from: pkg.origin, to: pkg.dest,
+        });
 
         return (
-          <>
-            {/* ── Fila del paquete (nivel 1) ── */}
-            <tr key={`pkg-${bag.pkgId}-${idx}`}
-                className={`border-b border-white/5 transition
+          <Fragment key={`pkg-${pkg.base}`}>
+            {/* ── Fila del PAQUETE (nivel 1) ── */}
+            <tr className={`border-b border-white/5 transition
                   ${isSel ? "bg-teal/10" : "hover:bg-white/5"}`}>
               <td className="py-1.5">
-                <button onClick={() => expandLot(bag.pkgId)}
-                  className="text-gray-500 hover:text-teal transition text-[10px] px-1">
-                  {isLoading ? "…" : isExp ? "▴" : "▾"}
-                </button>
+                {hasSubs && (
+                  <button onClick={() => setExpandedPkg(isExp ? null : pkg.base)}
+                    title={isExp ? "Ocultar maletas" : `Ver ${pkg.subs.length} maletas/sub-lotes`}
+                    className="text-gray-500 hover:text-teal transition text-[10px] px-1">
+                    {isExp ? "▴" : "▾"}
+                  </button>
+                )}
               </td>
               <td className="py-1.5 text-[10px] cursor-pointer"
-                  onClick={() => onShipmentClick?.(bag)}>
-                <span className="text-gray-300 font-mono font-bold">{base}</span>
-                {suffix && <span className="text-teal font-mono">{suffix}</span>}
+                  onClick={clickPkg}
+                  title="Clic: todas las rutas del paquete en el mapa">
+                <span className="text-teal font-mono font-bold">{pkg.base}</span>
+                {hasSubs && (
+                  <span className="text-gray-500 ml-1">×{pkg.subs.length}</span>
+                )}
                 <span className={`ml-1.5 text-[9px] ${globalStatus[1]}`}>
                   {globalStatus[0]}
                 </span>
               </td>
               <td className="py-1.5 text-[10px] text-gray-400 cursor-pointer"
-                  onClick={() => onShipmentClick?.(bag)}
-                  title={`${origin} → ${dest}`}>
-                <span className="text-gray-300">{airportName(origin)}</span>
+                  onClick={clickPkg}
+                  title={`${pkg.origin} → ${pkg.dest}`}>
+                <span className="text-gray-300">{airportName(pkg.origin)}</span>
                 <span className="text-gray-600 mx-1">→</span>
-                <span className="text-gray-300">{airportName(dest)}</span>
+                <span className="text-gray-300">{airportName(pkg.dest)}</span>
               </td>
               <td className="py-1.5 text-center text-gray-300 font-bold text-[10px]">
-                {bag.bags || 0}
+                {pkg.bags}
               </td>
               <td className="py-1.5">
-                <SLAStatusBadge event={{ ...bag, from: origin, to: dest }}
-                                simulatedMinute={simulatedMinute} />
+                <SLAStatusBadge
+                  event={{ ...pkg.latest, from: pkg.origin, to: pkg.dest }}
+                  simulatedMinute={simulatedMinute} />
               </td>
             </tr>
 
-            {/* ── Filas de tramos (nivel 2, expandible) ── */}
-            {isExp && (
-              isLoading ? (
-                <tr key={`loading-${bag.pkgId}`}>
-                  <td colSpan={5} className="py-1 pl-6 text-gray-600 text-[10px]">
-                    Cargando tramos…
+            {/* ── Filas de MALETAS/sub-lotes (nivel 2, desplegable) ──
+                Independientes del paquete: clic → SOLO la ruta de ese sub-lote. */}
+            {isExp && pkg.subs.map(sub => {
+              const subSel    = selectedShipment?.bagId === sub.pkgId;
+              const suffix    = sub.pkgId.startsWith(pkg.base)
+                ? sub.pkgId.slice(pkg.base.length) : sub.pkgId;
+              const subStatus = sub.type === "landed" && sub.finalDestination
+                ? ["✓ Entregado", "text-green-400"]
+                : sub.type === "departed"
+                  ? ["✈ En vuelo",  "text-yellow-400"]
+                  : ["⇄ En escala", "text-blue-400"];
+              const sep = lotEndpoints.get(sub.pkgId);
+              return (
+                <tr key={`sub-${sub.pkgId}`}
+                    onClick={() => onShipmentClick?.({ ...sub, sub: true })}
+                    title="Clic: SOLO la ruta de esta maleta/sub-lote"
+                    className={`border-b border-white/5 bg-[#021020]/50 cursor-pointer transition
+                      ${subSel ? "bg-teal/15" : "hover:bg-white/5"}`}>
+                  <td className="py-1 pl-3 text-[9px] text-gray-600">└</td>
+                  <td className="py-1 text-[10px]">
+                    <span className="text-gray-500 font-mono">{pkg.base}</span>
+                    <span className="text-teal font-mono font-bold">{suffix}</span>
+                    <span className={`ml-1.5 text-[9px] ${subStatus[1]}`}>
+                      {subStatus[0]}
+                    </span>
+                  </td>
+                  <td className="py-1 text-[9px] text-gray-500"
+                      title={`${sep?.from || sub.from} → ${sep?.to || sub.to}`}>
+                    {airportName(sep?.from || sub.from)}
+                    <span className="text-gray-700 mx-1">→</span>
+                    {airportName(sep?.to || sub.to)}
+                  </td>
+                  <td className="py-1 text-center text-gray-400 text-[10px]">
+                    {sub.bags || 0}
+                  </td>
+                  <td className="py-1 text-gray-500 text-[9px] font-mono">
+                    {sub.flightId || "—"}
                   </td>
                 </tr>
-              ) : paths.length === 0 ? (
-                <tr key={`empty-${bag.pkgId}`}>
-                  <td colSpan={5} className="py-1 pl-6 text-gray-600 text-[10px]">
-                    Sin tramos disponibles
-                  </td>
-                </tr>
-              ) : (
-                paths.flatMap((path, pi) =>
-                  (path.legs ?? []).map((leg, li) => {
-                    const statusIcon = leg.status === "done"     ? ["✓", "text-green-400"]
-                                     : leg.status === "current"  ? ["✈", "text-yellow-400"]
-                                     :                             ["○", "text-gray-500"];
-                    return (
-                      <tr key={`leg-${bag.pkgId}-${pi}-${li}`}
-                          className="border-b border-white/5 bg-[#021020]/40">
-                        <td className="py-1 pl-4 text-[9px] text-gray-600">└</td>
-                        <td className="py-1 text-[9px]">
-                          <span className={`mr-1 ${statusIcon[1]}`}>{statusIcon[0]}</span>
-                          <span className="text-gray-500 font-mono">{leg.flightId || "—"}</span>
-                        </td>
-                        <td className="py-1 text-[9px] text-gray-500"
-                            title={`${leg.from} → ${leg.to}`}>
-                          <span>{airportName(leg.from)}</span>
-                          <span className="text-gray-700 mx-1">→</span>
-                          <span>{airportName(leg.to)}</span>
-                          {leg.finalDestination && (
-                            <span className="text-green-500 ml-1">★</span>
-                          )}
-                        </td>
-                        <td className="py-1 text-center text-gray-600 text-[9px]">—</td>
-                        <td className="py-1 text-gray-600 text-[9px] font-mono">
-                          {leg.status === "done"    ? "Completado"
-                         : leg.status === "current" ? "En curso"
-                         :                            "Pendiente"}
-                        </td>
-                      </tr>
-                    );
-                  })
-                )
-              )
-            )}
-          </>
+              );
+            })}
+          </Fragment>
         );
       })
     ) : (

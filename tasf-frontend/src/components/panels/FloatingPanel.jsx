@@ -16,10 +16,13 @@ const TITLE_H = 26;   // alto de la barra de título (también el alto al minimi
  */
 export default function FloatingPanel({
   title, x = 40, y = 40, w = 300, h = 360, mode = "normal", z = 30,
+  accent = "teal",   // "teal" (informativo) | "red" (CTA importante, ej. Cancelar Vuelo)
   onFocus, onTitleClick, onDrag, onResize, onMin, onMax, onClose, children,
 }) {
   const minimized = mode === "min";
   const maximized = mode === "max";
+  // CTA rojo: bordeado que llama la atención sin relleno sólido (combina con el mapa).
+  const red = accent === "red";
 
   return (
     <Rnd
@@ -39,15 +42,18 @@ export default function FloatingPanel({
         onResize?.(ref.offsetWidth, ref.offsetHeight, pos.x, pos.y)}>
 
       <div onMouseDown={() => onFocus?.()}
-           className="flex flex-col h-full bg-[#031525] border border-teal/30 rounded
-                      shadow-xl shadow-black/40 overflow-hidden">
+           className={`flex flex-col h-full bg-[#031525] border rounded
+                      shadow-xl shadow-black/40 overflow-hidden
+                      ${red ? "border-red-700/70" : "border-teal/30"}`}>
         {/* Barra de título (zona de arrastre) */}
-        <div className="fp-drag flex items-center justify-between gap-1 px-2
-                        bg-[#021020] border-b border-teal/20 cursor-move select-none"
+        <div className={`fp-drag flex items-center justify-between gap-1 px-2
+                        bg-[#021020] border-b cursor-move select-none
+                        ${red ? "border-red-800/50" : "border-teal/20"}`}
              style={{ height: TITLE_H }}>
           <span onClick={onTitleClick}
-                className="text-teal text-[10px] font-bold uppercase truncate cursor-pointer flex-1">
-            {title}
+                className={`text-[10px] font-bold uppercase truncate cursor-pointer flex-1
+                           ${red ? "text-red-400" : "text-teal"}`}>
+            {red ? "✈ " : ""}{title}
           </span>
           <span className="flex items-center gap-0.5 flex-shrink-0">
             <button onClick={onMin}

@@ -649,6 +649,14 @@ public synchronized SimulationState deleteFlight(String flightId) {
                         if (d == null || qty <= 0) continue;
                         int regUtc = (int) (Duration.between(BASE_UTC,
                                 LocalDateTime.of(y, mo, da, hh, mm)).toMinutes() - o.getGmtOffset());
+                        // En vivo en periodo/colapso la simulación corre sobre los
+                        // días del DATASET: la fecha del archivo (p. ej. la de hoy)
+                        // cae fuera de esa ventana y el lote no se simularía JAMÁS.
+                        // Igual que addLot en vivo: registrarlo en el minuto simulado
+                        // actual (la fecha del archivo solo aplica en preparación/diadia).
+                        if (live && !"diadia".equals(state.mode())) {
+                            regUtc = state.simulatedMinute();
+                        }
                         boolean same = o.getRegion().equals(d.getRegion());
                         // Partir lotes grandes en sub-lotes (id-1, id-2, …).
                         List<BaggageLot> subs = splitLot("UF-" + stagedSeq.incrementAndGet(),
