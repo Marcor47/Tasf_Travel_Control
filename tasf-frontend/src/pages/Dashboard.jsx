@@ -380,7 +380,13 @@ export default function Dashboard({
     if (!selectedRouteKey) return null;
     return (simulation?.routes ?? []).find(x => routeKey(x) === selectedRouteKey) || null;
   }, [selectedRouteKey, simulation?.routes]);
-  const focusFlightId = selectedRouteObj?.flightId ?? null;
+  // El foco de vuelo debe SOBREVIVIR al aterrizaje: si la ruta ya no está entre
+  // las activas pero la clave seleccionada es un ID de vuelo (F###/U##), seguir
+  // filtrando los paneles por ese ID (sus eventos siguen en el historial). Antes
+  // el foco se volvía null a mitad de la inspección y los paneles quedaban
+  // "cargando" con vuelos cortos.
+  const focusFlightId = selectedRouteObj?.flightId
+    ?? (selectedRouteKey && /^[FU]\d+$/i.test(selectedRouteKey) ? selectedRouteKey : null);
 
   const clearFocus = () => {
     setStorageFilter(""); setWhSemFilter("all"); setSelectedAirport(null);
@@ -649,7 +655,7 @@ case "cancelaciones":
           {/* ── Relojes flotantes (esquina inferior derecha) ──────────────── */}
           {running && (
             <div className="absolute right-3 bottom-3 bg-[#021020]/95 border border-teal/30
-                            rounded-lg px-3 py-2 z-10 flex flex-wrap items-center gap-x-5 gap-y-1
+                            rounded-lg px-4 py-2.5 z-10 flex flex-wrap items-center gap-x-6 gap-y-1
                             max-w-[calc(100%-1.5rem)] justify-end shadow-lg shadow-black/40">
               {[
                 ["Hora sim.",    simClock,                            "text-teal"],
@@ -658,13 +664,13 @@ case "cancelaciones":
                 ["Real transc.", formatRealTime(realSeconds),        "text-white"],
               ].map(([label, value, color]) => (
                 <div key={label} className="text-center">
-                  <p className="text-gray-400 text-[10px] uppercase leading-none mb-0.5">{label}</p>
-                  <p className={`text-lg font-mono font-bold leading-tight ${color}`}>{value}</p>
+                  <p className="text-gray-400 text-xs uppercase leading-none mb-1">{label}</p>
+                  <p className={`text-3xl font-mono font-bold leading-tight ${color}`}>{value}</p>
                 </div>
               ))}
               {simulation?.message === "Pausado"
-                ? <span className="text-amber-400 text-sm font-semibold">❚❚ Pausado</span>
-                : <span className="text-green-400 text-sm font-semibold animate-pulse">● En curso</span>}
+                ? <span className="text-amber-400 text-base font-semibold">❚❚ Pausado</span>
+                : <span className="text-green-400 text-base font-semibold animate-pulse">● En curso</span>}
             </div>
           )}
 

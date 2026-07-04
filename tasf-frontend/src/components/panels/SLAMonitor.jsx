@@ -159,11 +159,28 @@ export default function SLAMonitor({
   // transporte), mostrar SOLO las maletas de ese vuelo. Si no, restringir a los
   // aeropuertos en foco (entradas/salidas), coherente con el mapa y las tarjetas.
   const focusedEvents = useMemo(() => {
-    if (focusFlightId) return events.filter(e => e.flightId === focusFlightId);
-    if (!focusCodes.length) return events;
-    const focus = new Set(focusCodes);
-    return events.filter(e => focus.has(e.from) || focus.has(e.to));
+    const byCodes = () => {
+      if (!focusCodes.length) return events;
+      const focus = new Set(focusCodes);
+      return events.filter(e => focus.has(e.from) || focus.has(e.to));
+    };
+    if (focusFlightId) {
+      const byFlight = events.filter(e => e.flightId === focusFlightId);
+      // Si el vuelo ya tiene eventos (despegó/aterrizó con carga), mostrar SOLO
+      // esos. Si aún NO generó eventos (en el aire o vacío), degradar al foco de
+      // aeropuertos (origen/destino, que el clic también fija) en vez de quedar
+      // en blanco — antes esto era el "se queda cargando" al abrir varios paneles.
+      if (byFlight.length) return byFlight;
+      return byCodes();
+    }
+    return byCodes();
   }, [events, focusCodes, focusFlightId]);
+
+  // ¿El vuelo enfocado no tiene eventos propios y estamos mostrando el contexto
+  // de sus aeropuertos? Sirve para matizar el estado vacío/encabezado.
+  const flightFallback = focusFlightId
+    && !events.some(e => e.flightId === focusFlightId)
+    && focusCodes.length > 0;
 
   // ── Últimos 5 eventos para el monitor de plazos general ───────────────────
   const recentEvents = useMemo(() => {
@@ -261,7 +278,11 @@ export default function SLAMonitor({
             ) : (
               <tr>
                 <td colSpan={4} className="py-4 text-center text-gray-600 text-[10px]">
-                  {running ? "Esperando eventos..." : "Inicia la simulación"}
+                  {focusFlightId
+                    ? `El vuelo ${focusFlightId} no lleva paquetes registrados (vacío)`
+                    : focusCodes.length
+                      ? "Sin paquetes para el filtro actual"
+                      : running ? "Esperando eventos..." : "Inicia la simulación"}
                 </td>
               </tr>
             )}
@@ -296,6 +317,12 @@ export default function SLAMonitor({
         <p className="text-teal font-bold mb-2 uppercase tracking-wide text-[10px]">
           Detalle por Paquete
         </p>
+        {flightFallback && (
+          <p className="text-yellow-400/80 text-[10px] mb-2 leading-tight">
+            El vuelo {focusFlightId} aún no registra paquetes (en vuelo o vacío) —
+            mostrando los que pasan por su origen/destino.
+          </p>
+        )}
         <input
           value={filterText}
           onChange={e => setFilterText(e.target.value)}
@@ -345,7 +372,13 @@ export default function SLAMonitor({
             ) : (
               <tr>
                 <td colSpan={3} className="py-3 text-center text-gray-600 text-[10px]">
-                  {filterText ? "Sin coincidencias" : "Esperando datos..."}
+                  {filterText
+                    ? "Sin coincidencias"
+                    : focusFlightId
+                      ? `El vuelo ${focusFlightId} no lleva paquetes registrados (vacío)`
+                      : focusCodes.length
+                        ? "Sin paquetes para el filtro actual"
+                        : running ? "Esperando datos..." : "Inicia la simulación"}
                 </td>
               </tr>
             )}

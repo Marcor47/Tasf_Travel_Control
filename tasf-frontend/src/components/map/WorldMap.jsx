@@ -158,10 +158,16 @@ function planePosition(from, to, route, simulatedMinute) {
 // en la misma ruta no se colapsan, y los eventos duplicados del mismo vuelo sí.
 const routeKey = r => r.flightId || `${r.from}-${r.to}-${r.departureMinute ?? 0}`;
 
-// Vista inicial del mapa: panorámica de toda la red (Sudamérica–Europa–Asia),
-// con Europa hacia arriba (sin impedir el zoom/arrastre manual posterior).
-const DEFAULT_CENTER = [15, 32];
-const DEFAULT_ZOOM   = 2.1;
+// Vista inicial del mapa: encuadre de la RED COMPLETA del dataset —
+// Copenhague (55.6°N) pegado al borde superior, Santiago/Montevideo (~-34.8°S)
+// al inferior, Lima ↔ Delhi a los lados. Como el SVG usa un viewBox escalado
+// (preserveAspectRatio "meet"), este zoom llena el ALTO del contenedor de
+// forma prácticamente independiente de su tamaño/aspecto:
+//   zoom ≈ altoViewBox / (escalaBase · spanMercator) = 600 / (120 · 1.94) ≈ 2.55
+// El centro vertical es el punto medio Mercator del rango (≈16°N), no la media
+// aritmética de latitudes.
+const DEFAULT_CENTER = [0, 16];
+const DEFAULT_ZOOM   = 2.55;
 
 // Semáforo de ocupación: verde casi vacío, ámbar a media carga, rojo casi lleno.
 function loadColor(pct) {
@@ -217,8 +223,8 @@ export default function WorldMap({
   const [showLines,  setShowLines]  = useState(true);
   const [showPlanes, setShowPlanes] = useState(true);
   const [lineMode,   setLineMode]   = useState("limited");
-  // Vista inicial enmarcada en la zona de trabajo (Sudamérica–Europa–Asia)
-  // para aprovechar la pantalla sin tener que hacer zoom manual.
+  // Vista inicial enmarcada en la red completa; el usuario puede hacer
+  // zoom/arrastre luego y «Reiniciar» vuelve a este encuadre.
   const [zoom,       setZoom]       = useState(DEFAULT_ZOOM);
   const [center,     setCenter]     = useState(DEFAULT_CENTER);
   const [dragging,   setDragging]   = useState(false);
@@ -448,7 +454,8 @@ export default function WorldMap({
         </div>
 
         <div className="flex items-center gap-1 flex-shrink-0">
-          {(zoom !== DEFAULT_ZOOM || center[0] !== DEFAULT_CENTER[0]) && (
+          {(zoom !== DEFAULT_ZOOM || center[0] !== DEFAULT_CENTER[0]
+              || center[1] !== DEFAULT_CENTER[1]) && (
             <button
               onClick={() => { setZoom(DEFAULT_ZOOM); setCenter(DEFAULT_CENTER); }}
               className="text-[10px] px-2 py-0.5 rounded transition font-medium
@@ -524,16 +531,22 @@ export default function WorldMap({
           const key = routeKey(r);
           const cap = r.capacity || 0;
           const col = flightColor(r.bags, cap);
+          // La línea visible nace en la POSICIÓN ACTUAL del avión: el tramo ya
+          // recorrido se "borra" y solo queda el camino restante. Es gratis:
+          // el SVG ya se repinta cada frame (displayMinute) y la posición es la
+          // misma que usa la capa de aviones.
+          const plane = planePosition(from, to, r, displayMinute);
           return (
             <g key={`active-${key}`}>
-              {/* Corredor invisible y ancho para que la ruta sea fácil de clicar */}
+              {/* Corredor invisible de RUTA COMPLETA para que siga siendo fácil
+                  de clicar aunque la línea visible se acorte */}
               <Line
                 from={from} to={to}
                 stroke="transparent" strokeWidth={8}
                 style={{ cursor: "pointer" }}
                 onClick={(e) => { e.stopPropagation(); clickRoute(key); }}/>
               <Line
-                from={from} to={to}
+                from={plane.coordinates} to={to}
                 stroke={col}
                 strokeWidth={hasFocus && hl ? 1.2 : 0.8}
                 strokeLinecap="round" strokeDasharray="8 4"
