@@ -291,8 +291,17 @@ const packageRows = useMemo(() => {
     });
   }
 
+  // El paquete SELECCIONADO se FIJA al inicio de la lista: los eventos nuevos
+  // no deben enterrarlo (hay que poder ver sus datos y des-seleccionarlo con
+  // otro clic). Se fija antes del tope de 30 para que nunca quede fuera.
+  if (selectedShipment?.bagId) {
+    const selBase = packageBase(selectedShipment.bagId);
+    const idx = result.findIndex(p => p.base === selBase);
+    if (idx > 0) result.unshift(result.splice(idx, 1)[0]);
+  }
+
   return result.slice(0, 30);
-}, [focusedEvents, filterText, lotEndpoints]);
+}, [focusedEvents, filterText, lotEndpoints, selectedShipment]);
 
   // ── Contadores globales ───────────────────────────────────────────────────
   const delivered = safeKpis.deliveredOnTime;
@@ -325,6 +334,15 @@ const packageRows = useMemo(() => {
                      px-2 py-1 text-[11px] text-gray-300 mb-2
                      focus:outline-none focus:border-teal"
         />
+        {/* Selección de Envíos activa: este monitor queda FIJADO a ese paquete/
+            maleta (sus eventos no se entierran entre los demás). */}
+        {focusLotId && (
+          <p className="text-teal/90 text-[10px] mb-2 leading-tight
+                        bg-teal/10 border border-teal/30 rounded px-2 py-1">
+            📌 Mostrando solo <b className="font-mono">{focusLotId}</b>
+            {" "}(selección de Envíos) — clic en el paquete para des-seleccionar.
+          </p>
+        )}
         <table className="w-full">
           <thead>
             <tr className="text-gray-500 border-b border-white/10">
@@ -369,11 +387,13 @@ const packageRows = useMemo(() => {
             ) : (
               <tr>
                 <td colSpan={4} className="py-4 text-center text-gray-600 text-[10px]">
-                  {focusFlightId
-                    ? `El vuelo ${focusFlightId} no lleva paquetes registrados (vacío)`
-                    : focusCodes.length
-                      ? "Sin paquetes para el filtro actual"
-                      : running ? "Esperando eventos..." : "Inicia la simulación"}
+                  {focusLotId
+                    ? `${focusLotId} aún no registra eventos (esperando salida)`
+                    : focusFlightId
+                      ? `El vuelo ${focusFlightId} no lleva paquetes registrados (vacío)`
+                      : focusCodes.length
+                        ? "Sin paquetes para el filtro actual"
+                        : running ? "Esperando eventos..." : "Inicia la simulación"}
                 </td>
               </tr>
             )}
@@ -436,7 +456,11 @@ const packageRows = useMemo(() => {
     {packageRows.length > 0 ? (
       packageRows.map((pkg) => {
         const isSel   = selectedShipment?.bagId === pkg.base;
-        const isExp   = expandedPkg === pkg.base;
+        // Sub-lote de este paquete seleccionado → mantener desplegado para que
+        // la fila resaltada (y sus datos) queden siempre visibles.
+        const subSelIn = !!selectedShipment?.sub
+          && packageBase(selectedShipment.bagId) === pkg.base;
+        const isExp   = expandedPkg === pkg.base || subSelIn;
         const hasSubs = pkg.subs.length > 1
           || (pkg.subs.length === 1 && pkg.subs[0].pkgId !== pkg.base);
         const globalStatus = pkg.delivered ? ["✓ Entregado", "text-green-400"]
@@ -452,7 +476,8 @@ const packageRows = useMemo(() => {
           <Fragment key={`pkg-${pkg.base}`}>
             {/* ── Fila del PAQUETE (nivel 1) ── */}
             <tr className={`border-b border-white/5 transition
-                  ${isSel ? "bg-teal/10" : "hover:bg-white/5"}`}>
+                  ${isSel || subSelIn ? "bg-teal/10 ring-1 ring-inset ring-teal/30"
+                                      : "hover:bg-white/5"}`}>
               <td className="py-1.5">
                 {hasSubs && (
                   <button onClick={() => setExpandedPkg(isExp ? null : pkg.base)}
@@ -464,7 +489,9 @@ const packageRows = useMemo(() => {
               </td>
               <td className="py-1.5 text-[10px] cursor-pointer"
                   onClick={clickPkg}
-                  title="Clic: todas las rutas del paquete en el mapa">
+                  title={isSel ? "Seleccionado (fijado arriba) — clic para des-seleccionar"
+                               : "Clic: todas las rutas del paquete en el mapa"}>
+                {(isSel || subSelIn) && <span className="mr-0.5">📌</span>}
                 <span className="text-teal font-mono font-bold">{pkg.base}</span>
                 {hasSubs && (
                   <span className="text-gray-500 ml-1">×{pkg.subs.length}</span>

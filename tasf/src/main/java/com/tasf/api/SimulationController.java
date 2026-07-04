@@ -8,7 +8,9 @@ import java.util.List;
 
 @RestController
 @RequestMapping("/api/simulation")
-@CrossOrigin(origins = {"http://localhost:5173", "http://127.0.0.1:5173"})
+// CORS: configuración GLOBAL en CorsConfig (orígenes vía env CORS_ORIGINS).
+// No volver a poner @CrossOrigin aquí: los orígenes cableados a localhost
+// bloqueaban cualquier despliegue con dominio/HTTPS.
 public class SimulationController {
 
     private final SimulationService simulationService;

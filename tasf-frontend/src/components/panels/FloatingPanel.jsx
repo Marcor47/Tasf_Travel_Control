@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import { Rnd } from "react-rnd";
 
 const TITLE_H = 26;   // alto de la barra de título (también el alto al minimizar)
@@ -24,10 +25,28 @@ export default function FloatingPanel({
   // CTA rojo: bordeado que llama la atención sin relleno sólido (combina con el mapa).
   const red = accent === "red";
 
+  // ── Posición LOCAL durante el arrastre ────────────────────────────────────
+  // Con la simulación corriendo, el Dashboard se re-renderiza cada ~0,8 s
+  // (broadcasts) y cada 1 s (reloj). Si Rnd usa la posición controlada del
+  // padre, cada re-render a mitad de arrastre re-impone la posición VIEJA y la
+  // ventana se queda detrás del mouse. Solución: durante el drag se sigue al
+  // mouse con estado local (onDrag) y se ignoran las props; al soltar se
+  // sincroniza con el padre (onDragStop → updateWin).
+  const [pos,  setPos]  = useState({ x, y });
+  const [size, setSize] = useState({ w, h });
+  const draggingRef     = useRef(false);
+  const resizingRef     = useRef(false);
+  useEffect(() => {
+    if (!draggingRef.current && !resizingRef.current) setPos({ x, y });
+  }, [x, y]);
+  useEffect(() => {
+    if (!resizingRef.current) setSize({ w, h });
+  }, [w, h]);
+
   return (
     <Rnd
-      size={{ width: minimized ? 168 : w, height: minimized ? TITLE_H : h }}
-      position={{ x, y }}
+      size={{ width: minimized ? 168 : size.w, height: minimized ? TITLE_H : size.h }}
+      position={pos}
       bounds="#dash-map-zone"
       dragHandleClassName="fp-drag"
       cancel=".fp-btn"
@@ -35,11 +54,24 @@ export default function FloatingPanel({
       minWidth={220}
       minHeight={TITLE_H}
       style={{ zIndex: z }}
-      onDragStart={() => onFocus?.()}
-      onResizeStart={() => onFocus?.()}
-      onDragStop={(e, d) => onDrag?.(d.x, d.y)}
-      onResizeStop={(e, dir, ref, delta, pos) =>
-        onResize?.(ref.offsetWidth, ref.offsetHeight, pos.x, pos.y)}>
+      onDragStart={() => { draggingRef.current = true; onFocus?.(); }}
+      onDrag={(e, d) => setPos({ x: d.x, y: d.y })}
+      onDragStop={(e, d) => {
+        draggingRef.current = false;
+        setPos({ x: d.x, y: d.y });
+        onDrag?.(d.x, d.y);
+      }}
+      onResizeStart={() => { resizingRef.current = true; onFocus?.(); }}
+      onResize={(e, dir, ref, delta, p) => {
+        setSize({ w: ref.offsetWidth, h: ref.offsetHeight });
+        setPos({ x: p.x, y: p.y });   // redimensionar desde arriba/izquierda también mueve
+      }}
+      onResizeStop={(e, dir, ref, delta, p) => {
+        resizingRef.current = false;
+        setSize({ w: ref.offsetWidth, h: ref.offsetHeight });
+        setPos({ x: p.x, y: p.y });
+        onResize?.(ref.offsetWidth, ref.offsetHeight, p.x, p.y);
+      }}>
 
       <div onMouseDown={() => onFocus?.()}
            className={`flex flex-col h-full bg-[#031525] border rounded
