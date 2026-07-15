@@ -18,6 +18,32 @@ function mergeEvents(existing, incoming, incomingNewestFirst) {
   return [...fresh, ...existing].slice(0, MAX_HISTORY);
 }
 
+// Paquetes por vuelo: a diferencia de `history` (acotado a MAX_HISTORY para
+// no reventar memoria), esto NO se recorta — solo se limpia cuando el vuelo
+// deja de estar activo (ver efecto de limpieza más abajo). Si se recortara
+// igual que `history`, el evento de "salida" que asocia un paquete a su vuelo
+// podía caerse de la ventana mientras el vuelo seguía en el aire, y la lista
+// de paquetes de ese vuelo desaparecía de la UI aunque siguiera volando.
+function mergeFlightLots(prevMap, events) {
+  if (!events || events.length === 0) return prevMap;
+  let map = prevMap;
+  for (const e of events) {
+    if (!e.flightId || !e.lotId) continue;
+    const fid = String(e.flightId);
+    const prevEntry = map.get(fid)?.get(e.lotId);
+    if (!prevEntry || e.minute > (prevEntry.minute ?? 0)) {
+      if (map === prevMap) map = new Map(prevMap); // copy-on-write, una sola vez
+      const lots = new Map(map.get(fid) || []);
+      lots.set(e.lotId, {
+        bags: e.bags || 0, minute: e.minute,
+        status: e.type, finalDest: !!e.finalDestination,
+      });
+      map.set(fid, lots);
+    }
+  }
+  return map;
+}
+
 const emptyState = {
   running: false,
   mode: "diadia",
@@ -48,6 +74,7 @@ export function useSimulation() {
   const [state, setState]               = useState(emptyState);
   const [alerts, setAlerts]             = useState([]);
   const [history, setHistory]           = useState([]);
+  const [flightLots, setFlightLots]     = useState(() => new Map()); // flightId -> Map(lotId -> {bags,minute,status,finalDest})
   // Preparación de Día a Día (aeropuertos/vuelos/paquetes cargados sin iniciar).
   const [prepStatus, setPrepStatus]     = useState({ airports: 0, flights: 0, lots: 0, ready: false });
   const [availableDates, setAvailableDates] = useState([]);
@@ -105,6 +132,7 @@ export function useSimulation() {
       try {
         const backlog = JSON.parse(event.data); // más-nuevo-primero
         setHistory(h => mergeEvents(h, backlog, true));
+        setFlightLots(m => mergeFlightLots(m, backlog));
       } catch {
         // ignorar
       }
@@ -155,11 +183,46 @@ export function useSimulation() {
     const evs = state.events;
     if (!evs || evs.length === 0) return;
     setHistory(h => mergeEvents(h, evs, false)); // emitted: más-viejo-primero
+    setFlightLots(m => mergeFlightLots(m, evs));
   }, [state.events]);
+
+  // Limpieza: una vez que un vuelo lleva VARIOS ticks seguidos sin aparecer
+  // activo (ni "departed" en routes ni en upcomingFlights), soltamos sus
+  // paquetes para no acumular memoria indefinidamente. El margen de varios
+  // ticks (no uno solo) es a propósito: si el backend omite `flightId` en un
+  // tick puntual mientras el vuelo sigue en el aire, no queremos confundir
+  // eso con "el vuelo ya terminó" y perder sus paquetes para siempre.
+  const missingStreakRef = useRef(new Map()); // flightId -> ticks consecutivos ausente
+  const PRUNE_AFTER_TICKS = 5;
+  useEffect(() => {
+    const activeIds = new Set([
+      ...(state.routes         || []).map(r => r.flightId).filter(Boolean).map(String),
+      ...(state.upcomingFlights || []).map(u => u.flightId).filter(Boolean).map(String),
+    ]);
+    setFlightLots(m => {
+      if (m.size === 0) return m;
+      let next = m;
+      for (const fid of m.keys()) {
+        if (activeIds.has(fid)) {
+          missingStreakRef.current.delete(fid);
+          continue;
+        }
+        const streak = (missingStreakRef.current.get(fid) || 0) + 1;
+        missingStreakRef.current.set(fid, streak);
+        if (streak >= PRUNE_AFTER_TICKS) {
+          if (next === m) next = new Map(m);
+          next.delete(fid);
+          missingStreakRef.current.delete(fid);
+        }
+      }
+      return next;
+    });
+  }, [state.routes, state.upcomingFlights]);
 
 const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
   try {
     setHistory([]);
+    setFlightLots(new Map());
     setState(prev => ({ ...prev, clock: "Dia --  00:00" }));
     // La velocidad de la simulación la controla el backend (BLOCK_REAL_SECONDS);
     // aquí solo enviamos qué simular y desde cuándo.
@@ -296,19 +359,6 @@ const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
     }
   }, []);
 
-  // Paquetes (lotes) asignados a un vuelo, con su cantidad de maletas.
-  const fetchFlightLots = useCallback(async (flightId) => {
-    if (!flightId) return [];
-    try {
-      const r = await fetch(
-        `${API_BASE}/api/simulation/flightLots?flightId=${encodeURIComponent(flightId)}`);
-      if (!r.ok) return [];
-      return await r.json();
-    } catch {
-      return [];
-    }
-  }, []);
-
   // Plan de ruteo del último bloque planificado (Reportes).
   const fetchLastBlockPlan = useCallback(async () => {
     try {
@@ -429,6 +479,7 @@ const deleteFlight = useCallback(async (flightId) =>
 return {
   ...state,
   history,
+  flightLots,
   prepStatus,
   resetPrep,
   simStartMinute,
@@ -453,7 +504,6 @@ return {
   uploadData,
   fetchShipmentPath,
   fetchShipmentPaths,
-  fetchFlightLots,
   fetchLastBlockPlan,
   alerts,
   realSeconds,

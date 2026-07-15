@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { getWarehouseColor } from "../../hooks/useStatusColor";
 import { airportName, AIRPORT_META } from "../../data/staticAirports";
 
@@ -50,7 +50,8 @@ export default function FlightsCapacity({
   sem = "all", onSemChange,   // semáforo controlado por el padre (también filtra el mapa)
   selectedRouteKey = null, pinnedCodes = null, onFlightClick,
   onSearchEnter,          // Enter en la búsqueda → aplicar resultados al mapa
-  history = [],           // historial de eventos (sub-pestaña Historial)
+  history = [],           // historial de eventos (sub-pestaña Historial, acotado)
+  flightLots: flightLotsProp = null, // paquetes por vuelo, SIN recorte (useSimulation)
 }) {
   const [search, setSearch] = useState("");
 
@@ -66,12 +67,22 @@ const handleSortFL = (key) => {
 
   const [bottomTab, setBottomTab] = useState("planificados"); // planificados | historial
 
+  // Algunos ticks del backend pueden venir sin `flightId` en la ruta mientras
+  // el vuelo ya está en el aire (solo lo garantiza al despegar). Guardamos el
+  // último flightId visto por cada `key` de fila para no perder el vínculo
+  // con sus paquetes en esos ticks puntuales.
+  const lastFlightIdRef = useRef(new Map());
+  const resolveFlightId = (key, flightId) => {
+    if (flightId) { lastFlightIdRef.current.set(key, flightId); return flightId; }
+    return lastFlightIdRef.current.get(key) ?? flightId;
+  };
+
   // Vuelos que transportan un lote según el historial. Permite buscar por ID de
   // paquete/maleta (UF-1 / UF-1-2) y filtrar por la selección de Envíos.
   const flightsByLotQuery = (q) => {
     const ids = new Set();
     for (const e of history) {
-      if (e.flightId && e.lotId && e.lotId.toLowerCase().includes(q)) ids.add(e.flightId);
+      if (e.flightId && e.lotId && e.lotId.toLowerCase().includes(q)) ids.add(String(e.flightId));
     }
     return ids;
   };
@@ -79,7 +90,7 @@ const handleSortFL = (key) => {
     if (!focusLotId) return null;
     const ids = new Set();
     for (const e of history) {
-      if (e.flightId && lotMatches(e.lotId, focusLotId)) ids.add(e.flightId);
+      if (e.flightId && lotMatches(e.lotId, focusLotId)) ids.add(String(e.flightId));
     }
     return ids;
   }, [history, focusLotId]);
@@ -87,12 +98,17 @@ const handleSortFL = (key) => {
 
 
 // Paquetes por vuelo (del historial): lotId → { bags, status, finalDest }
-const flightLots = useMemo(() => {
+// Paquetes por vuelo. Preferimos el mapa que llega por prop (useSimulation lo
+// arma SIN el recorte de MAX_HISTORY, así que un vuelo largo no pierde su
+// lista de paquetes aunque el log de eventos ya se haya recortado). Si no
+// llega por prop (compatibilidad), lo derivamos del `history` acotado.
+const flightLotsFromHistory = useMemo(() => {
   const map = new Map();
   for (const e of history) {
     if (!e.flightId || !e.lotId) continue;
-    if (!map.has(e.flightId)) map.set(e.flightId, new Map());
-    const lots = map.get(e.flightId);
+    const fid = String(e.flightId);
+    if (!map.has(fid)) map.set(fid, new Map());
+    const lots = map.get(fid);
     if (!lots.has(e.lotId) || e.minute > (lots.get(e.lotId).minute ?? 0)) {
       lots.set(e.lotId, {
         bags: e.bags || 0, minute: e.minute,
@@ -102,6 +118,7 @@ const flightLots = useMemo(() => {
   }
   return map;
 }, [history]);
+const flightLots = flightLotsProp ?? flightLotsFromHistory;
 
 
   // Cada ruta activa del backend ya es un vuelo con su capacidad y carga total.
@@ -113,10 +130,10 @@ const flightLots = useMemo(() => {
     return routes
       .filter(r => r.status === "departed")
       .filter(r => !focusFlightId || r.flightId === focusFlightId)
-      .filter(r => !lotFlightIds || lotFlightIds.has(r.flightId))
+      .filter(r => !lotFlightIds || lotFlightIds.has(String(r.flightId)))
       .filter(r => focus.size === 0 || focus.has(r.from) || focus.has(r.to))
       .filter(r => sem === "all" || flightSem(r.bags, r.capacity || 0) === sem)
-      .filter(r => !q || qLotFlights.has(r.flightId) || (() => {
+      .filter(r => !q || qLotFlights.has(String(r.flightId)) || (() => {
         const norm = s => (s||"").toLowerCase()
           .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
         const qn = norm(q);
@@ -176,7 +193,7 @@ const flightLots = useMemo(() => {
       // Selección de Envíos: los tramos FUTUROS del lote aún no tienen eventos,
       // así que los planificados se restringen por aeropuertos del foco (abajo).
       .filter(u => focus.size === 0 || focus.has(u.origin) || focus.has(u.destination))
-      .filter(u => !q || qLotFlights.has(u.flightId) || (() => {
+      .filter(u => !q || qLotFlights.has(String(u.flightId)) || (() => {
         const norm = s => (s||"").toLowerCase()
           .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
         const qn = norm(q);
@@ -315,7 +332,8 @@ const flightLots = useMemo(() => {
             
 return (() => {
   const isExp  = expandedFlight === f.key;
-  const lots   = flightLots.get(f.flightId) ?? new Map();
+  const resolvedId = resolveFlightId(f.key, f.flightId);
+  const lots   = flightLots.get(String(resolvedId ?? "")) ?? new Map();
   const lotList = [...lots.entries()]
     .sort((a, b) => b[1].minute - a[1].minute);
   return (

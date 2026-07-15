@@ -448,7 +448,7 @@ export default function Dashboard({
             kpis={kpis}
             events={simulation?.history ?? []}
             running={running}
-            simulatedNow={simulatedNow} simulatedMinute={simulatedNow}
+            simulatedNow={simulatedNow}
             focusCodes={focusCodes}
             focusFlightId={focusFlightId}
             fleetFill={fleetFill}
@@ -506,14 +506,14 @@ export default function Dashboard({
             onFlightClick={handleFlightClick}
             onSearchEnter={handleFlightsSearchEnter}
             history={simulation?.history ?? []}
-            fetchFlightLots={simulation?.fetchFlightLots}
+            flightLots={simulation?.flightLots}
             running={running}/>
         );
       case "envios":
         return (
           <SLAMonitor
             kpis={kpis} events={simulation?.history ?? []}
-            running={running} simulatedNow={simulatedNow} simulatedMinute={simulatedNow}
+            running={running} simulatedNow={simulatedNow}
             focusCodes={focusCodes} focusFlightId={focusFlightId} view="envios"
             focusRoute={selectedRouteObj}
             selectedShipment={selectedShipment}
@@ -526,7 +526,7 @@ export default function Dashboard({
         return (
           <SLAMonitor
             kpis={kpis} events={simulation?.history ?? []}
-            running={running} simulatedNow={simulatedNow} simulatedMinute={simulatedNow}
+            running={running} simulatedNow={simulatedNow}
             focusCodes={focusCodes} focusFlightId={focusFlightId}
             focusRoute={selectedRouteObj}
             focusLotId={focusLotId} view="sla"/>
