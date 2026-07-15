@@ -34,7 +34,7 @@ function clamp01(v) { return Math.max(0, Math.min(1, v)); }
  * dispararnos si el stream se atasca. El resultado es un minuto continuo
  * que avanza de forma fluida entre emisiones.
  */
-function useSmoothMinute(targetMinute, running, realtime = false) {
+function useSmoothMinute(targetMinute, running, realtime = false, frameMs = 66) {
   const [display, setDisplay] = useState(targetMinute);
   // Inicialización perezosa del ref (sin llamar a performance.now en render)
   const s = useRef(null);
@@ -91,7 +91,11 @@ function useSmoothMinute(targetMinute, running, realtime = false) {
     // mapa COMPLETO (países + aviones + líneas). A 60 fps eso quema CPU/GC del
     // cliente y en sesiones largas puede tumbar la pestaña ("la página está
     // teniendo problemas"). A 15 fps el movimiento sigue siendo fluido.
-    const MIN_FRAME_MS = 66;
+    // frameMs es ADAPTATIVO (lo fija el mapa según cuántos aviones dibuja):
+    // con cientos de aviones se baja el fps para que el costo por segundo
+    // (elementos React + basura de GC) se mantenga ~constante en máquinas
+    // de 4-8 GB durante demos largas.
+    const MIN_FRAME_MS = frameMs;
     let raf, lastSet = 0;
     const tick = () => {
       const now = performance.now();
@@ -108,7 +112,7 @@ function useSmoothMinute(targetMinute, running, realtime = false) {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [running, realtime]);
+  }, [running, realtime, frameMs]);
 
   return running ? display : targetMinute;
 }
@@ -282,7 +286,14 @@ export default function WorldMap({
   // Minuto continuo y suavizado para mover los aviones sin saltos.
   // En pausa congelamos la interpolación (los aviones quedan quietos).
   const paused        = message === "Pausado";
-  const displayMinute = useSmoothMinute(simulatedMinute, running && !paused, realtime);
+  // Cadencia adaptativa: 15 fps con pocos aviones; con cientos (modo "todas")
+  // se baja el fps — el movimiento sigue siendo perceptible pero el trabajo de
+  // render por segundo deja de crecer con el número de aviones.
+  const frameMs = routes.length > 600 ? 200
+                : routes.length > 300 ? 143
+                : routes.length > 100 ? 100
+                : 66;
+  const displayMinute = useSmoothMinute(simulatedMinute, running && !paused, realtime, frameMs);
 
   // ── Tooltip propio de aviones (el <title> nativo no admite estilos) ────────
   // { x, y (px relativos al contenedor), flightId, from, to, bags, cap }
@@ -371,34 +382,48 @@ export default function WorldMap({
     }
   };
 
-  const allAirports = airports.length > 0 ? airports : STATIC_AIRPORTS;
+  // ⚠ MEMORY/CPU: todo este bloque de colecciones derivadas está MEMOIZADO.
+  // El mapa se re-renderiza ~15 veces/s por la animación (displayMinute);
+  // antes estas listas se re-filtraban, re-ordenaban y re-construían EN CADA
+  // FRAME (incluido un sort de todas las rutas y un Object.fromEntries), lo
+  // que generaba miles de objetos basura por segundo → heap del navegador
+  // creciendo sin parar y GCs cada vez más largos en sesiones largas (el
+  // "memory leak" del cliente). Ahora solo se reconstruyen cuando cambian los
+  // DATOS (broadcast ~0,8 s) o los filtros, no con cada frame.
+  const allAirports = useMemo(
+    () => (airports.length > 0 ? airports : STATIC_AIRPORTS),
+    [airports]);
   // airportMap usa TODOS los aeropuertos (las rutas necesitan sus coordenadas
   // aunque el almacén esté filtrado del mapa).
-  const airportMap  = Object.fromEntries(
-    allAirports.map(a => [a.code, [a.lng, a.lat]])
-  );
+  const airportMap = useMemo(
+    () => Object.fromEntries(allAirports.map(a => [a.code, [a.lng, a.lat]])),
+    [allAirports]);
   // Almacenes a DIBUJAR: filtrados por el semáforo del panel de Almacenes
   // (igual que los aviones con su semáforo): si pides verde, solo verdes; etc.
-  const shownAirports = whSem === "all"
-    ? allAirports
-    : allAirports.filter(a => airportSemCat(a.current, a.capacity) === whSem);
+  const shownAirports = useMemo(
+    () => (whSem === "all"
+      ? allAirports
+      : allAirports.filter(a => airportSemCat(a.current, a.capacity) === whSem)),
+    [allAirports, whSem]);
 
   // Filtro por semáforo de carga (del panel de Vuelos): solo dibuja aviones cuyo
   // color de carga coincide con el seleccionado (vacío/verde/ámbar/rojo).
-  let semActive = flightSem === "all"
-    ? allActive
-    : allActive.filter(r => flightSemCat(r.bags, r.capacity || 0) === flightSem);
-
   // Si el semáforo de ALMACENES oculta aeropuertos, ocultar también las líneas/
   // aviones que tocan un almacén oculto (antes quedaban líneas "hacia la nada").
-  if (whSem !== "all") {
-    const drawn = new Set(shownAirports.map(a => a.code));
-    semActive = semActive.filter(r => drawn.has(r.from) && drawn.has(r.to));
-  }
+  const semActive = useMemo(() => {
+    let list = flightSem === "all"
+      ? allActive
+      : allActive.filter(r => flightSemCat(r.bags, r.capacity || 0) === flightSem);
+    if (whSem !== "all") {
+      const drawn = new Set(shownAirports.map(a => a.code));
+      list = list.filter(r => drawn.has(r.from) && drawn.has(r.to));
+    }
+    return list;
+  }, [allActive, flightSem, whSem, shownAirports]);
 
-  const visibleRoutes = lineMode === "limited"
-    ? semActive.slice(0, 50)
-    : semActive;
+  const visibleRoutes = useMemo(
+    () => (lineMode === "limited" ? semActive.slice(0, 50) : semActive),
+    [semActive, lineMode]);
 
   // Modo "envío seleccionado": cuando se elige un paquete, OCULTAMOS las demás
   // rutas/aviones para que solo se vea su recorrido (con transbordos).
@@ -407,9 +432,32 @@ export default function WorldMap({
   // Orden de PINTADO: los aviones CARGADOS se dibujan al final (encima). Evita
   // que un vuelo duplicado vacío (gris) en la misma coordenada tape al cargado
   // (causa del "avión vacío" con datos toy que duplican horarios).
-  const activeRoutes = (showLines || showPlanes) && !shipmentMode
-    ? [...visibleRoutes].sort((a, b) => (a.bags || 0) - (b.bags || 0))
-    : [];
+  const activeRoutes = useMemo(
+    () => ((showLines || showPlanes) && !shipmentMode
+      ? [...visibleRoutes].sort((a, b) => (a.bags || 0) - (b.bags || 0))
+      : []),
+    [visibleRoutes, showLines, showPlanes, shipmentMode]);
+
+  // Con MUCHOS aviones (modo "todas"), los extras decorativos dominan el costo
+  // de pintado: el filtro drop-shadow POR AVIÓN y la animación CSS de guiones
+  // POR LÍNEA obligan a Chrome a rasterizar continuamente aunque React no
+  // re-renderice. Sobre este umbral se desactivan (el semáforo de colores y el
+  // movimiento se mantienen — es lo que se evalúa en la demo).
+  const manyPlanes = activeRoutes.length > 150;
+
+  // Posición de CADA avión para este frame, calculada UNA sola vez y
+  // compartida por la capa de líneas y la de aviones (antes el gran círculo
+  // se calculaba DOS veces por ruta y por frame).
+  const planePositions = useMemo(() => {
+    const m = new Map();
+    for (const r of activeRoutes) {
+      const from = airportMap[r.from];
+      const to   = airportMap[r.to];
+      if (!from || !to) continue;
+      m.set(routeKey(r), { from, to, plane: planePosition(from, to, r, displayMinute) });
+    }
+    return m;
+  }, [activeRoutes, airportMap, displayMinute]);
 
   const isCalculating = running && message.startsWith("Planificando");
 
@@ -588,58 +636,61 @@ export default function WorldMap({
         ), [stableBgClick])}
 
         {showLines && activeRoutes.map(r => {
-          const from = airportMap[r.from];
-          const to   = airportMap[r.to];
-          if (!from || !to) return null;
-          const hl  = routeIsHighlighted(r);
           const key = routeKey(r);
+          const pp  = planePositions.get(key);
+          if (!pp) return null;
+          const hl  = routeIsHighlighted(r);
           const cap = r.capacity || 0;
           const col = flightColor(r.bags, cap);
-          // La línea visible nace en la POSICIÓN ACTUAL del avión: el tramo ya
-          // recorrido se "borra" y solo queda el camino restante. Es gratis:
-          // el SVG ya se repinta cada frame (displayMinute) y la posición es la
-          // misma que usa la capa de aviones.
-          const plane = planePosition(from, to, r, displayMinute);
+          // La línea visible nace en la POSICIÓN ACTUAL del avión (posición
+          // precalculada en planePositions, compartida con la capa de aviones):
+          // el tramo ya recorrido se "borra" y solo queda el camino restante.
           return (
             <g key={`active-${key}`}>
               {/* Corredor invisible de RUTA COMPLETA para que siga siendo fácil
-                  de clicar aunque la línea visible se acorte */}
-              <Line
-                from={from} to={to}
-                stroke="transparent" strokeWidth={8}
-                style={{ cursor: "pointer" }}
-                onClick={(e) => { e.stopPropagation(); clickRoute(key); }}/>
+                  de clicar aunque la línea visible se acorte. Con cientos de
+                  aviones se omite (duplica los paths SVG y el avión sigue
+                  siendo clicable). */}
+              {!manyPlanes && (
+                <Line
+                  from={pp.from} to={pp.to}
+                  stroke="transparent" strokeWidth={8}
+                  style={{ cursor: "pointer" }}
+                  onClick={(e) => { e.stopPropagation(); clickRoute(key); }}/>
+              )}
               {/* Más finas y algo transparentes para no saturar la pantalla */}
               <Line
-                from={plane.coordinates} to={to}
+                from={pp.plane.coordinates} to={pp.to}
                 stroke={col}
                 strokeWidth={hasFocus && hl ? 1.0 : 0.6}
                 strokeLinecap="round" strokeDasharray="8 4"
                 opacity={hl ? 0.85 : 0.10}
                 style={{ pointerEvents: "none" }}
-                className="route-active"/>
+                className={manyPlanes ? undefined : "route-active"}/>
             </g>
           );
         })}
 
         {showPlanes && activeRoutes.map(r => {
-          const from = airportMap[r.from];
-          const to   = airportMap[r.to];
-          if (!from || !to) return null;
-          const plane = planePosition(from, to, r, displayMinute);
+          const key = routeKey(r);
+          const pp  = planePositions.get(key);
+          if (!pp) return null;
+          const plane = pp.plane;
           const hl    = routeIsHighlighted(r);
           const cap   = r.capacity || 0;
           const col   = flightColor(r.bags, cap);   // gris si vacío, si no semáforo
           return (
             <Marker
-              key={`plane-${routeKey(r)}`}
+              key={`plane-${key}`}
               coordinates={plane.coordinates}
-              onClick={(e) => { e.stopPropagation(); clickRoute(routeKey(r)); }}
+              onClick={(e) => { e.stopPropagation(); clickRoute(key); }}
               onMouseMove={(e) => showPlaneTip(e, r)}
               onMouseLeave={hideTip}>
-              {/* Icono reducido (scale) — tooltip propio estilizado, no <title> */}
+              {/* Icono reducido (scale) — tooltip propio estilizado, no <title>.
+                  El drop-shadow (route-plane) se omite con muchos aviones: los
+                  filtros SVG por elemento son de lo más caro de rasterizar. */}
               <g transform={`rotate(${plane.angle}) scale(0.75)`}
-                 className="route-plane"
+                 className={manyPlanes ? undefined : "route-plane"}
                  opacity={hl ? 1 : 0.15}
                  style={{ cursor: "pointer" }}>
                 {/* Fuselaje */}
