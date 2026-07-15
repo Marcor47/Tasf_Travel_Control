@@ -53,7 +53,17 @@ export default function FlightsCapacity({
   history = [],           // historial de eventos (sub-pestaña Historial)
 }) {
   const [search, setSearch] = useState("");
-  const [sortBy,   setSortBy]   = useState("ocupacion");
+
+const [sortBy,        setSortBy]       = useState("ocupacion");
+const [sortDir,       setSortDir]      = useState("desc");
+const [expandedFlight, setExpandedFlight] = useState(null);
+
+const handleSortFL = (key) => {
+  if (sortBy === key) setSortDir(d => d === "desc" ? "asc" : "desc");
+  else { setSortBy(key); setSortDir("desc"); }
+};
+
+
   const [bottomTab, setBottomTab] = useState("planificados"); // planificados | historial
 
   // Vuelos que transportan un lote según el historial. Permite buscar por ID de
@@ -74,6 +84,24 @@ export default function FlightsCapacity({
     return ids;
   }, [history, focusLotId]);
 
+
+
+// Paquetes por vuelo (del historial): lotId → { bags, status, finalDest }
+const flightLots = useMemo(() => {
+  const map = new Map();
+  for (const e of history) {
+    if (!e.flightId || !e.lotId) continue;
+    if (!map.has(e.flightId)) map.set(e.flightId, new Map());
+    const lots = map.get(e.flightId);
+    if (!lots.has(e.lotId) || e.minute > (lots.get(e.lotId).minute ?? 0)) {
+      lots.set(e.lotId, {
+        bags: e.bags || 0, minute: e.minute,
+        status: e.type, finalDest: !!e.finalDestination,
+      });
+    }
+  }
+  return map;
+}, [history]);
 
 
   // Cada ruta activa del backend ya es un vuelo con su capacidad y carga total.
@@ -119,37 +147,17 @@ export default function FlightsCapacity({
   };
 })
 .sort((a, b) => {
-  if (sortBy === "maletas") 
-    return (b.bags ?? 0) - (a.bags ?? 0);
-
-  if (sortBy === "salida") 
-    return (a.departureMinute ?? 0) - (b.departureMinute ?? 0);
-
-  if (sortBy === "llegada") 
-    return (a.arrivalMinute ?? 0) - (b.arrivalMinute ?? 0);
-
-  if (sortBy === "alfabetico") {
-    const fromCompare = airportName(a.from || "")
-      .localeCompare(
-        airportName(b.from || ""),
-        "es",
-        { sensitivity: "base" }
-      );
-
-    if (fromCompare !== 0) return fromCompare;
-
-    return airportName(a.to || "")
-      .localeCompare(
-        airportName(b.to || ""),
-        "es",
-        { sensitivity: "base" }
-      );
-  }
-
-  return (b.pct ?? -1) - (a.pct ?? -1);
+  const dir = sortDir === "desc" ? 1 : -1;
+  if (sortBy === "maletas")    return dir * ((b.bags??0) - (a.bags??0));
+  if (sortBy === "salida")     return dir * ((a.departureMinute??0) - (b.departureMinute??0));
+  if (sortBy === "llegada")    return dir * ((a.arrivalMinute??0) - (b.arrivalMinute??0));
+  if (sortBy === "alfabetico") return dir * airportName(a.from||"")
+    .localeCompare(airportName(b.from||""), "es", { sensitivity: "base" });
+  return dir * ((b.pct??-1) - (a.pct??-1));
 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routes, focusCodes, focusFlightId, lotFlightIds, history, search, sem, sortBy]);
+  }, [routes, focusCodes, focusFlightId, lotFlightIds, history, search, sem, sortBy, sortDir]);
+
 
   // Vuelos PLANIFICADOS próximos (aún no despegan) con maletas asignadas —
   // el registro de lo que el sistema planea. Respeta el foco de aeropuertos
@@ -199,37 +207,16 @@ export default function FlightsCapacity({
     arrivalMinute: u.arrivalMinute ?? 0,
 }))
 .sort((a, b) => {
-  if (sortBy === "maletas") 
-    return (b.bags ?? 0) - (a.bags ?? 0);
-
-  if (sortBy === "salida") 
-    return (a.departureMinute ?? 0) - (b.departureMinute ?? 0);
-
-  if (sortBy === "llegada") 
-    return (a.arrivalMinute ?? 0) - (b.arrivalMinute ?? 0);
-
-  if (sortBy === "alfabetico") {
-    const fromCompare = airportName(a.from || "")
-      .localeCompare(
-        airportName(b.from || ""),
-        "es",
-        { sensitivity: "base" }
-      );
-
-    if (fromCompare !== 0) return fromCompare;
-
-    return airportName(a.to || "")
-      .localeCompare(
-        airportName(b.to || ""),
-        "es",
-        { sensitivity: "base" }
-      );
-  }
-
-  return (b.pct ?? -1) - (a.pct ?? -1);
+  const dir = sortDir === "desc" ? 1 : -1;
+  if (sortBy === "maletas")    return dir * ((b.bags??0) - (a.bags??0));
+  if (sortBy === "salida")     return dir * ((a.departureMinute??0) - (b.departureMinute??0));
+  if (sortBy === "llegada")    return dir * ((a.arrivalMinute??0) - (b.arrivalMinute??0));
+  if (sortBy === "alfabetico") return dir * airportName(a.from||"")
+    .localeCompare(airportName(b.from||""), "es", { sensitivity: "base" });
+  return dir * ((b.pct??-1) - (a.pct??-1));
 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [upcoming, focusCodes, focusFlightId, history, sortBy, sem, search]);
+}, [upcoming, focusCodes, focusFlightId, history, sortBy, sortDir, sem, search]);
 
   // Historial de eventos integrado (sub-pestaña): respeta foco y buscador.
   const filteredHistory = useMemo(() => {
@@ -261,14 +248,14 @@ export default function FlightsCapacity({
         </p>
         <div className="flex gap-0.5 flex-wrap justify-end">
           {SORT_OPTIONS.map(o => (
-            <button key={o.key} onClick={() => setSortBy(o.key)}
-              className={`text-[9px] px-1 py-0.5 rounded transition border
-                ${sortBy === o.key
-                  ? "bg-teal/20 text-teal border-teal/40"
-                  : "bg-[#021020] text-gray-500 border-white/10 hover:text-white"}`}>
-              {o.label}
-            </button>
-          ))}
+  <button key={o.key} onClick={() => handleSortFL(o.key)}
+    className={`text-[9px] px-1 py-0.5 rounded transition border
+      ${sortBy === o.key
+        ? "bg-teal/20 text-teal border-teal/40"
+        : "bg-[#021020] text-gray-500 border-white/10 hover:text-white"}`}>
+    {o.label}{sortBy === o.key ? (sortDir === "desc" ? " ▼" : " ▲") : ""}
+  </button>
+))}
         </div>
       </div>
 
@@ -326,51 +313,80 @@ export default function FlightsCapacity({
                            : "text-gray-400";
             const isSel = selectedRouteKey === f.key;
             
-            return (
-              <div key={f.key} className={`rounded transition ${isSel ? "bg-teal/15 ring-1 ring-teal/40" : ""}`}>
-                <div className="flex items-center gap-0.5">
-                  <button type="button" onClick={() => onFlightClick?.(f)}
-                    title={`ID: ${f.key} · ${f.from} → ${f.to}`}
-                    className="flex-1 text-left rounded px-1 py-0.5 hover:bg-white/5 transition">
-                    
+return (() => {
+  const isExp  = expandedFlight === f.key;
+  const lots   = flightLots.get(f.flightId) ?? new Map();
+  const lotList = [...lots.entries()]
+    .sort((a, b) => b[1].minute - a[1].minute);
+  return (
+    <div key={f.key} className={`rounded transition ${isSel ? "bg-teal/15 ring-1 ring-teal/40" : ""}`}>
+      <div className="flex items-center gap-0.5">
+        <button type="button" onClick={() => onFlightClick?.(f)}
+          title={`ID: ${f.key} · ${f.from} → ${f.to}`}
+          className="flex-1 text-left rounded px-1 py-0.5 hover:bg-white/5 transition">
+          <div className="flex justify-between items-center mb-0.5">
+            <span className="text-gray-300 truncate">
+              <span className="text-teal">{airportName(f.from)}</span>
+              <span className="text-gray-600 mx-1">→</span>
+              <span className="text-gray-200">{airportName(f.to)}</span>
+              <span className="text-gray-600 font-mono text-[10px] ml-1">{f.departure}</span>
+            </span>
+            <span className={`font-bold flex-shrink-0 ${txtColor}`}>
+              {pct == null ? `${f.bags}` : `${pct}%`}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="flex-1 bg-white/10 rounded-full h-1.5">
+              <div className={`${barColor} h-1.5 rounded-full transition-all duration-500`}
+                   style={{ width: `${clamp}%` }}/>
+            </div>
+            <span className="text-gray-500 text-[10px] tabular-nums flex-shrink-0">
+              {(f.bags||0).toLocaleString()}
+              {f.capacity != null && ` / ${f.capacity.toLocaleString()}`}
+            </span>
+          </div>
+        </button>
+        {/* Expandir paquetes del vuelo */}
+        {lotList.length > 0 && (
+          <button onClick={() => setExpandedFlight(isExp ? null : f.key)}
+            title={isExp ? "Ocultar paquetes" : `Ver ${lotList.length} paquetes`}
+            className="text-[10px] px-1 py-1 text-gray-500 hover:text-teal transition shrink-0">
+            {isExp ? "▴" : "▾"}
+          </button>
+        )}
+      </div>
 
-
-
-
-
-
-
-<div className="flex justify-between items-center mb-0.5">
-<span className="text-gray-300 truncate">
-<span className="text-teal">{airportName(f.from)}</span>
-<span className="text-gray-600 mx-1">→</span>
-<span className="text-gray-200">{airportName(f.to)}</span>
-<span className="text-gray-600 font-mono text-[10px] ml-1">{f.departure}</span>
-</span>
-<span className={`font-bold flex-shrink-0 ${txtColor}`}>
-{pct == null ? `${f.bags}` : `${pct}%`}
-</span>
-</div>
-<div className="flex items-center gap-2">
-<div className="flex-1 bg-white/10 rounded-full h-1.5">
-<div className={`${barColor} h-1.5 rounded-full transition-all duration-500`}
-style={{ width: `${clamp}%` }}/>
-</div>
-<span className="text-gray-500 text-[10px] tabular-nums flex-shrink-0">
-{(f.bags||0).toLocaleString()}
-{f.capacity != null && ` / ${f.capacity.toLocaleString()}`}
-</span>
-</div>
-
-
-
-
-                  </button>
-
+      {/* Lista de paquetes del vuelo */}
+      {isExp && (
+        <div className="mt-1 px-1 pb-1 border-t border-white/10 pt-1">
+          <p className="text-gray-500 text-[9px] uppercase mb-1">
+            Paquetes · <span className="text-teal font-bold">{lotList.length}</span>
+          </p>
+          <div className="flex flex-col gap-0.5 max-h-32 overflow-y-auto">
+            {lotList.map(([lotId, info]) => {
+              const statusIcon = info.finalDest    ? ["✓", "text-green-400"]
+                               : info.status === "departed" ? ["✈", "text-yellow-400"]
+                               :                              ["⇄", "text-blue-400"];
+              return (
+                <div key={lotId}
+                  className="grid grid-cols-[1fr_auto_auto] gap-1 items-center
+                             bg-[#021020] rounded px-1 py-0.5 text-[9px]">
+                  <span className="text-teal font-mono truncate">{lotId}</span>
+                  <span className="text-gray-300 font-bold tabular-nums">
+                    {(info.bags||0).toLocaleString()} maletas
+                  </span>
+                  <span className={statusIcon[1]}>{statusIcon[0]}</span>
                 </div>
-            
-              </div>
-            );
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+})();
+
+
           })}
         </div>
       )}

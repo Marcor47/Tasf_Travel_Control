@@ -152,12 +152,40 @@ export default function SLAMonitor({
   selectedShipment = null, onShipmentClick,
   searchText, onSearchChange,
   fleetFill = null,
+  fetchShipmentPaths = null,
 }) {
   const [internalFilter, setInternalFilter] = useState("");
   const [slaSearch, setSlaSearch] = useState("");
   // Paquete desplegado en la tarjeta de Envíos (muestra sus sub-lotes debajo).
   const [expandedPkg, setExpandedPkg] = useState(null);
 
+const [expandedSubLot,  setExpandedSubLot]  = useState(null);
+const [subLotPaths,     setSubLotPaths]     = useState({});
+const [loadingSubLot,   setLoadingSubLot]   = useState(null);
+
+const expandSubLot = async (subLotId) => {
+  if (expandedSubLot === subLotId) { setExpandedSubLot(null); return; }
+  setExpandedSubLot(subLotId);
+  if (subLotPaths[subLotId] || !fetchShipmentPaths) return;
+  setLoadingSubLot(subLotId);
+  try {
+    const paths = await fetchShipmentPaths(subLotId);
+    // fetchShipmentPaths devuelve array de paths; tomamos el que coincide con subLotId
+    const match = (paths ?? []).find(p => p.lotId === subLotId) ?? paths?.[0];
+    setSubLotPaths(p => ({ ...p, [subLotId]: match?.legs ?? [] }));
+  } catch { setSubLotPaths(p => ({ ...p, [subLotId]: [] })); }
+  finally { setLoadingSubLot(null); }
+};
+
+
+const [envioSort,      setEnvioSort]      = useState("reciente");
+const [envioSortDir,   setEnvioSortDir]   = useState("desc");
+const [envioStatusFilter, setEnvioStatusFilter] = useState("all");
+
+const handleEnvioSort = (key) => {
+  if (envioSort === key) setEnvioSortDir(d => d === "desc" ? "asc" : "desc");
+  else { setEnvioSort(key); setEnvioSortDir("desc"); }
+};
 
   // Búsqueda controlada (la eleva el Dashboard para reflejarla en el mapa y los
   // demás paneles) o interna si no se controla.
@@ -309,6 +337,68 @@ const packageRows = useMemo(() => {
   return result.slice(0, 30);
 }, [focusedEvents, filterText, lotEndpoints, selectedShipment]);
 
+
+
+
+const ENVIO_SORT_OPTIONS = [
+  { key: "reciente",  label: "Reciente" },
+  { key: "maletas",   label: "Maletas"  },
+  { key: "sla",       label: "SLA %"    },
+  { key: "nombre",    label: "A-Z"      },
+];
+
+const ENVIO_STATUS_CHIPS = [
+  { key: "all",       label: "Todos",      dot: "bg-gray-400"  },
+  { key: "delivered", label: "Entregado",  dot: "bg-green-500" },
+  { key: "inAir",     label: "En vuelo",   dot: "bg-yellow-500"},
+  { key: "escala",    label: "En escala",  dot: "bg-blue-400"  },
+  { key: "overdue",   label: "Vencido",    dot: "bg-red-500"   },
+];
+
+const filteredSortedPackageRows = useMemo(() => {
+  let rows = [...packageRows];
+
+  // Filtro por estado
+  if (envioStatusFilter !== "all") {
+    rows = rows.filter(p => {
+      if (envioStatusFilter === "delivered") return p.delivered;
+      if (envioStatusFilter === "inAir")     return p.inAir && !p.delivered;
+      if (envioStatusFilter === "escala")    return !p.delivered && !p.inAir;
+      if (envioStatusFilter === "overdue") {
+        const { status } = computeSLA(
+          { ...p.latest, from: p.origin, to: p.dest }, simulatedMinute);
+        return status === "red";
+      }
+      return true;
+    });
+  }
+
+  // Ordenamiento
+  const dir = envioSortDir === "desc" ? 1 : -1;
+  if (envioSort === "maletas")
+    rows.sort((a, b) => dir * (b.bags - a.bags));
+  else if (envioSort === "sla") {
+    rows.sort((a, b) => {
+      const pa = computeSLA({ ...a.latest, from: a.origin, to: a.dest }, simulatedMinute).pct;
+      const pb = computeSLA({ ...b.latest, from: b.origin, to: b.dest }, simulatedMinute).pct;
+      return dir * (pb - pa);
+    });
+  } else if (envioSort === "nombre")
+    rows.sort((a, b) => dir * a.base.localeCompare(b.base, undefined, { numeric: true }));
+  else // reciente
+    rows.sort((a, b) => dir * (b.latest.minute - a.latest.minute));
+
+  // El seleccionado siempre primero (independiente del orden)
+  if (selectedShipment?.bagId) {
+    const selBase = packageBase(selectedShipment.bagId);
+    const idx = rows.findIndex(p => p.base === selBase);
+    if (idx > 0) rows.unshift(rows.splice(idx, 1)[0]);
+  }
+
+  return rows;
+}, [packageRows, envioSort, envioSortDir, envioStatusFilter, simulatedMinute, selectedShipment]);
+
+
   // ── Contadores globales ───────────────────────────────────────────────────
   const delivered = safeKpis.deliveredOnTime;
   const overdue   = safeKpis.outOfDeadline;
@@ -455,6 +545,32 @@ const packageRows = useMemo(() => {
                      px-2 py-1 text-xs text-gray-300 mb-2
                      focus:outline-none focus:border-teal"
         />
+
+{/* Filtro por estado */}
+<div className="flex gap-0.5 flex-wrap mb-1.5">
+  {ENVIO_STATUS_CHIPS.map(c => (
+    <button key={c.key} onClick={() => setEnvioStatusFilter(c.key)}
+      className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] transition border
+        ${envioStatusFilter === c.key
+          ? "border-teal/60 bg-teal/10 text-gray-200"
+          : "border-white/10 text-gray-400 hover:text-white"}`}>
+      <span className={`w-2 h-2 rounded-full ${c.dot}`}/>{c.label}
+    </button>
+  ))}
+</div>
+{/* Ordenamiento */}
+<div className="flex gap-0.5 flex-wrap mb-2">
+  {ENVIO_SORT_OPTIONS.map(o => (
+    <button key={o.key} onClick={() => handleEnvioSort(o.key)}
+      className={`text-[9px] px-1.5 py-0.5 rounded transition border
+        ${envioSort === o.key
+          ? "bg-teal/20 text-teal border-teal/40"
+          : "bg-[#021020] text-gray-500 border-white/10 hover:text-white"}`}>
+      {o.label}{envioSort === o.key ? (envioSortDir === "desc" ? " ▼" : " ▲") : ""}
+    </button>
+  ))}
+</div>
+
         <table className="w-full">
   <thead>
     <tr className="text-gray-500 border-b border-white/10">
@@ -466,16 +582,15 @@ const packageRows = useMemo(() => {
     </tr>
   </thead>
   <tbody>
-    {packageRows.length > 0 ? (
-      packageRows.map((pkg) => {
+    {filteredSortedPackageRows.length > 0 ? (
+      filteredSortedPackageRows.map((pkg) => {
         const isSel   = selectedShipment?.bagId === pkg.base;
         // Sub-lote de este paquete seleccionado → mantener desplegado para que
         // la fila resaltada (y sus datos) queden siempre visibles.
         const subSelIn = !!selectedShipment?.sub
           && packageBase(selectedShipment.bagId) === pkg.base;
         const isExp   = expandedPkg === pkg.base || subSelIn;
-        const hasSubs = pkg.subs.length > 1
-          || (pkg.subs.length === 1 && pkg.subs[0].pkgId !== pkg.base);
+        const hasSubs = pkg.subs.length > 0;
         const globalStatus = pkg.delivered ? ["✓ Entregado", "text-green-400"]
                            : pkg.inAir     ? ["✈ En vuelo",  "text-yellow-400"]
                            :                 ["⇄ En escala", "text-blue-400"];
@@ -532,53 +647,123 @@ const packageRows = useMemo(() => {
 
             {/* ── Filas de MALETAS/sub-lotes (nivel 2, desplegable) ──
                 Independientes del paquete: clic → SOLO la ruta de ese sub-lote. */}
-            {isExp && pkg.subs.map(sub => {
-              const subSel    = selectedShipment?.bagId === sub.pkgId;
-              const suffix    = sub.pkgId.startsWith(pkg.base)
-                ? sub.pkgId.slice(pkg.base.length) : sub.pkgId;
-              const subStatus = sub.type === "landed" && sub.finalDestination
-                ? ["✓ Entregado", "text-green-400"]
-                : sub.type === "departed"
-                  ? ["✈ En vuelo",  "text-yellow-400"]
-                  : ["⇄ En escala", "text-blue-400"];
-              const sep = lotEndpoints.get(sub.pkgId);
-              return (
-                <tr key={`sub-${sub.pkgId}`}
-                    onClick={() => onShipmentClick?.({ ...sub, sub: true })}
-                    title="Clic: SOLO la ruta de esta maleta/sub-lote"
-                    className={`border-b border-white/5 bg-[#021020]/50 cursor-pointer transition
-                      ${subSel ? "bg-teal/15" : "hover:bg-white/5"}`}>
-                  <td className="py-1 pl-3 text-[9px] text-gray-600">└</td>
-                  <td className="py-1 text-[10px]">
-                    <span className="text-gray-500 font-mono">{pkg.base}</span>
-                    <span className="text-teal font-mono font-bold">{suffix}</span>
-                    <span className={`ml-1.5 text-[9px] ${subStatus[1]}`}>
-                      {subStatus[0]}
-                    </span>
-                  </td>
-                  <td className="py-1 text-[9px] text-gray-500"
-                      title={`${sep?.from || sub.from} → ${sep?.to || sub.to}`}>
-                    {airportName(sep?.from || sub.from)}
-                    <span className="text-gray-700 mx-1">→</span>
-                    {airportName(sep?.to || sub.to)}
-                  </td>
-                  <td className="py-1 text-center text-gray-400 text-[10px]">
-                    {sub.bags || 0}
-                  </td>
-                  <td className="py-1 text-gray-500 text-[9px] font-mono">
-                    {sub.flightId || "—"}
-                  </td>
-                </tr>
-              );
-            })}
+{isExp && pkg.subs.map(sub => {
+  const subSel     = selectedShipment?.bagId === sub.pkgId;
+  const suffix     = sub.pkgId.startsWith(pkg.base)
+    ? sub.pkgId.slice(pkg.base.length) : sub.pkgId;
+  const subStatus  = sub.type === "landed" && sub.finalDestination
+    ? ["✓ Entregado", "text-green-400"]
+    : sub.type === "departed"
+      ? ["✈ En vuelo",  "text-yellow-400"]
+      : ["⇄ En escala", "text-blue-400"];
+  const sep        = lotEndpoints.get(sub.pkgId);
+  const isSubExp   = expandedSubLot === sub.pkgId;
+  const isSubLoad  = loadingSubLot  === sub.pkgId;
+  const legs       = subLotPaths[sub.pkgId] ?? [];
+
+  return (
+    <Fragment key={`sub-${sub.pkgId}`}>
+      {/* Fila del sub-lote */}
+      <tr className={`border-b border-white/5 bg-[#021020]/50 transition
+            ${subSel ? "bg-teal/15" : "hover:bg-white/5"}`}>
+        <td className="py-1 pl-3 text-[9px] text-gray-600">└</td>
+        <td className="py-1 text-[10px]">
+          <div className="flex items-center gap-1">
+            {/* Botón expandir tramos */}
+            <button onClick={() => expandSubLot(sub.pkgId)}
+              title={isSubExp ? "Ocultar tramos" : "Ver recorrido de esta maleta"}
+              className="text-gray-500 hover:text-teal transition text-[9px] shrink-0">
+              {isSubLoad ? "…" : isSubExp ? "▴" : "▾"}
+            </button>
+            <span
+              onClick={() => onShipmentClick?.({ ...sub, sub: true })}
+              title="Clic: SOLO la ruta de esta maleta en el mapa"
+              className="cursor-pointer">
+              <span className="text-gray-500 font-mono">{pkg.base}</span>
+              <span className="text-teal font-mono font-bold">{suffix}</span>
+              <span className={`ml-1 text-[9px] ${subStatus[1]}`}>{subStatus[0]}</span>
+            </span>
+          </div>
+        </td>
+        <td className="py-1 text-[9px] text-gray-500 cursor-pointer"
+            onClick={() => onShipmentClick?.({ ...sub, sub: true })}
+            title={`${sep?.from || sub.from} → ${sep?.to || sub.to}`}>
+          {airportName(sep?.from || sub.from)}
+          <span className="text-gray-700 mx-1">→</span>
+          {airportName(sep?.to || sub.to)}
+        </td>
+        <td className="py-1 text-center text-gray-400 text-[10px]">
+          {sub.bags || 0}
+        </td>
+        <td className="py-1 text-gray-500 text-[9px] font-mono">
+          {sub.flightId || "—"}
+        </td>
+      </tr>
+
+      {/* Tramos del sub-lote (expandible) */}
+      {isSubExp && (
+        isSubLoad ? (
+          <tr key={`subload-${sub.pkgId}`}>
+            <td colSpan={5} className="py-1 pl-10 text-gray-600 text-[9px]">
+              Cargando tramos…
+            </td>
+          </tr>
+        ) : legs.length === 0 ? (
+          <tr key={`subemp-${sub.pkgId}`}>
+            <td colSpan={5} className="py-1 pl-10 text-gray-600 text-[9px]">
+              Sin tramos disponibles aún
+            </td>
+          </tr>
+        ) : (
+          legs.map((leg, li) => {
+            const legIcon = leg.status === "done"    ? ["✓", "text-green-400"]
+                          : leg.status === "current" ? ["✈", "text-yellow-400"]
+                          :                            ["○", "text-gray-500"];
+            return (
+              <tr key={`leg-${sub.pkgId}-${li}`}
+                  className="border-b border-white/5 bg-[#010d1a]">
+                <td className="py-0.5 pl-8 text-[8px] text-gray-700">│</td>
+                <td className="py-0.5 text-[9px]">
+                  <span className={`mr-1 ${legIcon[1]}`}>{legIcon[0]}</span>
+                  <span className="text-gray-500 font-mono">{leg.flightId || "—"}</span>
+                  {leg.finalDestination && (
+                    <span className="text-green-500 ml-1 text-[8px]">★destino</span>
+                  )}
+                </td>
+                <td className="py-0.5 text-[9px] text-gray-600"
+                    title={`${leg.from} → ${leg.to}`}>
+                  <span className={leg.status !== "upcoming" ? "text-gray-400" : ""}>
+                    {airportName(leg.from)}
+                  </span>
+                  <span className="text-gray-700 mx-1">→</span>
+                  <span className={leg.status === "done" ? "text-gray-400" : ""}>
+                    {airportName(leg.to)}
+                  </span>
+                </td>
+                <td className="py-0.5 text-center text-gray-700 text-[9px]">—</td>
+                <td className={`py-0.5 text-[9px] font-medium ${legIcon[1]}`}>
+                  {leg.status === "done"    ? "Completado"
+                 : leg.status === "current" ? "En curso"
+                 :                            "Pendiente"}
+                </td>
+              </tr>
+            );
+          })
+        )
+      )}
+    </Fragment>
+  );
+})}
           </Fragment>
         );
       })
     ) : (
       <tr>
         <td colSpan={5} className="py-3 text-center text-gray-600 text-[10px]">
-          {filterText
-            ? "Sin coincidencias"
+          {envioStatusFilter !== "all"
+  ? "Sin paquetes para ese estado"
+  : filterText
+  ? "Sin coincidencias"
             : focusFlightId
               ? (focusFlightBags > 0
                   ? `El vuelo ${focusFlightId} lleva ${focusFlightBags} maletas en vuelo — su detalle aparece al aterrizar`

@@ -33,7 +33,15 @@ export default function WarehouseCapacity({
   // usamos los estáticos del dataset para poder filtrar igualmente.
   const source = airports.length > 0 ? airports : STATIC_AIRPORTS;
 
-  const [sortBy,       setSortBy]   = useState("ocupacion");
+const [sortBy,  setSortBy]  = useState("ocupacion");
+const [sortDir, setSortDir] = useState("desc");
+
+const handleSortWH = (key) => {
+  if (sortBy === key) setSortDir(d => d === "desc" ? "asc" : "desc");
+  else { setSortBy(key); setSortDir("desc"); }
+};
+
+
   const [expandedCode, setExpanded] = useState(null);
 
 
@@ -55,19 +63,16 @@ export default function WarehouseCapacity({
       .filter(a => focusSet.size ? focusSet.has(a.code) : true)
       .filter(a => (filter.trim() && !isUtQuery) ? airportMatches(a, filter) : true)
       .filter(a => sem === "all" || whSem(a) === sem);
-    if (sortBy === "alfabetico") {
-  return base.sort((a, b) =>
-    airportName(a.code).localeCompare(
-      airportName(b.code),
-      "es",
-      { sensitivity: "base" }
-    )
-  );
-}
-    if (sortBy === "maletas")    return base.sort((a, b) => (b.current||0) - (a.current||0));
-    return base.sort((a, b) =>
-      ((b.current||0) / Math.max(1,b.capacity)) - ((a.current||0) / Math.max(1,a.capacity)));
-  }, [source, airports.length, focusSet, filter, sem, sortBy]);
+const dir = sortDir === "desc" ? 1 : -1;
+  if (sortBy === "alfabetico")
+    return base.sort((a, b) => dir * airportName(a.code)
+      .localeCompare(airportName(b.code), "es", { sensitivity: "base" }));
+  if (sortBy === "maletas")
+    return base.sort((a, b) => dir * ((b.current||0) - (a.current||0)));
+  return base.sort((a, b) => dir *
+    (((b.current||0) / Math.max(1,b.capacity)) - ((a.current||0) / Math.max(1,a.capacity))));
+}, [source, airports.length, focusSet, filter, sem, sortBy, sortDir]);
+
   const shownAirports = (hasFilter || airports.length === 0) ? matched : matched.slice(0, 10);
 
   const safeKpis = {
@@ -88,14 +93,14 @@ export default function WarehouseCapacity({
           </p>
           <div className="flex gap-0.5">
             {SORT_OPTIONS.map(o => (
-              <button key={o.key} onClick={() => setSortBy(o.key)}
-                className={`text-[9px] px-1.5 py-0.5 rounded transition border
-                  ${sortBy === o.key
-                    ? "bg-teal/20 text-teal border-teal/40"
-                    : "bg-[#021020] text-gray-500 border-white/10 hover:text-white"}`}>
-                {o.label}
-              </button>
-            ))}
+  <button key={o.key} onClick={() => handleSortWH(o.key)}
+    className={`text-[9px] px-1.5 py-0.5 rounded transition border
+      ${sortBy === o.key
+        ? "bg-teal/20 text-teal border-teal/40"
+        : "bg-[#021020] text-gray-500 border-white/10 hover:text-white"}`}>
+    {o.label}{sortBy === o.key ? (sortDir === "desc" ? " ▼" : " ▲") : ""}
+  </button>
+))}
           </div>
         </div>
 
