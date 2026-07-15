@@ -94,6 +94,9 @@ public class SimulationService {
     // Recorrido completo (todos los tramos) por lote — para mostrar el camino de
     // un envío al seleccionarlo. Se llena en buildEvents y se limpia en cada run.
     private final Map<String, List<ShipmentLeg>> pathByLot = new ConcurrentHashMap<>();
+    // Cantidad de maletas por lote (mismo ciclo de vida que pathByLot): alimenta
+    // la lista de paquetes por vuelo y el desglose de maletas por paquete.
+    private final Map<String, Integer> lotQtyById = new ConcurrentHashMap<>();
 
     // ── Preparación de "Día a Día" (pizarra en blanco) ────────────────────────
     // En modo diadia NO se usa el dataset: el usuario carga aeropuertos, vuelos y
@@ -1070,7 +1073,8 @@ public synchronized SimulationState deleteFlight(String flightId) {
                             .mapToInt(BaggageLot::getQuantity).sum();
 
                     int                activeFlights = countActiveFlights(simulatedNow);
-                    List<AirportState> airportStates = airportStates(airports, solution, simulatedNow);
+                    List<AirportState> airportStates = airportStates(airports, solution,
+                            simulatedNow, visibleLots);
                     Kpis               kpis          = buildKpis(
                             prevBlockTotal   + dynTotal,
                             prevBlockRouted  + dynRouted,
@@ -1298,7 +1302,8 @@ public synchronized SimulationState deleteFlight(String flightId) {
                 }).mapToInt(BaggageLot::getQuantity).sum();
 
                 int                activeFlights = countActiveFlights(clampNow);
-                List<AirportState> aps           = airportStates(airports, solution, clampNow);
+                List<AirportState> aps           = airportStates(airports, solution,
+                        clampNow, visible);
                 Kpis               kpis          = buildKpis(total, routed, overdue,
                         solution, aps, visible, delivered, replanifications, activeFlights, clampNow);
                 collapsed = aps.stream().anyMatch(a -> a.current() > a.capacity());
@@ -1496,13 +1501,35 @@ public record StagedFl(String id, String origin, String destination,
             Map<String, Airport> airports,
             WorkingSolution solution,
             int minute) {
+        return airportStates(airports, solution, minute, List.of());
+    }
+
+    /**
+     * Estado de almacenes en el minuto dado. La ocupación es
+     * «recibidas − ya despegadas»: el timeline de la solución cubre los lotes
+     * CON ruta (en origen hasta el despegue, conexiones y destino); aquí se
+     * suman además los lotes visibles SIN ruta asignada, que físicamente
+     * siguen en el almacén de su origen.
+     */
+    private List<AirportState> airportStates(
+            Map<String, Airport> airports,
+            WorkingSolution solution,
+            int minute,
+            List<BaggageLot> visibleLots) {
+        Map<String, Integer> unrouted = new HashMap<>();
+        for (BaggageLot lot : visibleLots) {
+            if (solution.getPlan(lot.getId()) == null) {
+                unrouted.merge(lot.getOrigin(), lot.getQuantity(), Integer::sum);
+            }
+        }
         return airports.values().stream()
                 .sorted(Comparator.comparing(Airport::getCode))
                 .map(a -> new AirportState(
                         a.getCode(), a.getCode(),
                         a.getLatitude(), a.getLongitude(),
                         a.getWarehouseCapacity(),
-                        solution.warehouseLoadAt(a.getCode(), minute)))
+                        solution.warehouseLoadAt(a.getCode(), minute)
+                                + unrouted.getOrDefault(a.getCode(), 0)))
                 .collect(Collectors.toList());
     }
 
@@ -1655,7 +1682,7 @@ public record StagedFl(String id, String origin, String destination,
         // Guarda defensiva: en períodos largos el caché de recorridos podría
         // crecer mucho. Acotamos su tamaño (los lotes del bloque actual se
         // vuelven a cachear justo debajo; los antiguos degradan al tramo único).
-        if (pathByLot.size() > PATH_CACHE_MAX) pathByLot.clear();
+        if (pathByLot.size() > PATH_CACHE_MAX) { pathByLot.clear(); lotQtyById.clear(); }
 
         Map<String, EventAccumulator> grouped = new HashMap<>();
         for (BaggageLot lot : lots) {
@@ -1677,6 +1704,7 @@ public record StagedFl(String id, String origin, String destination,
                         i == segments.size() - 1, ""));
             }
             pathByLot.put(lot.getId(), legs);
+            lotQtyById.put(lot.getId(), lot.getQuantity());
 
             for (int i = 0; i < segments.size(); i++) {
                 RouteSegment seg       = segments.get(i);
@@ -1859,6 +1887,7 @@ public record StagedFl(String id, String origin, String destination,
         synchronized (eventLog) { eventLog.clear(); eventLogKeys.clear(); }
         synchronized (alertLog) { alertLog.clear(); }
         pathByLot.clear();
+        lotQtyById.clear();
         lastBlockPlan = null;   // el plan del último bloque es de la corrida anterior
     }
 
@@ -1885,7 +1914,7 @@ public ShipmentPath shipmentPath(String lotId) {
     // hacía ilegibles las rutas divididas. Para ver el lote completo con sus
     // divisiones usar shipmentPathsFor(lotId) (una ruta POR sub-lote).
     List<ShipmentLeg> raw = (lotId == null) ? null : pathByLot.get(lotId);
-    if (raw == null) return new ShipmentPath(lotId, List.of());
+    if (raw == null) return new ShipmentPath(lotId, 0, List.of());
     int now = state.simulatedMinute();
     List<ShipmentLeg> legs = new ArrayList<>(raw.size());
     for (ShipmentLeg l : raw) {
@@ -1895,7 +1924,7 @@ public ShipmentPath shipmentPath(String lotId) {
         legs.add(new ShipmentLeg(l.flightId(), l.from(), l.to(),
                 l.departureMinute(), l.arrivalMinute(), l.finalDestination(), st));
     }
-    return new ShipmentPath(lotId, legs);
+    return new ShipmentPath(lotId, lotQtyById.getOrDefault(lotId, 0), legs);
 }
 
 /**
@@ -1932,6 +1961,40 @@ public List<ShipmentPath> shipmentPathsFor(String lotId) {
     if (out.isEmpty()) out.add(shipmentPath(lotId));
     out.sort(Comparator.comparing(ShipmentPath::lotId));
     return out;
+}
+
+// ── Paquetes asignados a un vuelo (Panel Vuelos) ──────────────────────────
+
+/** Un paquete/lote asignado a un vuelo: cuánto lleva y en qué estado va el
+ *  tramo (done = ya voló, current = a bordo ahora, upcoming = por despegar). */
+public record FlightLot(String lotId, int bags, String from, String to,
+                        int departureMinute, int arrivalMinute, String status) {}
+
+/**
+ * Lista de paquetes (lotes) cuyo plan usa el vuelo dado, con su cantidad de
+ * maletas. Se deriva del caché de recorridos (pathByLot), así que refleja el
+ * plan vigente y se actualiza al replanificar.
+ */
+public List<FlightLot> flightLots(String flightId) {
+    if (flightId == null || flightId.isBlank()) return List.of();
+    final int MAX_ROWS = 200;
+    int now = state.simulatedMinute();
+    List<FlightLot> out = new ArrayList<>();
+    for (Map.Entry<String, List<ShipmentLeg>> e : pathByLot.entrySet()) {
+        for (ShipmentLeg l : e.getValue()) {
+            if (!flightId.equals(l.flightId())) continue;
+            String st = l.arrivalMinute()   <= now ? "done"
+                      : l.departureMinute() <= now ? "current"
+                      : "upcoming";
+            out.add(new FlightLot(e.getKey(),
+                    lotQtyById.getOrDefault(e.getKey(), 0),
+                    l.from(), l.to(),
+                    l.departureMinute(), l.arrivalMinute(), st));
+        }
+    }
+    out.sort(Comparator.comparingInt(FlightLot::departureMinute)
+                       .thenComparing(FlightLot::lotId));
+    return out.size() > MAX_ROWS ? new ArrayList<>(out.subList(0, MAX_ROWS)) : out;
 }
 
 // ── Plan de ruteo del último bloque (Reportes) ─────────────────────────────
@@ -2108,7 +2171,7 @@ private void snapshotBlockPlan(int blockNo, int blockStart, int blockEnd,
                               boolean finalDestination, String status) {} // status: done|current|upcoming
 
     /** Recorrido completo (todos los tramos) de un envío seleccionado. */
-    public record ShipmentPath(String lotId, List<ShipmentLeg> legs) {}
+    public record ShipmentPath(String lotId, int bags, List<ShipmentLeg> legs) {}
     public record Kpis(int activeFlights, int saturationPercent,
                        int occupancyPercent, double avgDeliveryDays,
                        int replanifications, int deliveredOnTime,

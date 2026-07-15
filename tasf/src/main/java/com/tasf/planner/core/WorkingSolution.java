@@ -13,6 +13,9 @@ import java.util.*;
  *  - warehouseTimeline : ocupación temporal del almacén por aeropuerto
  *
  * Modelo de almacen:
+ *  - En el ORIGEN, una maleta ocupa espacio desde su registro hasta que
+ *    DESPEGA el primer vuelo de su ruta (asignada ≠ fuera del almacen: la
+ *    maleta reservada sigue fisicamente en la bodega hasta el despegue).
  *  - En cada aeropuerto de conexion, una maleta ocupa espacio desde que llega
  *    hasta que sale su siguiente vuelo.
  *  - En el destino final, una maleta ocupa espacio desde que llega hasta
@@ -170,8 +173,8 @@ public class WorkingSolution {
             }
         }
 
-        // 2. Verificar almacen en conexiones y destino final
-        for (WarehouseInterval interval : warehouseIntervals(plan)) {
+        // 2. Verificar almacen en origen, conexiones y destino final
+        for (WarehouseInterval interval : warehouseIntervals(lot, plan)) {
             var airport = context.getAirports().get(interval.airportCode);
             if (airport == null) {
                 throw new IllegalStateException("Airport not found: " + interval.airportCode);
@@ -199,7 +202,7 @@ public class WorkingSolution {
                     segment.getFlightId(), (k, v) -> v - lot.getQuantity());
         }
 
-        for (WarehouseInterval interval : warehouseIntervals(plan)) {
+        for (WarehouseInterval interval : warehouseIntervals(lot, plan)) {
             addWarehouseDelta(interval.airportCode, interval.startMinute, +lot.getQuantity());
             addWarehouseDelta(interval.airportCode, interval.endMinuteExclusive, -lot.getQuantity());
         }
@@ -214,7 +217,7 @@ public class WorkingSolution {
                     segment.getFlightId(), (k, v) -> v + lot.getQuantity());
         }
 
-        for (WarehouseInterval interval : warehouseIntervals(existing)) {
+        for (WarehouseInterval interval : warehouseIntervals(lot, existing)) {
             addWarehouseDelta(interval.airportCode, interval.startMinute, -lot.getQuantity());
             addWarehouseDelta(interval.airportCode, interval.endMinuteExclusive, +lot.getQuantity());
         }
@@ -222,9 +225,23 @@ public class WorkingSolution {
 
     // ── helpers ──────────────────────────────────────────────────────────────
 
-    private List<WarehouseInterval> warehouseIntervals(RoutePlan plan) {
+    private List<WarehouseInterval> warehouseIntervals(BaggageLot lot, RoutePlan plan) {
         List<RouteSegment> segs = plan.getSegments();
         List<WarehouseInterval> intervals = new ArrayList<>();
+
+        // Almacen de ORIGEN: la maleta ocupa espacio desde su registro hasta el
+        // DESPEGUE del primer vuelo. La asignacion NO la saca del almacen; solo
+        // el despegue (cuando el timeline cruza este endMinuteExclusive) lo hace.
+        if (!segs.isEmpty()) {
+            int originStart        = lot.getRegistrationHour();
+            int originEndExclusive = segs.get(0).getDepartureHour();
+            if (originEndExclusive > originStart) {
+                intervals.add(new WarehouseInterval(
+                        segs.get(0).getOrigin(),
+                        originStart,
+                        originEndExclusive));
+            }
+        }
 
         for (int i = 0; i < segs.size(); i++) {
             RouteSegment segment = segs.get(i);

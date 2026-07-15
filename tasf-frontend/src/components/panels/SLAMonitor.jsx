@@ -1,5 +1,50 @@
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { airportName, AIRPORT_META } from "../../data/staticAirports";
+
+// Base del reloj simulado (BASE_UTC del backend): minuto absoluto → fecha.
+const SIM_BASE_MS = Date.UTC(2026, 0, 1);
+const regDay = (minute) => minute == null || minute < 0
+  ? ""
+  : new Date(SIM_BASE_MS + minute * 60000).toISOString().slice(0, 10);
+
+// Opciones de estado del filtro de paquetes (Panel Envíos).
+const PKG_ESTADOS = [
+  ["all",       "Todos"],
+  ["entregado", "✓ Entregado"],
+  ["vuelo",     "✈ En vuelo"],
+  ["escala",    "⇄ En escala"],
+];
+const PKG_SORTS = [
+  { key: "fecha",   label: "Fecha"   },
+  { key: "maletas", label: "Maletas" },
+  { key: "id",      label: "ID"      },
+  { key: "origen",  label: "Origen"  },
+];
+const PKG_SORT_DEFAULT_DIR = { fecha: "desc", maletas: "desc", id: "asc", origen: "asc" };
+
+// Progreso de una maleta/sub-lote a partir de su recorrido (tramos) y el
+// minuto simulado: tramos completados, tramo en curso, ubicación y %.
+function subProgressFromLegs(legs, now) {
+  if (!legs || legs.length === 0) return null;
+  let done = 0, current = null;
+  for (const l of legs) {
+    if (l.arrivalMinute <= now) { done++; continue; }
+    if (l.departureMinute <= now) current = l;
+    break;
+  }
+  const total     = legs.length;
+  const delivered = done === total;
+  const pct       = Math.round(((done + (current ? 0.5 : 0)) / total) * 100);
+  const location  = delivered ? legs[total - 1].to
+                  : current   ? null                     // en el aire (tramo current)
+                  : done > 0  ? legs[done - 1].to        // en escala
+                  :             legs[0].from;            // aún en el almacén de origen
+  const estado    = delivered ? ["✓ Entregada", "text-green-400"]
+                  : current   ? ["✈ En tránsito", "text-yellow-400"]
+                  : done > 0  ? ["⇄ En escala", "text-blue-400"]
+                  :             ["🏷 En almacén", "text-gray-400"];
+  return { pct, done, total, current, delivered, location, estado };
+}
 
 // ── Constantes SLA ────────────────────────────────────────────────────────────
 // El backend envía registrationMinute y slaLimitMinutes por evento.
@@ -274,7 +319,9 @@ const lotEndpoints = useMemo(() => {
   // ── Tarjeta de Envíos: una fila por PAQUETE (lote base) ──────────────────
   //  · Clic en el paquete → TODAS sus rutas (una por sub-lote) en el mapa.
   //  · Desplegar (▾) → sub-lotes/maletas debajo; clic en uno → SOLO su ruta.
-const packageRows = useMemo(() => {
+// Agrupado base (sin filtros de usuario): alimenta también las opciones de
+// los selectores de estado/origen/destino/fecha.
+const allPackageRows = useMemo(() => {
   if (!focusedEvents.length) return [];
 
   // Estado más reciente de cada sub-lote/lote.
@@ -295,7 +342,7 @@ const packageRows = useMemo(() => {
     groups.get(base).push(row);
   }
 
-  let result = [...groups.entries()].map(([base, subs]) => {
+  return [...groups.entries()].map(([base, subs]) => {
     subs.sort((a, b) =>
       a.pkgId.localeCompare(b.pkgId, undefined, { numeric: true }));
     const latest = subs.reduce((x, y) => (y.minute > x.minute ? y : x));
@@ -303,13 +350,35 @@ const packageRows = useMemo(() => {
     const ep     = lotEndpoints.get(latest.pkgId);
     const origin = ep?.from || latest.from;
     const dest   = ep?.to   || latest.to;
+    const delivered = subs.every(s => s.type === "landed" && s.finalDestination);
+    const inAir     = subs.some(s => s.type === "departed");
+    // Fecha de creaci\u00f3n = registro m\u00e1s antiguo entre los sub-lotes.
+    const regMinute = subs.reduce((m, s) =>
+      s.registrationMinute != null ? Math.min(m, s.registrationMinute) : m, Infinity);
     return {
       base, subs, latest, origin, dest,
       bags: subs.reduce((s, x) => s + (x.bags || 0), 0),
-      delivered: subs.every(s => s.type === "landed" && s.finalDestination),
-      inAir:     subs.some(s => s.type === "departed"),
+      delivered, inAir,
+      estado: delivered ? "entregado" : inAir ? "vuelo" : "escala",
+      regMinute: regMinute === Infinity ? latest.minute : regMinute,
     };
-  }).sort((a, b) => b.latest.minute - a.latest.minute);
+  });
+}, [focusedEvents, lotEndpoints]);
+
+// Opciones disponibles para los selectores (derivadas de los paquetes vistos).
+const pkgFilterOptions = useMemo(() => {
+  const origins = new Set(), dests = new Set(), days = new Set();
+  for (const p of allPackageRows) {
+    if (p.origin) origins.add(p.origin);
+    if (p.dest)   dests.add(p.dest);
+    const d = regDay(p.regMinute);
+    if (d) days.add(d);
+  }
+  return { origins: [...origins].sort(), dests: [...dests].sort(), days: [...days].sort() };
+}, [allPackageRows]);
+
+const packageRows = useMemo(() => {
+  let result = allPackageRows;
 
   if (filterText.trim()) {
     const norm = s => (s||"").toLowerCase()
@@ -325,6 +394,23 @@ const packageRows = useMemo(() => {
     });
   }
 
+  // Filtros de estado / origen / destino / fecha de creación.
+  if (estadoFilter !== "all") result = result.filter(p => p.estado === estadoFilter);
+  if (originFilter !== "all") result = result.filter(p => p.origin === originFilter);
+  if (destFilter   !== "all") result = result.filter(p => p.dest === destFilter);
+  if (dateFilter   !== "all") result = result.filter(p => regDay(p.regMinute) === dateFilter);
+
+  // Ordenamiento asc/desc persistente (igual que Vuelos y Almacenes).
+  result = [...result].sort((a, b) => {
+    let r;
+    if (pkgSortBy === "maletas")      r = (a.bags || 0) - (b.bags || 0);
+    else if (pkgSortBy === "id")      r = a.base.localeCompare(b.base, undefined, { numeric: true });
+    else if (pkgSortBy === "origen")  r = airportName(a.origin || "").localeCompare(
+                                            airportName(b.origin || ""), "es", { sensitivity: "base" });
+    else                              r = (a.regMinute || 0) - (b.regMinute || 0);  // fecha creación
+    return pkgSortDir === "desc" ? -r : r;
+  });
+
   // El paquete SELECCIONADO se FIJA al inicio de la lista: los eventos nuevos
   // no deben enterrarlo (hay que poder ver sus datos y des-seleccionarlo con
   // otro clic). Se fija antes del tope de 30 para que nunca quede fuera.
@@ -335,7 +421,8 @@ const packageRows = useMemo(() => {
   }
 
   return result.slice(0, 30);
-}, [focusedEvents, filterText, lotEndpoints, selectedShipment]);
+}, [allPackageRows, filterText, estadoFilter, originFilter, destFilter, dateFilter,
+    pkgSortBy, pkgSortDir, selectedShipment]);
 
 
 
@@ -599,6 +686,23 @@ const filteredSortedPackageRows = useMemo(() => {
           ...pkg.latest, pkgId: pkg.base, lotId: pkg.base,
           from: pkg.origin, to: pkg.dest,
         });
+
+        // Desglose de maletas: fusiona los sub-lotes con eventos y los del
+        // PLAN (recorridos) que aún no despegan. El recorrido aporta estado,
+        // ubicación actual y progreso, recalculados con el minuto simulado.
+        const paths       = pkgPaths[pkg.base] || [];
+        const pathByLotId = new Map(paths.map(p => [p.lotId, p]));
+        const eventIds    = new Set(pkg.subs.map(s => s.pkgId));
+        const mergedSubs  = [
+          ...pkg.subs,
+          ...paths
+            .filter(p => !eventIds.has(p.lotId) && p.legs?.length)
+            .map(p => ({
+              pkgId: p.lotId, lotId: p.lotId, bags: p.bags || 0,
+              from: p.legs[0].from, to: p.legs[p.legs.length - 1].to,
+              flightId: p.legs[0].flightId, pathOnly: true,
+            })),
+        ].sort((a, b) => a.pkgId.localeCompare(b.pkgId, undefined, { numeric: true }));
 
         return (
           <Fragment key={`pkg-${pkg.base}`}>

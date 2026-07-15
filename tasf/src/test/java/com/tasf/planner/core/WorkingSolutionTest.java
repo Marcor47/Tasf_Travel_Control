@@ -29,7 +29,46 @@ class WorkingSolutionTest {
         assertEquals(4, solution.warehouseLoadAt("BBB", 179));
         assertEquals(0, solution.warehouseLoadAt("BBB", 180));
         assertEquals(4, solution.warehouseLoadAt("CCC", 240));
-        assertEquals(0, solution.warehouseLoadAt("CCC", 250));
+        assertEquals(4, solution.warehouseLoadAt(
+                "CCC", 240 + WorkingSolution.WAREHOUSE_DWELL_MINUTES - 1));
+        assertEquals(0, solution.warehouseLoadAt(
+                "CCC", 240 + WorkingSolution.WAREHOUSE_DWELL_MINUTES));
+    }
+
+    @Test
+    void assignedBagStaysInOriginWarehouseUntilFirstFlightDeparts() {
+        WorkingSolution solution = new WorkingSolution(contextWithConnectionCapacity(10));
+        BaggageLot lot = lot("lot-1", 4);   // registrada en minuto 0; F1 despega en 60
+
+        solution.assign(lot, twoLegPlan("lot-1"));
+
+        // Asignada pero el vuelo NO ha despegado → sigue en el almacén de origen
+        assertEquals(4, solution.warehouseLoadAt("AAA", 0));
+        assertEquals(4, solution.warehouseLoadAt("AAA", 59));
+        // En el minuto del despegue sale del almacén y pasa al vuelo
+        assertEquals(0, solution.warehouseLoadAt("AAA", 60));
+    }
+
+    @Test
+    void canAssignRejectsRouteWhenOriginWarehouseWouldOverflow() {
+        // Origen AAA con capacidad 10: un lote de 8 esperando su vuelo deja
+        // sitio solo para 2 → un segundo lote de 4 no cabe mientras ambos
+        // esperan el despegue.
+        WorkingSolution solution = new WorkingSolution(contextWithConnectionCapacity(10));
+        solution.assign(lot("lot-1", 8), twoLegPlan("lot-1"));
+
+        assertFalse(solution.canAssign(lot("lot-2", 4), twoLegPlan("lot-2")));
+    }
+
+    @Test
+    void removeClearsOriginWarehouseLoad() {
+        WorkingSolution solution = new WorkingSolution(contextWithConnectionCapacity(10));
+        BaggageLot lot = lot("lot-1", 4);
+
+        solution.assign(lot, twoLegPlan("lot-1"));
+        solution.remove(lot);
+
+        assertEquals(0, solution.warehouseLoadAt("AAA", 30));
     }
 
     @Test

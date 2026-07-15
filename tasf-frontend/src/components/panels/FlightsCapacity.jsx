@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { getWarehouseColor } from "../../hooks/useStatusColor";
 import { airportName, AIRPORT_META } from "../../data/staticAirports";
 
@@ -23,6 +23,13 @@ const SORT_OPTIONS = [
   { key: "llegada",    label: "Llegada"  },
   { key: "alfabetico", label: "A-Z"      },
 ];
+
+// Dirección natural de cada criterio al seleccionarlo por primera vez; un
+// segundo clic sobre el criterio activo invierte asc ↔ desc.
+const SORT_DEFAULT_DIR = {
+  ocupacion: "desc", maletas: "desc",
+  salida: "asc", llegada: "asc", alfabetico: "asc",
+};
 
 // Minuto absoluto → "HH:MM" del día (igual que el backend para casar capacidades)
 function hhmm(minute) {
@@ -51,6 +58,7 @@ export default function FlightsCapacity({
   selectedRouteKey = null, pinnedCodes = null, onFlightClick,
   onSearchEnter,          // Enter en la búsqueda → aplicar resultados al mapa
   history = [],           // historial de eventos (sub-pestaña Historial)
+  fetchFlightLots,        // (flightId) => [{lotId, bags, status…}] — paquetes del vuelo
 }) {
   const [search, setSearch] = useState("");
 
@@ -65,6 +73,93 @@ const handleSortFL = (key) => {
 
 
   const [bottomTab, setBottomTab] = useState("planificados"); // planificados | historial
+
+  // Clic en un criterio: si ya está activo invierte la dirección; si no, lo
+  // activa con su dirección natural. La selección persiste hasta otro clic.
+  const pickSort = (key) => {
+    if (key === sortBy) setSortDir(d => (d === "asc" ? "desc" : "asc"));
+    else { setSortBy(key); setSortDir(SORT_DEFAULT_DIR[key] || "asc"); }
+  };
+
+  // Comparador compartido (activos y planificados) en sentido ASCENDENTE;
+  // sortDir lo invierte al final.
+  const flightCmp = (a, b) => {
+    let r;
+    if (sortBy === "maletas")      r = (a.bags ?? 0) - (b.bags ?? 0);
+    else if (sortBy === "salida")  r = (a.departureMinute ?? 0) - (b.departureMinute ?? 0);
+    else if (sortBy === "llegada") r = (a.arrivalMinute ?? 0) - (b.arrivalMinute ?? 0);
+    else if (sortBy === "alfabetico") {
+      r = airportName(a.from || "").localeCompare(
+            airportName(b.from || ""), "es", { sensitivity: "base" });
+      if (r === 0) r = airportName(a.to || "").localeCompare(
+            airportName(b.to || ""), "es", { sensitivity: "base" });
+    } else r = (a.pct ?? -1) - (b.pct ?? -1);   // ocupación
+    return sortDir === "desc" ? -r : r;
+  };
+
+  // ── Paquetes asignados al vuelo desplegado (▾) ────────────────────────────
+  // Se consultan al backend (plan vigente) y se refrescan periódicamente para
+  // reflejar reasignaciones en tiempo real mientras el desplegable esté abierto.
+  const [expandedFlight, setExpandedFlight] = useState(null);
+  // {id, lots}: si id ≠ vuelo desplegado, aún está cargando (evita resetear
+  // estado de forma síncrona dentro del efecto).
+  const [expandedLots,   setExpandedLots]   = useState(null);
+  useEffect(() => {
+    if (!expandedFlight || !fetchFlightLots) return;
+    let alive = true;
+    const load = () => fetchFlightLots(expandedFlight)
+      .then(l => { if (alive) setExpandedLots({ id: expandedFlight, lots: l || [] }); });
+    load();
+    const id = setInterval(load, 5000);
+    return () => { alive = false; clearInterval(id); };
+  }, [expandedFlight, fetchFlightLots]);
+
+  const toggleFlightLots = (id) =>
+    setExpandedFlight(prev => (prev === id ? null : id));
+
+  const LOT_STATUS_TAG = {
+    current:  ["✈ A bordo",   "text-yellow-400"],
+    done:     ["✓ Voló",      "text-green-400"],
+    upcoming: ["⌛ Por salir", "text-blue-400"],
+  };
+
+  // Desplegable con los paquetes del vuelo (formato similar al Panel Almacén).
+  const renderFlightLots = () => {
+    const lots = (expandedLots && expandedLots.id === expandedFlight)
+      ? expandedLots.lots : null;
+    if (lots == null) {
+      return <p className="text-gray-600 text-[9px] text-center py-1">Cargando paquetes…</p>;
+    }
+    if (lots.length === 0) {
+      return <p className="text-gray-600 text-[9px] text-center py-1">Sin paquetes asignados</p>;
+    }
+    const total = lots.reduce((s, l) => s + (l.bags || 0), 0);
+    return (
+      <div className="mt-1 px-1 pb-1 border-t border-white/10 pt-1">
+        <p className="text-gray-500 text-[9px] uppercase mb-1">
+          Paquetes asignados ({lots.length}) ·{" "}
+          <span className="text-teal font-bold">{total.toLocaleString()}</span> maletas
+        </p>
+        <div className="flex flex-col gap-0.5 max-h-32 overflow-y-auto">
+          {lots.map((l, i) => {
+            const tag = LOT_STATUS_TAG[l.status] || LOT_STATUS_TAG.upcoming;
+            return (
+              <div key={`${l.lotId}-${i}`}
+                   className="grid grid-cols-[1fr_auto_auto_auto] gap-1 items-center
+                              bg-[#021020] rounded px-1 py-0.5 text-[9px]">
+                <span className="text-teal font-mono truncate" title={l.lotId}>{l.lotId}</span>
+                <span className="text-gray-500 font-mono">{hhmm(l.departureMinute)}</span>
+                <span className="text-gray-300 font-bold tabular-nums">
+                  {(l.bags || 0).toLocaleString()}
+                </span>
+                <span className={tag[1]}>{tag[0]}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
 
   // Vuelos que transportan un lote según el historial. Permite buscar por ID de
   // paquete/maleta (UF-1 / UF-1-2) y filtrar por la selección de Envíos.
@@ -415,26 +510,38 @@ return (() => {
             {plannedFlights.map(f => {
               const isSel = pinnedCodes
                 && pinnedCodes[0] === f.from && pinnedCodes[1] === f.to;
+              const lotsId = f.flightId || f.key;
+              const isExpF = expandedFlight === lotsId;
               return (
-              <button key={f.key} type="button"
-                onClick={() => onFlightClick?.(f)}
-                title={`ID: ${f.key} · ${f.from} → ${f.to} · clic para enfocar en el mapa`}
-                className={`w-full flex items-center justify-between text-[10px] rounded
-                  px-1 py-0.5 -mx-1 transition
-                  ${isSel ? "bg-teal/15 ring-1 ring-teal/40" : "hover:bg-white/5"}`}>
-                <span className="flex items-center gap-1 min-w-0">
-                  <span className="text-blue-400">⌛</span>
-                  <span className="text-teal truncate">{airportName(f.from)}</span>
-                  <span className="text-gray-600">→</span>
-                  <span className="text-gray-200 truncate">{airportName(f.to)}</span>
-                  <span className="text-gray-600 font-mono ml-1">{f.departure}</span>
-                </span>
-                <span className="text-gray-400 tabular-nums flex-shrink-0">
-                  {f.bags.toLocaleString()}
-{f.capacity != null && `/${f.capacity.toLocaleString()}`}
-                  {f.pct != null && <span className="text-gray-600 ml-1">({f.pct}%)</span>}
-                </span>
-              </button>
+              <div key={f.key}>
+                <div className="flex items-center gap-0.5">
+                  <button type="button"
+                    onClick={() => onFlightClick?.(f)}
+                    title={`ID: ${f.key} · ${f.from} → ${f.to} · clic para enfocar en el mapa`}
+                    className={`flex-1 flex items-center justify-between text-[10px] rounded
+                      px-1 py-0.5 -mx-1 transition
+                      ${isSel ? "bg-teal/15 ring-1 ring-teal/40" : "hover:bg-white/5"}`}>
+                    <span className="flex items-center gap-1 min-w-0">
+                      <span className="text-blue-400">⌛</span>
+                      <span className="text-teal truncate">{airportName(f.from)}</span>
+                      <span className="text-gray-600">→</span>
+                      <span className="text-gray-200 truncate">{airportName(f.to)}</span>
+                      <span className="text-gray-600 font-mono ml-1">{f.departure}</span>
+                    </span>
+                    <span className="text-gray-400 tabular-nums flex-shrink-0">
+                      {f.bags.toLocaleString()}
+                      {f.capacity != null && `/${f.capacity.toLocaleString()}`}
+                      {f.pct != null && <span className="text-gray-600 ml-1">({f.pct}%)</span>}
+                    </span>
+                  </button>
+                  <button onClick={() => toggleFlightLots(lotsId)}
+                    title={isExpF ? "Ocultar paquetes" : "Ver paquetes asignados"}
+                    className="text-[10px] px-1 text-gray-500 hover:text-teal transition shrink-0">
+                    {isExpF ? "▴" : "▾"}
+                  </button>
+                </div>
+                {isExpF && renderFlightLots()}
+              </div>
               );
             })}
           </div>

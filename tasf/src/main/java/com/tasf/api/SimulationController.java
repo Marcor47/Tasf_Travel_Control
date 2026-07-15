@@ -150,6 +150,12 @@ public SimulationService.SimulationState deleteFlight(@RequestBody SimulationSer
         return simulationService.shipmentPathsFor(lotId);
     }
 
+    /** Paquetes (lotes) asignados a un vuelo, con su cantidad de maletas. */
+    @GetMapping("/flightLots")
+    public List<SimulationService.FlightLot> flightLots(@RequestParam String flightId) {
+        return simulationService.flightLots(flightId);
+    }
+
     /** Plan de ruteo del último bloque planificado (para Reportes). */
     @GetMapping("/lastBlockPlan")
     public SimulationService.BlockPlan lastBlockPlan() {
