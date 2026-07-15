@@ -8,9 +8,6 @@ const SORT_OPTIONS = [
   { key: "alfabetico", label: "A-Z"     },
 ];
 
-// Dirección natural al elegir cada criterio; un segundo clic la invierte.
-const SORT_DEFAULT_DIR = { ocupacion: "desc", maletas: "desc", alfabetico: "asc" };
-
 function whSem(a) {
   const cur = a.current || 0;
   if (cur === 0) return "empty";
@@ -46,13 +43,6 @@ const handleSortWH = (key) => {
 
 
   const [expandedCode, setExpanded] = useState(null);
-
-  // Clic en el criterio activo → invierte asc ↔ desc; en otro → lo selecciona
-  // con su dirección natural. Persiste hasta que el usuario la cambie.
-  const pickSort = (key) => {
-    if (key === sortBy) setSortDir(d => (d === "asc" ? "desc" : "asc"));
-    else { setSortBy(key); setSortDir(SORT_DEFAULT_DIR[key] || "asc"); }
-  };
 
 
   const airportBags = useMemo(() => {
