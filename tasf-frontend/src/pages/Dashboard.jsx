@@ -506,7 +506,7 @@ export default function Dashboard({
             onFlightClick={handleFlightClick}
             onSearchEnter={handleFlightsSearchEnter}
             history={simulation?.history ?? []}
-            flightLots={simulation?.flightLots}
+            fetchFlightLots={simulation?.fetchFlightLots}
             running={running}/>
         );
       case "envios":
@@ -687,22 +687,22 @@ case "cancelaciones":
           {/* ── Relojes flotantes (esquina inferior derecha) ──────────────── */}
           {running && (
             <div className="absolute right-3 bottom-3 bg-[#021020]/95 border border-teal/30
-                            rounded-lg px-4 py-2.5 z-10 flex flex-wrap items-center gap-x-6 gap-y-1
-                            max-w-[calc(100%-1.5rem)] justify-end shadow-lg shadow-black/40">
+                            rounded-lg px-3.5 py-2 z-10 flex flex-col items-end gap-1.5
+                            shadow-lg shadow-black/40">
               {[
                 ["Hora sim.",    simClock,                            "text-teal"],
                 ["Sim. transc.", formatSimTime(simElapsedMinutes),   "text-teal"],
                 ["Hora real",    realNow.toLocaleTimeString("es-ES"), "text-white"],
                 ["Real transc.", formatRealTime(realSeconds),        "text-white"],
               ].map(([label, value, color]) => (
-                <div key={label} className="text-center">
-                  <p className="text-gray-400 text-xs uppercase leading-none mb-1">{label}</p>
-                  <p className={`text-3xl font-mono font-bold leading-tight ${color}`}>{value}</p>
+                <div key={label} className="text-right">
+                  <p className="text-gray-400 text-[10px] uppercase leading-none mb-0.5">{label}</p>
+                  <p className={`text-2xl font-mono font-bold leading-tight ${color}`}>{value}</p>
                 </div>
               ))}
               {simulation?.message === "Pausado"
-                ? <span className="text-amber-400 text-base font-semibold">❚❚ Pausado</span>
-                : <span className="text-green-400 text-base font-semibold animate-pulse">● En curso</span>}
+                ? <span className="text-amber-400 text-sm font-semibold">❚❚ Pausado</span>
+                : <span className="text-green-400 text-sm font-semibold animate-pulse">● En curso</span>}
             </div>
           )}
 

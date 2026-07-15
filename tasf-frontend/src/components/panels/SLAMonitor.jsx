@@ -821,8 +821,9 @@ const filteredSortedPackageRows = useMemo(() => {
               safeKpis.occupancyPercent ?? 0],
           ].map(([label, val, pct]) => (
             <div key={label} className="bg-[#021020] rounded p-2 text-center">
+              {/* Semáforo: >60% amarillo, >80% rojo (regla de negocio) */}
               <p className={`text-2xl font-bold ${
-                pct > 85 ? "text-red-400" : pct > 60 ? "text-yellow-400" : "text-white"}`}>
+                pct > 80 ? "text-red-400" : pct > 60 ? "text-yellow-400" : "text-green-400"}`}>
                 {val}
               </p>
               <p className="text-gray-500 text-[10px] uppercase">{label}</p>

@@ -119,7 +119,7 @@ export default function ReportView({ simulation }) {
             label: "Llenado de Flota",
             val:   `${fleetUsage}%`,
             sub:   `Ocupación red: ${safeKpis.occupancyPercent}%`,
-            color: fleetUsage > 85 ? "text-red-400"
+            color: fleetUsage > 80 ? "text-red-400"
                  : fleetUsage > 60 ? "text-yellow-400"
                  : "text-green-400",
           },

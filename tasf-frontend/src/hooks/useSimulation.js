@@ -18,31 +18,9 @@ function mergeEvents(existing, incoming, incomingNewestFirst) {
   return [...fresh, ...existing].slice(0, MAX_HISTORY);
 }
 
-// Paquetes por vuelo: a diferencia de `history` (acotado a MAX_HISTORY para
-// no reventar memoria), esto NO se recorta — solo se limpia cuando el vuelo
-// deja de estar activo (ver efecto de limpieza más abajo). Si se recortara
-// igual que `history`, el evento de "salida" que asocia un paquete a su vuelo
-// podía caerse de la ventana mientras el vuelo seguía en el aire, y la lista
-// de paquetes de ese vuelo desaparecía de la UI aunque siguiera volando.
-function mergeFlightLots(prevMap, events) {
-  if (!events || events.length === 0) return prevMap;
-  let map = prevMap;
-  for (const e of events) {
-    if (!e.flightId || !e.lotId) continue;
-    const fid = String(e.flightId);
-    const prevEntry = map.get(fid)?.get(e.lotId);
-    if (!prevEntry || e.minute > (prevEntry.minute ?? 0)) {
-      if (map === prevMap) map = new Map(prevMap); // copy-on-write, una sola vez
-      const lots = new Map(map.get(fid) || []);
-      lots.set(e.lotId, {
-        bags: e.bags || 0, minute: e.minute,
-        status: e.type, finalDest: !!e.finalDestination,
-      });
-      map.set(fid, lots);
-    }
-  }
-  return map;
-}
+// NOTA: la lista de paquetes por vuelo NO se reconstruye del historial del
+// cliente (acotado a MAX_HISTORY) — la sirve el backend vía fetchFlightLots
+// (plan vigente en pathByLot: incluye a bordo, por salir y volados).
 
 const emptyState = {
   running: false,
@@ -74,7 +52,6 @@ export function useSimulation() {
   const [state, setState]               = useState(emptyState);
   const [alerts, setAlerts]             = useState([]);
   const [history, setHistory]           = useState([]);
-  const [flightLots, setFlightLots]     = useState(() => new Map()); // flightId -> Map(lotId -> {bags,minute,status,finalDest})
   // Preparación de Día a Día (aeropuertos/vuelos/paquetes cargados sin iniciar).
   const [prepStatus, setPrepStatus]     = useState({ airports: 0, flights: 0, lots: 0, ready: false });
   const [availableDates, setAvailableDates] = useState([]);
@@ -132,7 +109,6 @@ export function useSimulation() {
       try {
         const backlog = JSON.parse(event.data); // más-nuevo-primero
         setHistory(h => mergeEvents(h, backlog, true));
-        setFlightLots(m => mergeFlightLots(m, backlog));
       } catch {
         // ignorar
       }
@@ -183,46 +159,14 @@ export function useSimulation() {
     const evs = state.events;
     if (!evs || evs.length === 0) return;
     setHistory(h => mergeEvents(h, evs, false)); // emitted: más-viejo-primero
-    setFlightLots(m => mergeFlightLots(m, evs));
   }, [state.events]);
-
-  // Limpieza: una vez que un vuelo lleva VARIOS ticks seguidos sin aparecer
-  // activo (ni "departed" en routes ni en upcomingFlights), soltamos sus
-  // paquetes para no acumular memoria indefinidamente. El margen de varios
-  // ticks (no uno solo) es a propósito: si el backend omite `flightId` en un
-  // tick puntual mientras el vuelo sigue en el aire, no queremos confundir
-  // eso con "el vuelo ya terminó" y perder sus paquetes para siempre.
-  const missingStreakRef = useRef(new Map()); // flightId -> ticks consecutivos ausente
-  const PRUNE_AFTER_TICKS = 5;
-  useEffect(() => {
-    const activeIds = new Set([
-      ...(state.routes         || []).map(r => r.flightId).filter(Boolean).map(String),
-      ...(state.upcomingFlights || []).map(u => u.flightId).filter(Boolean).map(String),
-    ]);
-    setFlightLots(m => {
-      if (m.size === 0) return m;
-      let next = m;
-      for (const fid of m.keys()) {
-        if (activeIds.has(fid)) {
-          missingStreakRef.current.delete(fid);
-          continue;
-        }
-        const streak = (missingStreakRef.current.get(fid) || 0) + 1;
-        missingStreakRef.current.set(fid, streak);
-        if (streak >= PRUNE_AFTER_TICKS) {
-          if (next === m) next = new Map(m);
-          next.delete(fid);
-          missingStreakRef.current.delete(fid);
-        }
-      }
-      return next;
-    });
-  }, [state.routes, state.upcomingFlights]);
 
 const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
   try {
     setHistory([]);
-    setFlightLots(new Map());
+    // Corrida nueva: los relojes persistidos son de la anterior.
+    localStorage.removeItem("tasf.realSeconds");
+    localStorage.removeItem("tasf.simStartMinute");
     setState(prev => ({ ...prev, clock: "Dia --  00:00" }));
     // La velocidad de la simulación la controla el backend (BLOCK_REAL_SECONDS);
     // aquí solo enviamos qué simular y desde cuándo.
@@ -440,29 +384,58 @@ const deleteFlight = useCallback(async (flightId) =>
   // el reloj simulado.
   const paused = state.message === "Pausado";
 
-  // Tiempo real transcurrido: cuenta por incrementos de 1 s y se CONGELA durante
-  // la pausa (no cuenta mientras la simulación está pausada).
-  const [realSeconds, setRealSeconds] = useState(0);
+  // Los relojes sobreviven a RECARGAS de página: se persisten en localStorage
+  // y se restauran al montar. `gotServerState` evita que el estado inicial
+  // (running=false, antes del primer SSE) borre lo persistido; solo un
+  // "no corre" CONFIRMADO por el servidor resetea.
+  const CLOCK_RS  = "tasf.realSeconds";
+  const CLOCK_SSM = "tasf.simStartMinute";
+  const gotServerState = useRef(false);
   useEffect(() => {
-    if (!state.running) { setRealSeconds(0); return; }  // reset al detener
-    if (paused) return;                                  // congelar en pausa
-    const id = setInterval(() => setRealSeconds(s => s + 1), 1000);
+    if (state !== emptyState) gotServerState.current = true;
+  }, [state]);
+
+  // Tiempo real transcurrido: cuenta por incrementos de 1 s y se CONGELA durante
+  // la pausa. Se persiste en cada tick (el conteo por incrementos respeta las
+  // pausas, cosa que un epoch de inicio no haría).
+  const [realSeconds, setRealSeconds] = useState(() =>
+    Number(localStorage.getItem(CLOCK_RS)) || 0);
+  useEffect(() => {
+    if (!state.running) {
+      if (!gotServerState.current) return;            // aún sin estado real
+      setRealSeconds(0);                              // reset al detener
+      localStorage.removeItem(CLOCK_RS);
+      return;
+    }
+    if (paused) return;                               // congelar en pausa
+    const id = setInterval(() => setRealSeconds(s => {
+      const next = s + 1;
+      localStorage.setItem(CLOCK_RS, String(next));
+      return next;
+    }), 1000);
     return () => clearInterval(id);
   }, [state.running, paused]);
 
-
   // Minuto de inicio de la simulación (autoritativo): el primer simulatedMinute
-  // real que emite el backend. Se rastrea aquí, en el hook a nivel de App, que
-  // NO se remonta al cambiar de pestaña — así el "tiempo simulado transcurrido"
-  // no se descuadra al navegar entre modos.
-  const [simStartMinute, setSimStartMinute] = useState(null);
+  // real que emite el backend. Persistido para que "sim transcurrido" no vuelva
+  // a 0 al recargar. Guarda anti-corrida-nueva: si el minuto actual es MENOR que
+  // el inicio guardado, la sim se reinició desde antes → se adopta el actual.
+  const [simStartMinute, setSimStartMinute] = useState(() => {
+    const v = Number(localStorage.getItem(CLOCK_SSM));
+    return Number.isFinite(v) && v > 0 ? v : null;
+  });
   useEffect(() => {
     if (!state.running) {
+      if (!gotServerState.current) return;
       if (simStartMinute !== null) setSimStartMinute(null);
+      localStorage.removeItem(CLOCK_SSM);
     } else if (state.simulatedMinute > 0) {
-      setSimStartMinute(prev =>
-        prev === null ? state.simulatedMinute
-                      : Math.min(prev, state.simulatedMinute));
+      setSimStartMinute(prev => {
+        const next = prev === null ? state.simulatedMinute
+                                   : Math.min(prev, state.simulatedMinute);
+        localStorage.setItem(CLOCK_SSM, String(next));
+        return next;
+      });
     }
   }, [state.running, state.simulatedMinute, simStartMinute]);
 
@@ -479,7 +452,6 @@ const deleteFlight = useCallback(async (flightId) =>
 return {
   ...state,
   history,
-  flightLots,
   prepStatus,
   resetPrep,
   simStartMinute,

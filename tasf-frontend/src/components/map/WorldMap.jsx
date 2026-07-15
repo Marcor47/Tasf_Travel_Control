@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useMemo } from "react";
+import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import {
   ComposableMap, Geographies, Geography,
   Marker, Line
@@ -169,14 +169,27 @@ const routeKey = r => r.flightId || `${r.from}-${r.to}-${r.departureMinute ?? 0}
 
 // Vista inicial del mapa: encuadre de la RED COMPLETA del dataset —
 // Copenhague (55.6°N) pegado al borde superior, Santiago/Montevideo (~-34.8°S)
-// al inferior, Lima ↔ Delhi a los lados. Como el SVG usa un viewBox escalado
-// (preserveAspectRatio "meet"), este zoom llena el ALTO del contenedor de
-// forma prácticamente independiente de su tamaño/aspecto:
-//   zoom ≈ altoViewBox / (escalaBase · spanMercator) = 600 / (120 · 1.94) ≈ 2.55
-// El centro vertical es el punto medio Mercator del rango (≈16°N), no la media
-// aritmética de latitudes.
+// al inferior, Lima ↔ Delhi a los lados. El centro vertical es el punto medio
+// MERCATOR del rango (≈16°N), no la media aritmética de latitudes.
 const DEFAULT_CENTER = [0, 16];
-const DEFAULT_ZOOM   = 2.55;
+const DEFAULT_ZOOM   = 2.55;   // respaldo mientras no se ha medido el contenedor
+
+// Encuadre REACTIVO: el SVG usa viewBox 800×600 con preserveAspectRatio "meet",
+// así que la escala real en pantalla es (120·zoom)·k con k = min(W/800, H'/600).
+// Un zoom constante solo llenaba pantallas con el mismo aspecto; aquí se
+// despeja el zoom para llenar CUALQUIER contenedor sin recortar la red:
+//   rango a encuadrar (radianes Mercator, con margen para etiquetas):
+const FIT_Y_RAD  = 1.94;   // lat ~57°N … -36°S (ajustado: etiquetas pegadas a los bordes)
+const FIT_X_RAD  = 2.95;   // lng ≈ −84° … 84° (margen extra: el TEXTO de las
+                           // etiquetas sobresale del punto del aeropuerto)
+const MAP_HEADER = 34;     // alto de la cabecera del mapa (px)
+function computeFitZoom(w, h) {
+  const hh = h - MAP_HEADER;
+  if (!w || hh <= 0) return DEFAULT_ZOOM;
+  const k    = Math.min(w / 800, hh / 600);          // escala del viewBox (meet)
+  const sEff = Math.min(hh / FIT_Y_RAD, w / FIT_X_RAD); // px/radián que caben
+  return Math.max(1, Math.round((sEff / (120 * k)) * 100) / 100);
+}
 
 // Semáforo de ocupación: verde casi vacío, ámbar a media carga, rojo casi lleno.
 function loadColor(pct) {
@@ -233,7 +246,9 @@ export default function WorldMap({
   const [showPlanes, setShowPlanes] = useState(true);
   const [lineMode,   setLineMode]   = useState("limited");
   // Vista inicial enmarcada en la red completa; el usuario puede hacer
-  // zoom/arrastre luego y «Reiniciar» vuelve a este encuadre.
+  // zoom/arrastre luego y «Reiniciar» vuelve a este encuadre. El encuadre se
+  // recalcula con el TAMAÑO REAL del contenedor (laptops, monitores, resize).
+  const [fitZoom,    setFitZoom]    = useState(DEFAULT_ZOOM);
   const [zoom,       setZoom]       = useState(DEFAULT_ZOOM);
   const [center,     setCenter]     = useState(DEFAULT_CENTER);
   const [dragging,   setDragging]   = useState(false);
@@ -241,6 +256,28 @@ export default function WorldMap({
   const dragStart    = useRef(null);
   const dragMoved    = useRef(false);
   const mapRef       = useRef(null);
+
+  // Medir el contenedor al montar y en cada resize. Si el usuario NO ha tocado
+  // el zoom (sigue en el encuadre), la vista se reajusta sola; si ya hizo zoom
+  // manual, solo se actualiza el valor al que vuelve «Reiniciar».
+  const lastFitRef = useRef(DEFAULT_ZOOM);
+  useEffect(() => {
+    const el = mapRef.current;
+    if (!el) return;
+    const apply = () => {
+      const z = computeFitZoom(el.clientWidth, el.clientHeight);
+      // Capturar el encuadre ANTERIOR antes de mutar el ref: el updater
+      // funcional se ejecuta después, y debe comparar contra el valor viejo.
+      const prevFit = lastFitRef.current;
+      lastFitRef.current = z;
+      setFitZoom(z);
+      setZoom(prev => (prev === prevFit ? z : prev));
+    };
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   // Minuto continuo y suavizado para mover los aviones sin saltos.
   // En pausa congelamos la interpolación (los aviones quedan quietos).
@@ -379,9 +416,11 @@ export default function WorldMap({
   // ── Lógica de resaltado ──────────────────────────────────────────────────
   // Foco de aeropuertos: viene del padre (clic en mapa/almacenes o filtro).
   const focus    = useMemo(() => new Set(highlightCodes), [highlightCodes]);
-  const selRoute = activeRouteKey
-    ? allActive.find(r => routeKey(r) === activeRouteKey)
-    : null;
+  const selRoute = useMemo(
+    () => (activeRouteKey
+      ? allActive.find(r => routeKey(r) === activeRouteKey) ?? null
+      : null),
+    [allActive, activeRouteKey]);
   const hasFocus = focus.size > 0 || !!selRoute;
 
   const routeIsHighlighted = (r) => {
@@ -409,6 +448,17 @@ export default function WorldMap({
   const clickAirport = (code) => {
     onAirportClick?.(code);
   };
+
+  // ── Handlers ESTABLES (identidad fija) para las capas memoizadas ──────────
+  // El mapa se re-renderiza ~15 veces/s por la animación; los handlers de
+  // arriba se recrean en cada render y romperían los useMemo de abajo. El ref
+  // apunta siempre a la versión fresca; el callback expuesto nunca cambia.
+  const cbRef = useRef({});
+  useEffect(() => {
+    cbRef.current = { handleBackgroundClick, clickAirport };
+  });   // sin deps: apunta a la versión fresca tras CADA render
+  const stableBgClick      = useCallback((e) => cbRef.current.handleBackgroundClick?.(e), []);
+  const stableClickAirport = useCallback((c) => cbRef.current.clickAirport?.(c), []);
 
   return (
     <div
@@ -463,10 +513,10 @@ export default function WorldMap({
         </div>
 
         <div className="flex items-center gap-1 flex-shrink-0">
-          {(zoom !== DEFAULT_ZOOM || center[0] !== DEFAULT_CENTER[0]
+          {(zoom !== fitZoom || center[0] !== DEFAULT_CENTER[0]
               || center[1] !== DEFAULT_CENTER[1]) && (
             <button
-              onClick={() => { setZoom(DEFAULT_ZOOM); setCenter(DEFAULT_CENTER); }}
+              onClick={() => { setZoom(fitZoom); setCenter(DEFAULT_CENTER); }}
               className="text-[10px] px-2 py-0.5 rounded transition font-medium
                          bg-gray-900/70 text-gray-400 border border-white/10
                          hover:text-white mr-1">
@@ -513,6 +563,10 @@ export default function WorldMap({
         projectionConfig={{ scale: 120 * zoom, center }}
         style={{ width: "100%", height: "calc(100% - 34px)" }}>
 
+        {/* Países: capa MEMOIZADA (se construye UNA vez). Antes se
+            reconciliaban ~180 paths complejos en cada frame de animación —
+            la mayor carga de CPU/GC del cliente. */}
+        {useMemo(() => (
         <Geographies geography={GEO_URL}>
           {({ geographies }) =>
             geographies.map(geo => (
@@ -522,7 +576,7 @@ export default function WorldMap({
                 fill="#0a2540"
                 stroke="#1C7293"
                 strokeWidth={0.3}
-                onClick={handleBackgroundClick}
+                onClick={stableBgClick}
                 style={{
                   default: { outline: "none" },
                   hover:   { outline: "none" },
@@ -531,6 +585,7 @@ export default function WorldMap({
             ))
           }
         </Geographies>
+        ), [stableBgClick])}
 
         {showLines && activeRoutes.map(r => {
           const from = airportMap[r.from];
@@ -554,12 +609,13 @@ export default function WorldMap({
                 stroke="transparent" strokeWidth={8}
                 style={{ cursor: "pointer" }}
                 onClick={(e) => { e.stopPropagation(); clickRoute(key); }}/>
+              {/* Más finas y algo transparentes para no saturar la pantalla */}
               <Line
                 from={plane.coordinates} to={to}
                 stroke={col}
-                strokeWidth={hasFocus && hl ? 1.2 : 0.8}
+                strokeWidth={hasFocus && hl ? 1.0 : 0.6}
                 strokeLinecap="round" strokeDasharray="8 4"
-                opacity={hl ? 1 : 0.12}
+                opacity={hl ? 0.85 : 0.10}
                 style={{ pointerEvents: "none" }}
                 className="route-active"/>
             </g>
@@ -602,9 +658,11 @@ export default function WorldMap({
           );
         })}
 
-        {/* Aeropuertos/almacenes: icono tipo bodega (cajón con techo y puerta)
-            coloreado con el semáforo de ocupación; verde casi vacío → rojo lleno. */}
-        {shownAirports.map(a => {
+        {/* Aeropuertos/almacenes + etiquetas: capas MEMOIZADAS — solo se
+            reconstruyen cuando cambian los datos (broadcast ~0,8 s), el foco o
+            el zoom; NO en cada frame de animación (~15/s). Las etiquetas van en
+            pasada separada para que ningún icono tape el nombre de otro. */}
+        {useMemo(() => shownAirports.map(a => {
           const pct   = Math.min(1, (a.current || 0) / Math.max(1, a.capacity || 1));
           const col   = airportColor(a.current, a.capacity);   // gris si vacío
           const hl    = airportIsHighlighted(a.code);
@@ -615,7 +673,7 @@ export default function WorldMap({
               coordinates={[a.lng, a.lat]}
               onClick={(e) => {
                 e.stopPropagation();
-                clickAirport(a.code);
+                stableClickAirport(a.code);
               }}>
               <title>
                 {airportName(a.code)} ({a.code}) — almacén{" "}
@@ -637,11 +695,10 @@ export default function WorldMap({
               </g>
             </Marker>
           );
-        })}
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        }), [shownAirports, focus, selRoute, allActive, stableClickAirport])}
 
-        {/* Etiquetas de aeropuertos en PASADA SEPARADA (después de todos los
-            iconos): así ningún icono tapa el nombre de otro aeropuerto. */}
-        {shownAirports.map(a => {
+        {useMemo(() => shownAirports.map(a => {
           const hl    = airportIsHighlighted(a.code);
           const isSel = focus.has(a.code);
           const s     = isSel ? 5.5 : 4.5;
@@ -663,7 +720,8 @@ export default function WorldMap({
               </text>
             </Marker>
           );
-        })}
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        }), [shownAirports, focus, selRoute, allActive, zoom])}
 
         {/* ── Recorrido del envío seleccionado ───────────────────────────────
             shipmentPath = ARRAY de rutas [{lotId, label, legs}], UNA por
