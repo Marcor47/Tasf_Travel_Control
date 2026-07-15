@@ -413,6 +413,25 @@ export default function Dashboard({
   // filtran por él.
   const focusLotId = selectedShipment?.bagId ?? null;
 
+  // Paquetes del vuelo ENFOCADO (backend, plan vigente): se cargan AL CLIC —
+  // disponibles de inmediato en Vuelos (pestaña Carga), Envíos y SLA aunque el
+  // avión siga en el aire. Refresco suave cada 5 s solo mientras siga enfocado
+  // (los estados a bordo/por salir cambian rápido con vuelos cortos).
+  const [focusFlightLots, setFocusFlightLots] = useState(null); // null = cargando
+  useEffect(() => {
+    if (!focusFlightId || !simulation?.fetchFlightLots) {
+      setFocusFlightLots(null);
+      return;
+    }
+    let alive = true;
+    const load = () => simulation.fetchFlightLots(focusFlightId)
+      .then(l => { if (alive) setFocusFlightLots(l ?? []); });
+    load();
+    const id = setInterval(load, 5000);
+    return () => { alive = false; clearInterval(id); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusFlightId]);
+
   const clearFocus = () => {
     setStorageFilter(""); setWhSemFilter("all"); setSelectedAirport(null);
     clearRouteFoci();
@@ -506,7 +525,7 @@ export default function Dashboard({
             onFlightClick={handleFlightClick}
             onSearchEnter={handleFlightsSearchEnter}
             history={simulation?.history ?? []}
-            fetchFlightLots={simulation?.fetchFlightLots}
+            cargoLots={focusFlightLots}
             running={running}/>
         );
       case "envios":
@@ -516,6 +535,7 @@ export default function Dashboard({
             running={running} simulatedNow={simulatedNow}
             focusCodes={focusCodes} focusFlightId={focusFlightId} view="envios"
             focusRoute={selectedRouteObj}
+            focusFlightLots={focusFlightLots}
             selectedShipment={selectedShipment}
             onShipmentClick={handleShipmentClick}
             searchText={bagSearch} onSearchChange={handleBagSearch}
@@ -529,6 +549,7 @@ export default function Dashboard({
             running={running} simulatedNow={simulatedNow}
             focusCodes={focusCodes} focusFlightId={focusFlightId}
             focusRoute={selectedRouteObj}
+            focusFlightLots={focusFlightLots}
             focusLotId={focusLotId} view="sla"/>
         );
 

@@ -303,6 +303,23 @@ const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
     }
   }, []);
 
+  // Paquetes (lotes) asignados a un vuelo, con su cantidad de maletas y estado
+  // del tramo (current = a bordo, upcoming = por salir, done = ya voló).
+  // Fuente: plan vigente del backend (pathByLot) — NO depende del historial
+  // acotado del cliente. (Se perdió en un conflicto de stash: si Carga se queda
+  // en "Cargando…" sin peticiones de red, es que esta función no llega al panel.)
+  const fetchFlightLots = useCallback(async (flightId) => {
+    if (!flightId) return [];
+    try {
+      const r = await fetch(
+        `${API_BASE}/api/simulation/flightLots?flightId=${encodeURIComponent(flightId)}`);
+      if (!r.ok) return [];
+      return await r.json();
+    } catch {
+      return [];
+    }
+  }, []);
+
   // Plan de ruteo del último bloque planificado (Reportes).
   const fetchLastBlockPlan = useCallback(async () => {
     try {
@@ -476,6 +493,7 @@ return {
   uploadData,
   fetchShipmentPath,
   fetchShipmentPaths,
+  fetchFlightLots,
   fetchLastBlockPlan,
   alerts,
   realSeconds,

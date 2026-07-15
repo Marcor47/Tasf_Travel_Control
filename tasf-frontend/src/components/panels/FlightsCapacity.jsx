@@ -51,7 +51,8 @@ export default function FlightsCapacity({
   selectedRouteKey = null, pinnedCodes = null, onFlightClick,
   onSearchEnter,          // Enter en la búsqueda → aplicar resultados al mapa
   history = [],           // historial de eventos (sub-pestaña Historial)
-  fetchFlightLots,        // (flightId) => [{lotId,bags,from,to,dep,arr,status}] — carga del vuelo
+  cargoLots = null,       // paquetes del vuelo ENFOCADO — los carga el Dashboard
+                          // AL CLIC (backend /flightLots); null = cargando
 }) {
   const [search, setSearch] = useState("");
 
@@ -66,27 +67,11 @@ const handleSortFL = (key) => {
 
   const [bottomTab, setBottomTab] = useState("planificados"); // planificados | historial | carga
 
-  // ── Sub-pestaña "Carga": paquetes del vuelo ENFOCADO ──────────────────────
-  // Fuente = backend (plan vigente vía pathByLot): incluye lo que va A BORDO
-  // ahora, lo PLANEADO (por despegar) y lo que ya voló — no depende de que los
-  // eventos hayan llegado al historial del cliente. Se refresca cada 5 s
-  // mientras la pestaña esté abierta. Al clicar un vuelo se abre sola.
-  const [cargoLots, setCargoLots] = useState(null);   // null = cargando
+  // Al clicar un vuelo, la sub-pestaña "Carga" se abre sola (los datos ya los
+  // trae el Dashboard, que los pide al backend en el mismo clic).
   useEffect(() => {
     if (focusFlightId) setBottomTab("carga");
   }, [focusFlightId]);
-  useEffect(() => {
-    if (bottomTab !== "carga" || !focusFlightId || !fetchFlightLots) {
-      setCargoLots(null);
-      return;
-    }
-    let alive = true;
-    const load = () => fetchFlightLots(focusFlightId)
-      .then(l => { if (alive) setCargoLots(l || []); });
-    load();
-    const id = setInterval(load, 5000);
-    return () => { alive = false; clearInterval(id); };
-  }, [bottomTab, focusFlightId, fetchFlightLots]);
 
   // Vuelos que transportan un lote según el historial. Permite buscar por ID de
   // paquete/maleta (UF-1 / UF-1-2) y filtrar por la selección de Envíos.

@@ -148,6 +148,7 @@ export default function SLAMonitor({
   focusFlightId = null,
   focusLotId = null,   // paquete (UF-1) o maleta (UF-1-2) seleccionados en Envíos
   focusRoute = null,   // ruta (vuelo) enfocada en el mapa: {flightId,from,to,bags,capacity}
+  focusFlightLots = null, // paquetes del vuelo enfocado (backend /flightLots, al clic)
   view = "all",
   selectedShipment = null, onShipmentClick,
   searchText, onSearchChange,
@@ -232,6 +233,11 @@ const handleEnvioSort = (key) => {
   // (tope/dedup): en ese caso NO es "vacío" — hay que decir que lleva N maletas.
   const focusFlightBags = (focusRoute && focusRoute.flightId === focusFlightId)
     ? (focusRoute.bags || 0) : 0;
+  // Paquetes del vuelo enfocado, directos del backend (disponibles AL CLIC,
+  // también con el avión en el aire). Si el historial no tiene sus eventos
+  // (tope 300 con el dataset completo), estos alimentan la tabla igualmente.
+  const flightLotRows = (flightFallback && Array.isArray(focusFlightLots))
+    ? focusFlightLots : null;
 
 
 
@@ -486,9 +492,11 @@ const filteredSortedPackageRows = useMemo(() => {
                   {focusLotId
                     ? `${focusLotId} aún no registra eventos (esperando salida)`
                     : focusFlightId
-                      ? (focusFlightBags > 0
-                          ? `El vuelo ${focusFlightId} lleva ${focusFlightBags} maletas en vuelo — su detalle aparece al aterrizar`
-                          : `El vuelo ${focusFlightId} va vacío (sin maletas)`)
+                      ? (flightLotRows?.length
+                          ? `Vuelo ${focusFlightId}: ${flightLotRows.reduce((s, l) => s + (l.bags || 0), 0)} maletas en ${flightLotRows.length} paquete(s) — detalle en la tarjeta de Envíos`
+                          : focusFlightBags > 0
+                            ? `El vuelo ${focusFlightId} lleva ${focusFlightBags} maletas — consultando sus paquetes…`
+                            : `El vuelo ${focusFlightId} va vacío (sin maletas)`)
                       : focusCodes.length
                         ? "Sin paquetes para el filtro actual"
                         : running ? "Esperando eventos..." : "Inicia la simulación"}
@@ -528,13 +536,16 @@ const filteredSortedPackageRows = useMemo(() => {
         </p>
         {flightFallback && (
           <p className={`text-[10px] mb-2 leading-tight ${
-            focusFlightBags > 0 ? "text-teal/90" : "text-yellow-400/80"}`}>
-            {focusFlightBags > 0
-              ? <>El vuelo {focusFlightId} lleva <b>{focusFlightBags}</b> maletas en
-                  vuelo — su detalle por paquete aparece al aterrizar; abajo, los
-                  paquetes que pasan por su ruta.</>
-              : <>El vuelo {focusFlightId} va vacío (sin maletas) — mostrando los
-                  que pasan por su origen/destino.</>}
+            flightLotRows?.length || focusFlightBags > 0
+              ? "text-teal/90" : "text-yellow-400/80"}`}>
+            {flightLotRows?.length
+              ? <>Vuelo {focusFlightId}: <b>{flightLotRows.reduce((s, l) => s + (l.bags || 0), 0)}</b>{" "}
+                  maletas en {flightLotRows.length} paquete{flightLotRows.length === 1 ? "" : "s"} —
+                  detalle abajo (en vivo, también en el aire).</>
+              : flightLotRows && flightLotRows.length === 0 && focusFlightBags === 0
+                ? <>El vuelo {focusFlightId} va vacío (sin maletas) — mostrando los
+                    que pasan por su origen/destino.</>
+                : <>Consultando la carga del vuelo {focusFlightId}…</>}
           </p>
         )}
         <input
@@ -582,7 +593,35 @@ const filteredSortedPackageRows = useMemo(() => {
     </tr>
   </thead>
   <tbody>
-    {filteredSortedPackageRows.length > 0 ? (
+    {/* Vuelo enfocado sin eventos en el historial (tope 300 con el dataset
+        completo): sus paquetes vienen del backend (/flightLots) y se muestran
+        EN VIVO — también con el avión en el aire, sin esperar al aterrizaje. */}
+    {flightLotRows?.length ? (
+      flightLotRows.map((l, i) => {
+        const tag = l.status === "current"  ? ["✈ A bordo",   "text-yellow-400"]
+                  : l.status === "upcoming" ? ["⌛ Por salir", "text-blue-400"]
+                  :                           ["✓ Voló",      "text-green-400"];
+        return (
+          <tr key={`fl-${l.lotId}-${l.departureMinute}-${i}`}
+              className="border-b border-white/5">
+            <td className="py-1"/>
+            <td className="py-1.5 text-[10px]">
+              <span className="text-teal font-mono font-bold">{l.lotId}</span>
+            </td>
+            <td className="py-1.5 text-[10px] text-gray-400"
+                title={`${l.from} → ${l.to}`}>
+              <span className="text-gray-300">{airportName(l.from)}</span>
+              <span className="text-gray-600 mx-1">→</span>
+              <span className="text-gray-300">{airportName(l.to)}</span>
+            </td>
+            <td className="py-1.5 text-center text-gray-300 font-bold text-[10px]">
+              {l.bags || 0}
+            </td>
+            <td className={`py-1.5 text-[10px] ${tag[1]}`}>{tag[0]}</td>
+          </tr>
+        );
+      })
+    ) : filteredSortedPackageRows.length > 0 ? (
       filteredSortedPackageRows.map((pkg) => {
         const isSel   = selectedShipment?.bagId === pkg.base;
         // Sub-lote de este paquete seleccionado → mantener desplegado para que
@@ -766,7 +805,7 @@ const filteredSortedPackageRows = useMemo(() => {
   ? "Sin coincidencias"
             : focusFlightId
               ? (focusFlightBags > 0
-                  ? `El vuelo ${focusFlightId} lleva ${focusFlightBags} maletas en vuelo — su detalle aparece al aterrizar`
+                  ? `El vuelo ${focusFlightId} lleva ${focusFlightBags} maletas — consultando sus paquetes…`
                   : `El vuelo ${focusFlightId} va vacío (sin maletas)`)
               : focusCodes.length
                 ? "Sin paquetes para el filtro actual"
