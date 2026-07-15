@@ -6,6 +6,7 @@ import StorageMovements  from "../components/panels/StorageMovements";
 import StorageFilterBar  from "../components/panels/StorageFilterBar";
 import WorldMap          from "../components/map/WorldMap";
 import CollapseAlert     from "../components/modals/CollapseAlert";
+import SimulationEndAlert from "../components/modals/SimulationEndAlert";
 import FlightCancelPanel from "../components/panels/FlightCancelPanel";
 import FloatingPanel     from "../components/panels/FloatingPanel";
 import DateTimePicker    from "../components/panels/DateTimePicker";
@@ -457,6 +458,24 @@ export default function Dashboard({
     if (running && !simulation?.collapsed) setShowCollapse(false);
   }, [running, simulation?.collapsed]);
 
+  // ── Fin de simulación de período ──────────────────────────────────────────
+  // El backend emite running=false + "Simulación finalizada" en el instante en
+  // que el reloj simulado alcanza simulationEnd (modos periodo/colapso). Solo
+  // se muestra el modal en la transición corriendo→terminado observada por
+  // ESTE cliente (prevRunningRef): así una recarga de página con un estado
+  // viejo "finalizada" no dispara el modal de la nada.
+  const [showEnd, setShowEnd] = useState(false);
+  const prevRunningRef = useRef(false);
+  useEffect(() => {
+    if (prevRunningRef.current && !running
+        && !simulation?.collapsed
+        && simulation?.message === "Simulación finalizada") {
+      setShowEnd(true);
+    }
+    prevRunningRef.current = running;
+  }, [running, simulation?.collapsed, simulation?.message]);
+  useEffect(() => { if (running) setShowEnd(false); }, [running]);
+
   // Cuerpo de una pestaña de Información. Se reutiliza tal cual en el panel
   // acoplado y dentro de cada ventana flotante (mismo contenido y filtros).
   const infoBody = (key) => {
@@ -691,6 +710,15 @@ case "cancelaciones":
               onStop={onStop}
               message={simulation?.message}
               kpis={kpis}/>
+          )}
+
+          {/* Fin de período SIN colapso: el colapso tiene prioridad visual. */}
+          {showEnd && !showCollapse && (
+            <SimulationEndAlert
+              onClose={() => setShowEnd(false)}
+              kpis={kpis}
+              clock={simulation?.clock}
+              mode={simulation?.mode}/>
           )}
 
 

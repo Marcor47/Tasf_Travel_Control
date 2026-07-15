@@ -1081,24 +1081,24 @@ public synchronized SimulationState deleteFlight(String flightId) {
                             prevBlockOverdue + dynOverdue,
                             solution, airportStates, visibleLots,
                             delivered, replanifications, activeFlights, simulatedNow);
-                    // ── Detección de colapso ──────────────────────────────────
-                    // 1. Almacén lleno: alguna bodega supera su capacidad.
-                    // 2. Ruteo inviable (solo en el escenario "colapso"): alguna
-                    //    maleta ya visible que el planificador NO pudo enrutar a
-                    //    tiempo — sin ruta dentro de su plazo (1 día mismo
-                    //    continente / 2 días si no) o con retraso. Esto implementa
-                    //    el fin del escenario "hasta el colapso".
-                    boolean storageCollapse = airportStates.stream()
-                            .anyMatch(a -> a.current() > a.capacity());
-                    boolean routingCollapse = "colapso".equals(request.mode())
-                            && visibleLots.stream().anyMatch(lot -> {
-                                RoutePlan p = solForCalc.getPlan(lot.getId());
-                                return p == null || p.getTardinessHours() > 0;
-                            });
-                    collapsed = storageCollapse || routingCollapse;
-                    String collapseReason = !collapsed ? "Simulación activa"
-                            : storageCollapse ? "⚠ Capacidad de almacén excedida"
-                            : "⚠ Maletas sin ruta viable dentro del plazo";
+                    // ── Detección de colapso (ATÓMICA e IRREVERSIBLE) ─────────
+                    // Se evalúa EN CADA TICK del reloj simulado, no al final del
+                    // bloque. buildCollapseDetail revisa, en orden de prioridad:
+                    //   A. Almacén excedido (todos los modos).
+                    //   B. Capacidad de vuelo excedida (todos los modos).
+                    //   C. SLA incumplible (solo escenario "colapso"): lote
+                    //      visible sin ruta dentro de su plazo (24 h mismo
+                    //      continente / 48 h distinto continente).
+                    // Si devuelve un mensaje, el colapso queda LATCHEADO: tras
+                    // emitir este estado se corta la ejecución (break de abajo)
+                    // y la condición no vuelve a re-evaluarse jamás — aunque
+                    // segundos después "se arreglara sola", el evento ya ocurrió.
+                    String collapseDetail = buildCollapseDetail(
+                            airportStates, solForCalc, visibleLots, context,
+                            simulatedNow, "colapso".equals(request.mode()));
+                    collapsed = collapseDetail != null;
+                    String collapseReason = collapsed ? collapseDetail
+                                                      : "Simulación activa";
 
                     // Vuelos planificados próximos (con sus maletas asignadas) —
                     // el "registro de lo que el sistema planea". Se calcula en
@@ -1129,6 +1129,12 @@ public synchronized SimulationState deleteFlight(String flightId) {
                     // sobrescriba el estado "Detenido" con uno "activo" fantasma.
                     if (!isActive(runId)) return;
                     broadcast(state);
+
+                    // Colapso = detención INMEDIATA. Sin este break, el bucle
+                    // seguía animando hasta el fin del bloque y, si la condición
+                    // desaparecía en ese lapso, la simulación "revivía" — el
+                    // colapso debe ser terminal desde el primer instante.
+                    if (collapsed) break;
 
                     if (simulatedNow >= blockEnd) break;
                     sleep(BROADCAST_INTERVAL_MS);
@@ -1176,7 +1182,13 @@ public synchronized SimulationState deleteFlight(String flightId) {
             }
 
             if (!isActive(runId)) return;
+            // Si se salió por colapso, el bloque siguiente (precalculado en
+            // background) ya no sirve: cancelarlo para liberar el executor.
+            if (collapsed) nextFuture.cancel(true);
             running.set(false);
+            // El estado final conserva el mensaje detallado del colapso; si no
+            // hubo colapso, running=false + "Simulación finalizada" es la señal
+            // que el frontend usa para mostrar el modal de fin de período.
             state = state.withRunning(false).withMessage(
                     state.collapsed() ? state.message() : "Simulación finalizada");
             broadcast(state);
@@ -1306,12 +1318,18 @@ public synchronized SimulationState deleteFlight(String flightId) {
                         clampNow, visible);
                 Kpis               kpis          = buildKpis(total, routed, overdue,
                         solution, aps, visible, delivered, replanifications, activeFlights, clampNow);
-                collapsed = aps.stream().anyMatch(a -> a.current() > a.capacity());
+                // Colapso en Día a Día: mismas causas A (almacén) y B (vuelo)
+                // que en período; sin causa C (SLA) porque este modo es de
+                // pruebas en tiempo real. Detección en cada tick + detención
+                // inmediata (el break de abajo ya existía en este bucle).
+                String collapseDetail = buildCollapseDetail(
+                        aps, solution, visible, context, clampNow, false);
+                collapsed = collapseDetail != null;
                 List<UpcomingFlight> upcoming = buildUpcomingFlights(context, solution, clampNow);
                 List<RouteState>     routes   = recentRoutes(events, clampNow);
 
                 String msg = dayOver   ? "Día completado"
-                           : collapsed ? "⚠ Capacidad de almacén excedida"
+                           : collapsed ? collapseDetail
                            : "Simulación activa (tiempo real)";
                 state = new SimulationState(true, "diadia",
                         fmtClock(clampNow), 1, fmtClock(dayStart), fmtClock(dayEnd),
@@ -1321,8 +1339,10 @@ public synchronized SimulationState deleteFlight(String flightId) {
 
                 if (dayOver || collapsed) {
                     running.set(false);
+                    // Conservar el detalle de la causa raíz en el estado final
+                    // (antes se pisaba con un genérico "⚠ Colapso").
                     state = state.withRunning(false)
-                            .withMessage(dayOver ? "Día completado" : "⚠ Colapso");
+                            .withMessage(dayOver ? "Día completado" : collapseDetail);
                     if (!isActive(runId)) return;
                     broadcast(state);
                     return;
@@ -1531,6 +1551,119 @@ public record StagedFl(String id, String origin, String destination,
                         solution.warehouseLoadAt(a.getCode(), minute)
                                 + unrouted.getOrDefault(a.getCode(), 0)))
                 .collect(Collectors.toList());
+    }
+
+    // ── Detección de colapso: causa raíz ─────────────────────────────────────
+
+    /** Duración en minutos → "HH:MM" (admite más de 24 h). */
+    private static String fmtHM(int minutes) {
+        int m = Math.max(0, minutes);
+        return String.format("%02d:%02d", m / 60, m % 60);
+    }
+
+    /**
+     * Evalúa las TRES condiciones de colapso logístico y devuelve el mensaje
+     * detallado con la causa raíz, o null si no hay colapso. El colapso es un
+     * evento IRREVERSIBLE: quien recibe un mensaje != null debe detener la
+     * simulación en ese mismo instante (no seguir "a ver si se arregla").
+     *
+     * Orden de prioridad del diagnóstico:
+     *   A. ALMACÉN EXCEDIDO — algún aeropuerto con más maletas que capacidad
+     *      (se reporta el de mayor exceso). Aplica en todos los modos.
+     *   B. CAPACIDAD DE VUELO EXCEDIDA — algún vuelo con residual negativo
+     *      (más maletas asignadas que espacio). Aplica en todos los modos.
+     *   C. INCUMPLIMIENTO DE PLAZO SLA — solo con checkSla=true (escenario
+     *      "colapso"): algún lote ya visible sin ruta asignada o cuya ruta
+     *      llega después de su plazo. El plazo viene precalculado en
+     *      lot.dueHour (24 h mismo continente / 48 h distinto continente).
+     */
+    private String buildCollapseDetail(
+            List<AirportState> airports,
+            WorkingSolution solution,
+            List<BaggageLot> visibleLots,
+            PlanningContext context,
+            int simulatedNow,
+            boolean checkSla) {
+
+        // A. Almacén excedido
+        AirportState overWh = airports.stream()
+                .filter(a -> a.current() > a.capacity())
+                .max(Comparator.comparingInt(a -> a.current() - a.capacity()))
+                .orElse(null);
+        if (overWh != null) {
+            return "🔴 COLAPSO LOGÍSTICO DETECTADO\n\n"
+                 + "Causa: ALMACÉN EXCEDIDO\n"
+                 + "Ubicación: " + overWh.name() + " (" + overWh.code() + ")\n"
+                 + "Capacidad máxima: " + overWh.capacity() + " maletas\n"
+                 + "Maletas actuales: " + overWh.current() + " maletas\n"
+                 + "Exceso: " + (overWh.current() - overWh.capacity()) + " maletas\n\n"
+                 + "Acción: El almacén no puede recibir más maletas. "
+                 + "Se requiere replanificación urgente de rutas.";
+        }
+
+        // B. Capacidad de vuelo excedida
+        Map<String, Integer> overFl = solution.overloadedFlights();
+        if (!overFl.isEmpty()) {
+            Map.Entry<String, Integer> worst = overFl.entrySet().stream()
+                    .max(Map.Entry.comparingByValue()).orElseThrow();
+            FlightInstance fi = context.getFlights().stream()
+                    .filter(f -> f.getId().equals(worst.getKey()))
+                    .findFirst().orElse(null);
+            int capacity = fi != null ? fi.getCapacity()
+                    : flightCapacityById.getOrDefault(worst.getKey(), 0);
+            int assigned = capacity + worst.getValue();
+            String route = fi == null ? ""
+                    : " " + fi.getOrigin() + " → " + fi.getDestination();
+            String depClock = fi == null ? "—"
+                    : fmtHM(((fi.getDepartureHour() % 1440) + 1440) % 1440);
+            return "🔴 COLAPSO LOGÍSTICO DETECTADO\n\n"
+                 + "Causa: CAPACIDAD DE VUELO EXCEDIDA\n"
+                 + "Vuelo: " + worst.getKey() + route + "\n"
+                 + "Horario de despegue: " + depClock + "\n"
+                 + "Capacidad máxima: " + capacity + " maletas\n"
+                 + "Maletas asignadas: " + assigned + " maletas\n"
+                 + "Exceso: " + worst.getValue() + " maletas\n\n"
+                 + "Acción: No hay espacio en el vuelo para todas las maletas "
+                 + "asignadas. Se requiere replanificación de rutas alternativas.";
+        }
+
+        // C. Incumplimiento de plazo SLA (solo escenario "hasta el colapso")
+        if (checkSla) {
+            BaggageLot bad = visibleLots.stream()
+                    .filter(l -> {
+                        RoutePlan p = solution.getPlan(l.getId());
+                        return p == null || p.getTardinessHours() > 0;
+                    })
+                    .findFirst().orElse(null);
+            if (bad != null) {
+                RoutePlan p = solution.getPlan(bad.getId());
+                // OJO: pese a los nombres *Hours, todos estos campos están en
+                // MINUTOS absolutos (convención global del sistema).
+                int slaMin     = Math.max(0, bad.getDueHour() - bad.getRegistrationHour());
+                int elapsedMin = Math.max(0, simulatedNow - bad.getRegistrationHour());
+                int excessMin  = p != null
+                        ? p.getTardinessHours()               // llegada − plazo
+                        : Math.max(0, elapsedMin - slaMin);   // sin ruta: lo ya vencido
+                String ruta = (p == null || p.getSegments().isEmpty())
+                        ? "SIN RUTA ASIGNADA (el planificador no encontró ruta viable)"
+                        : p.compactPath().replace(" -> ", " → ");
+                return "🔴 COLAPSO LOGÍSTICO DETECTADO\n\n"
+                     + "Causa: INCUMPLIMIENTO DE PLAZO SLA\n"
+                     + "Paquete/Maleta: " + bad.getId()
+                     + " (" + bad.getQuantity() + " maletas)\n"
+                     + "Origen: " + bad.getOrigin()
+                     + " | Destino: " + bad.getDestination() + "\n"
+                     + "SLA máximo: " + (slaMin / 60) + " horas\n"
+                     + "Tiempo transcurrido: " + fmtHM(elapsedMin) + "\n"
+                     + "Horas excedidas: "
+                     + String.format("%.1f", excessMin / 60.0) + " horas\n"
+                     + "Ruta actual: " + ruta + "\n\n"
+                     + "Acción: La maleta/paquete no llegará dentro del tiempo "
+                     + "prometido. Se requiere ajuste inmediato de la ruta o "
+                     + "notificación al cliente.";
+            }
+        }
+        return null;
     }
 
     private Kpis buildKpis(

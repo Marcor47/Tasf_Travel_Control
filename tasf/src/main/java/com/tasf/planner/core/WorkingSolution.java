@@ -84,6 +84,21 @@ public class WorkingSolution {
     }
 
     /**
+     * Vuelos con capacidad residual NEGATIVA (más maletas asignadas que
+     * espacio en bodega) → flightId → exceso de maletas. En operación normal
+     * canAssign() lo impide; si aparece uno (p. ej. tras editar a la baja la
+     * capacidad de un vuelo ya cargado) es condición de COLAPSO por capacidad
+     * de vuelo y la simulación debe detenerse.
+     */
+    public Map<String, Integer> overloadedFlights() {
+        Map<String, Integer> out = new LinkedHashMap<>();
+        for (Map.Entry<String, Integer> e : residualCapacity.entrySet()) {
+            if (e.getValue() < 0) out.put(e.getKey(), -e.getValue());
+        }
+        return out;
+    }
+
+    /**
      * Carga del almacén del aeropuerto en el minuto exacto 'atMinute'.
      * Suma todos los deltas registrados hasta ese minuto inclusive.
      */

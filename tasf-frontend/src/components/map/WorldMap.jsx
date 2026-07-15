@@ -397,7 +397,7 @@ export default function WorldMap({
   }
 
   const visibleRoutes = lineMode === "limited"
-    ? semActive.slice(0, 40)
+    ? semActive.slice(0, 50)
     : semActive;
 
   // Modo "envío seleccionado": cuando se elige un paquete, OCULTAMOS las demás
@@ -492,8 +492,8 @@ export default function WorldMap({
                 </span>
               )}
               {(showLines || showPlanes) && lineMode === "limited"
-                && (flightSem === "all" ? activeFlightsCount : semActive.length) > 40 && (
-                <span className="text-gray-600 ml-1">(mostrando 40 en mapa)</span>
+                && (flightSem === "all" ? activeFlightsCount : semActive.length) > 50 && (
+                <span className="text-gray-600 ml-1">(mostrando 50 en mapa)</span>
               )}
             </span>
           )}
@@ -550,7 +550,7 @@ export default function WorldMap({
                     ${lineMode === "limited"
                       ? "bg-teal/10 text-teal border border-teal/30"
                       : "bg-orange-900/40 text-orange-400 border border-orange-700/40"}`}>
-                      {lineMode === "limited" ? `≤40 rutas` : `todas (${semActive.length})`}
+                      {lineMode === "limited" ? `≤50 rutas` : `todas (${semActive.length})`}
                 </button>
               )}
             </>
