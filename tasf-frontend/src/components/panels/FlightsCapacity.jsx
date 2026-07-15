@@ -1,4 +1,4 @@
-=import { useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { getWarehouseColor } from "../../hooks/useStatusColor";
 import { airportName, AIRPORT_META } from "../../data/staticAirports";
 
