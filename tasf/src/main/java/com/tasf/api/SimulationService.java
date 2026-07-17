@@ -1377,10 +1377,20 @@ public synchronized SimulationState deleteFlight(String flightId) {
 
     /** Minuto absoluto (UTC, GMT-0 del modelo) del instante "ahora". Usa el reloj
      *  del CLIENTE si lo envía (p.ej. Perú), si no el del servidor. La fecha/hora
-     *  local del aeropuerto de origen se deriva sumando su offset GMT. */
+     *  local del aeropuerto de origen se deriva sumando su offset GMT.
+     *
+     *  Redondea HACIA ARRIBA al siguiente minuto cuando el registro cae dentro de
+     *  un minuto (p. ej. 12:00:10). Los vuelos tienen resolución de minuto y
+     *  despegan al inicio del minuto (12:00:00), así que un lote que llega con
+     *  segundos de retraso NO debe poder tomar un vuelo que ya está en el aire.
+     *  Truncar (Duration.toMinutes()) haría que 12:00:10 se registrara como 12:00
+     *  y el planificador se lo asignaría a ese vuelo. Un registro exacto en el
+     *  minuto (12:00:00) sí conserva ese minuto y puede tomar el vuelo. */
     private int registrationMinuteFor(Long clientEpochMs) {
         Instant now = clientEpochMs != null ? Instant.ofEpochMilli(clientEpochMs) : Instant.now();
-        return absoluteMinute(LocalDateTime.ofInstant(now, ZoneOffset.UTC));
+        LocalDateTime ts = LocalDateTime.ofInstant(now, ZoneOffset.UTC);
+        long seconds = Duration.between(BASE_UTC, ts).getSeconds();
+        return (int) Math.floorDiv(seconds + 59, 60);   // ceil a minutos
     }
 
     // ── Preparación (staging) de Día a Día ────────────────────────────────────
