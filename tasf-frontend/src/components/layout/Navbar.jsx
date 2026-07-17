@@ -118,7 +118,7 @@ export default function Navbar({ running, onToggle, onStop, paused, onModeClick,
             <button onClick={onToggle}
               disabled={!running && !canStart}
               title={!running && !canStart
-                ? `Día a Día: cargue aeropuertos (${prepStatus?.airports ?? 0}), vuelos (${prepStatus?.flights ?? 0}) y paquetes (${prepStatus?.lots ?? 0}) en Registro antes de iniciar`
+                ? `Día a Día: cargue aeropuertos (${prepStatus?.airports ?? 0}) y vuelos (${prepStatus?.flights ?? 0}) en Registro antes de iniciar (los paquetes son opcionales)`
                 : ""}
               className={`text-white text-xs px-3 py-1 rounded flex items-center gap-1
                           transition disabled:opacity-40 disabled:cursor-not-allowed ${!running

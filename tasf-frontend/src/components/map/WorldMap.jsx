@@ -669,7 +669,10 @@ export default function WorldMap({
           const col   = airportColor(a.current, a.capacity);   // gris si vacío
           const hl    = airportIsHighlighted(a.code);
           const isSel = focus.has(a.code);
-          const s     = isSel ? 5.5 : 4.5;          // medio tamaño del cajón
+          // Medio tamaño del cajón. Se agrandó (4.5→6.5 / 5.5→8) porque el
+          // icono se veía muy pequeño y no se distinguía; el escalado es
+          // uniforme (scale) así que el aspect ratio 32×32 se conserva.
+          const s     = isSel ? 8 : 6.5;
           return (
             <Marker key={a.code}
               coordinates={[a.lng, a.lat]}
@@ -705,7 +708,7 @@ export default function WorldMap({
         {useMemo(() => shownAirports.map(a => {
           const hl    = airportIsHighlighted(a.code);
           const isSel = focus.has(a.code);
-          const s     = isSel ? 5.5 : 4.5;
+          const s     = isSel ? 8 : 6.5;   // debe coincidir con la capa de iconos
           return (
             <Marker key={`lbl-${a.code}`} coordinates={[a.lng, a.lat]}>
               <text textAnchor="middle" y={-(s + 4)}

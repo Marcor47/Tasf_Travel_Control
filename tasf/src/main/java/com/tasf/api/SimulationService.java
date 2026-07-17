@@ -130,11 +130,13 @@ public class SimulationService {
         String mode = normalizeMode(safeRequest.mode());
 
         // Día a Día (pizarra en blanco): solo inicia si el usuario ya cargó
-        // aeropuertos, vuelos y al menos un paquete. No se usa el dataset.
+        // aeropuertos y vuelos. No se usa el dataset. Los paquetes son OPCIONALES
+        // al arrancar: pueden cargarse antes (staging) o en caliente durante la
+        // corrida, así que 0 lotes es un estado válido de inicio.
         if ("diadia".equals(mode)
-                && (stagedAirports.isEmpty() || stagedFlights.isEmpty() || stagedLots.isEmpty())) {
+                && (stagedAirports.isEmpty() || stagedFlights.isEmpty())) {
             state = SimulationState.initial().withMode("diadia").withMessage(
-                    "Faltan datos: cargue aeropuertos, vuelos y al menos un paquete antes de iniciar");
+                    "Faltan datos: cargue aeropuertos y vuelos antes de iniciar");
             broadcast(state);
             return state;                  // NO inicia
         }
@@ -1394,9 +1396,11 @@ public PrepStatus prepStatus() {
         .map(f -> new StagedFl(f.getId(), f.getOrigin(), f.getDestination(),
                 f.getDepartureHour(), f.getArrivalHour(), f.getCapacity()))
         .collect(Collectors.toList());
+    // ready: solo aeropuertos y vuelos son obligatorios para iniciar Día a Día;
+    // los paquetes son opcionales (se pueden registrar en caliente).
     return new PrepStatus(
         stagedAirports.size(), stagedFlights.size(), stagedLots.size(),
-        !stagedAirports.isEmpty() && !stagedFlights.isEmpty() && !stagedLots.isEmpty(),
+        !stagedAirports.isEmpty() && !stagedFlights.isEmpty(),
         apList, flList);
 }
 

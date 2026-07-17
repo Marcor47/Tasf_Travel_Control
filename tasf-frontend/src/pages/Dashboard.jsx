@@ -655,7 +655,8 @@ case "cancelaciones":
                     Cargados:{" "}
                     <b className={prep?.airports ? "text-green-400" : "text-red-400"}>{prep?.airports ?? 0}</b> aerop ·{" "}
                     <b className={prep?.flights ? "text-green-400" : "text-red-400"}>{prep?.flights ?? 0}</b> vuelos ·{" "}
-                    <b className={prep?.lots ? "text-green-400" : "text-red-400"}>{prep?.lots ?? 0}</b> paq.
+                    {/* Paquetes: opcionales para iniciar (gris, no rojo, cuando hay 0) */}
+                    <b className={prep?.lots ? "text-green-400" : "text-gray-400"}>{prep?.lots ?? 0}</b> paq. (opc.)
                   </span>
                   {!running && (
                     <>

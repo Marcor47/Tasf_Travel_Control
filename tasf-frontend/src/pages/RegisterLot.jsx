@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { Check, X } from "lucide-react";
-import { STATIC_AIRPORTS, AIRPORT_META, airportName } from "../data/staticAirports";
+import { STATIC_AIRPORTS, AIRPORT_META, airportName, airportGmtHours } from "../data/staticAirports";
 
 // Mensaje flash de resultado (éxito/error) con icono, para las acciones de red.
 const FlashMsg = ({ msg }) => msg ? (
@@ -215,6 +215,26 @@ const editableFlights = (() => {
     flash(ok, ok ? `Archivo de ${dropType} cargado` : "No se pudo cargar el archivo");
   };
 
+// Reloj para mostrar la hora local ACTUAL de los aeropuertos elegidos en el
+// formulario de vuelos (referencia al registrar horarios). Tick de 1 s.
+const [nowMs, setNowMs] = useState(() => Date.now());
+useEffect(() => {
+  const id = setInterval(() => setNowMs(Date.now()), 1000);
+  return () => clearInterval(id);
+}, []);
+
+// "HH:MM:SS" del instante actual desplazado `gmtHours` horas desde UTC.
+// El offset por aeropuerto sale de airportGmtHours(): primero el staging del
+// backend (prepStatus.airportList, en minutos) y si no, la columna GMT(h) del
+// dataset replicada en staticAirports.js. Supuesto: offsets fijos, sin horario
+// de verano (igual que el resto del sistema).
+const clockAtGmt = (gmtHours) => {
+  const d = new Date(nowMs + gmtHours * 3600e3);
+  const p = (x) => String(x).padStart(2, "0");
+  return `${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
+};
+const gmtLabel = (g) => `UTC${g >= 0 ? "+" : ""}${g}`;
+
 const rangeHint = findRangeForRegion(airportForm.region);
 
 const airportFormValid = airportForm.code.trim() !== ""
@@ -232,9 +252,10 @@ const airportFormValid = airportForm.code.trim() !== ""
       <h2 className="text-teal font-bold text-lg mb-1">PREPARACIÓN DE LA SIMULACIÓN</h2>
       <p className="text-gray-500 text-xs mb-3">
         Día a Día parte de una <b className="text-gray-300">pizarra en blanco</b>: carga primero
-        <b className="text-gray-300"> aeropuertos</b>, luego <b className="text-gray-300">vuelos</b> y
-        al menos un <b className="text-gray-300">paquete</b>. El botón <b>INICIAR</b> se habilita
-        cuando hay los tres. Puedes seguir cargando con la simulación en curso.
+        <b className="text-gray-300"> aeropuertos</b> y luego <b className="text-gray-300">vuelos</b>.
+        El botón <b>INICIAR</b> se habilita cuando hay ambos. Los
+        <b className="text-gray-300"> paquetes</b> son opcionales para iniciar: puedes
+        registrarlos antes o en caliente con la simulación en curso.
         La <b className="text-gray-300">recepción de maletas</b> se hace en la pantalla de
         operaciones de cada sede: <span className="text-teal font-mono">/operaciones?sede=SPIM</span>.
       </p>
@@ -242,15 +263,18 @@ const airportFormValid = airportForm.code.trim() !== ""
       {/* Estado de preparación (compartido por todas las instancias) */}
       <div className="flex flex-wrap items-center gap-2 mb-4 text-xs">
         {[
-          ["Aeropuertos", prep.airports],
-          ["Vuelos",      prep.flights],
-          ["Paquetes",    prep.lots],
-        ].map(([label, n]) => (
+          // [etiqueta, cantidad, obligatorio para iniciar]
+          ["Aeropuertos", prep.airports, true],
+          ["Vuelos",      prep.flights,  true],
+          ["Paquetes",    prep.lots,     false],
+        ].map(([label, n, required]) => (
           <span key={label}
             className={`px-2 py-1 rounded border ${n > 0
               ? "border-green-600/50 bg-green-900/15 text-green-300"
-              : "border-red-700/50 bg-red-900/15 text-red-300"}`}>
-            {label}: <b>{n}</b>
+              : required
+                ? "border-red-700/50 bg-red-900/15 text-red-300"
+                : "border-white/15 bg-white/5 text-gray-400"}`}>
+            {label}: <b>{n}</b>{!required && " (opcional)"}
           </span>
         ))}
         <span className={`inline-flex items-center gap-1 ${prep.ready ? "text-green-400" : "text-yellow-400"}`}>
@@ -359,11 +383,34 @@ const airportFormValid = airportForm.code.trim() !== ""
                 {airports.map(a => <option key={a.code} value={a.code}>{a.code} — {airportName(a.code)}</option>)}
               </select>
             ))}
-            <label className="text-gray-500 text-[10px]">Salida (local)
+
+            {/* Hora local ACTUAL de origen/destino + referencia UTC-0, para que
+                el registro de horarios (que se ingresan en hora local de cada
+                aeropuerto) sea más claro. */}
+            {(flightForm.origin || flightForm.destination) && (
+              <div className="col-span-2 text-[10px] text-gray-500 bg-[#021020] border border-white/10 rounded px-2 py-1">
+                {[["Origen", flightForm.origin], ["Destino", flightForm.destination]]
+                  .filter(([, code]) => code)
+                  .map(([lbl, code]) => {
+                    const g = airportGmtHours(code, prep.airportList);
+                    return (
+                      <p key={lbl}>
+                        {lbl} {code} ahora:{" "}
+                        {g == null
+                          ? <span className="text-yellow-400">huso desconocido</span>
+                          : <span className="text-teal font-mono">{clockAtGmt(g)} {gmtLabel(g)}</span>}
+                      </p>
+                    );
+                  })}
+                <p>Referencia: <span className="text-gray-300 font-mono">{clockAtGmt(0)} UTC-0</span></p>
+              </div>
+            )}
+
+            <label className="text-gray-500 text-[10px]">Salida (hora local del origen)
               <input name="departureLocal" type="time" value={flightForm.departureLocal} onChange={hf}
                 className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300"/>
             </label>
-            <label className="text-gray-500 text-[10px]">Llegada (local)
+            <label className="text-gray-500 text-[10px]">Llegada (hora local del destino)
               <input name="arrivalLocal" type="time" value={flightForm.arrivalLocal} onChange={hf}
                 className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1 text-xs text-gray-300"/>
             </label>

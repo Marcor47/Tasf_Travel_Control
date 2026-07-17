@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Hourglass } from "lucide-react";
 import { getWarehouseColor } from "../../hooks/useStatusColor";
-import { airportName, AIRPORT_META } from "../../data/staticAirports";
+import { airportName, AIRPORT_META, airportGmtHours } from "../../data/staticAirports";
 
 // Categoría de semáforo de un vuelo (incluye "vacío").
 function flightSem(bags, capacity) {
@@ -29,6 +29,18 @@ const SORT_OPTIONS = [
 function hhmm(minute) {
   const m = (((minute ?? 0) % 1440) + 1440) % 1440;
   return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+}
+
+// "HH:MM UTC±g (HH:MM UTC-0)": hora LOCAL del aeropuerto con su huso explícito
+// y la referencia UTC-0 entre paréntesis (mismo formato que el registro de
+// vuelos). Los minutos del backend son UTC (GMT-0 interno); el offset local
+// sale de la columna GMT(h) del dataset (staticAirports.js). Si el aeropuerto
+// no está en el dataset (agregado por el usuario), se muestra solo UTC-0.
+function tzTime(utcMinute, airportCode) {
+  const utc = `${hhmm(utcMinute)} UTC-0`;
+  const g = airportGmtHours(airportCode);
+  if (g == null) return utc;
+  return `${hhmm(utcMinute + Math.round(g * 60))} UTC${g >= 0 ? "+" : ""}${g} (${utc})`;
 }
 
 /**
@@ -324,12 +336,19 @@ const handleSortFL = (key) => {
                       <span className="text-teal">{airportName(f.from)}</span>
                       <span className="text-gray-600 mx-1">→</span>
                       <span className="text-gray-200">{airportName(f.to)}</span>
-                      <span className="text-gray-600 font-mono text-[10px] ml-1">{f.departure}</span>
                     </span>
                     <span className={`font-bold flex-shrink-0 ${txtColor}`}>
                       {pct == null ? `${f.bags}` : `${pct}%`}
                     </span>
                   </div>
+                  {/* Salida y llegada explícitas: hora local del aeropuerto
+                      correspondiente + referencia UTC-0 (mismo formato que el
+                      formulario de registro de vuelos). */}
+                  <p className="text-gray-500 text-[9px] font-mono mb-0.5">
+                    Salida: {tzTime(f.departureMinute, f.from)}
+                    <span className="text-gray-600 mx-1">·</span>
+                    Llegada: {tzTime(f.arrivalMinute, f.to)}
+                  </p>
                   <div className="flex items-center gap-2">
                     <div className="flex-1 bg-white/10 rounded-full h-1.5">
                       <div className={`${barColor} h-1.5 rounded-full transition-all duration-500`}
@@ -381,20 +400,26 @@ const handleSortFL = (key) => {
               <button key={f.key} type="button"
                 onClick={() => onFlightClick?.(f)}
                 title={`ID: ${f.key} · ${f.from} → ${f.to} · clic para enfocar en el mapa`}
-                className={`w-full flex items-center justify-between text-[10px] rounded
-                  px-1 py-0.5 -mx-1 transition
+                className={`w-full text-[10px] rounded px-1 py-0.5 -mx-1 transition
                   ${isSel ? "bg-teal/15 ring-1 ring-teal/40" : "hover:bg-white/5"}`}>
-                <span className="flex items-center gap-1 min-w-0">
-                  <Hourglass size={9} className="text-blue-400 shrink-0"/>
-                  <span className="text-teal truncate">{airportName(f.from)}</span>
-                  <span className="text-gray-600">→</span>
-                  <span className="text-gray-200 truncate">{airportName(f.to)}</span>
-                  <span className="text-gray-600 font-mono ml-1">{f.departure}</span>
-                </span>
-                <span className="text-gray-400 tabular-nums flex-shrink-0">
-                  {f.bags.toLocaleString()}
+                <span className="flex items-center justify-between">
+                  <span className="flex items-center gap-1 min-w-0">
+                    <Hourglass size={9} className="text-blue-400 shrink-0"/>
+                    <span className="text-teal truncate">{airportName(f.from)}</span>
+                    <span className="text-gray-600">→</span>
+                    <span className="text-gray-200 truncate">{airportName(f.to)}</span>
+                  </span>
+                  <span className="text-gray-400 tabular-nums flex-shrink-0">
+                    {f.bags.toLocaleString()}
 {f.capacity != null && `/${f.capacity.toLocaleString()}`}
-                  {f.pct != null && <span className="text-gray-600 ml-1">({f.pct}%)</span>}
+                    {f.pct != null && <span className="text-gray-600 ml-1">({f.pct}%)</span>}
+                  </span>
+                </span>
+                {/* Salida/llegada con huso explícito, igual que los activos */}
+                <span className="block text-left text-gray-500 text-[9px] font-mono">
+                  Salida: {tzTime(f.departureMinute, f.from)}
+                  <span className="text-gray-600 mx-1">·</span>
+                  Llegada: {tzTime(f.arrivalMinute, f.to)}
                 </span>
               </button>
               );

@@ -29,8 +29,9 @@ function AppContent() {
                      : pathname === "/periodo"  ? "periodo"
                      : "diadia";
 
-  // Día a Día (pizarra en blanco) solo puede iniciar si ya hay aeropuertos,
-  // vuelos y al menos un paquete cargados. Los otros modos usan el dataset.
+  // Día a Día (pizarra en blanco) solo puede iniciar si ya hay aeropuertos y
+  // vuelos cargados; los paquetes son opcionales (se pueden registrar antes o
+  // en caliente durante la corrida). Los otros modos usan el dataset.
   const canStart = modeFromPath !== "diadia" || (prepStatus?.ready ?? false);
 
   // Nota: cambiar de pestaña de modo NO detiene la simulación en curso.
