@@ -3,6 +3,7 @@ import Navbar        from "./components/layout/Navbar";
 import StatusBar     from "./components/layout/StatusBar";
 import Dashboard     from "./pages/Dashboard";
 import RegisterLot   from "./pages/RegisterLot";
+import Operaciones   from "./pages/Operaciones";
 import LiveMonitor   from "./pages/LiveMonitor";
 import ReportView    from "./pages/ReportView";
 import HistoryView   from "./pages/HistoryView";
@@ -98,6 +99,9 @@ function AppContent() {
           <Route path="/periodo"  element={<Dashboard mode="periodo"  {...dashboardProps}/>}/>
           <Route path="/colapso"  element={<Dashboard mode="colapso"  {...dashboardProps}/>}/>
           <Route path="/registro"  element={<RegisterLot simulation={simulation}/>}/>
+          {/* Operaciones (recepción por sede) comparte el Navbar/StatusBar del
+              resto de páginas para poder volver al mapa y al resto de vistas. */}
+          <Route path="/operaciones" element={<Operaciones simulation={simulation}/>}/>
           <Route path="/monitoreo" element={<LiveMonitor  simulation={simulation}/>}/>
           <Route path="/reportes"  element={<ReportView   simulation={simulation}/>}/>
           <Route path="/historial" element={<HistoryView  history={history} upcoming={simulation?.upcomingFlights ?? []} running={running}/>}/>

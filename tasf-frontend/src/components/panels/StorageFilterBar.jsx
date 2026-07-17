@@ -1,3 +1,5 @@
+import { X } from "lucide-react";
+
 // Barra de filtro compartida del panel de Almacenes: búsqueda por texto
 // (código/país/región) + semáforo de ocupación. Vive en el Dashboard, por
 // encima del conmutador Capacidad/Movimientos, de modo que el MISMO filtro
@@ -30,7 +32,7 @@ export default function StorageFilterBar({
             title="Limpiar filtro"
             className="absolute right-1 top-1/2 -translate-y-1/2 text-gray-500
                        hover:text-white text-xs px-1">
-            ✕
+            <X size={11}/>
           </button>
         )}
       </div>

@@ -1,4 +1,5 @@
 import { useState, useMemo } from "react";
+import { Plane } from "lucide-react";
 import { airportName, AIRPORT_META } from "../../data/staticAirports";
 
 const SORT_FIELDS = {
@@ -160,7 +161,7 @@ export default function FlightCancelPanel({ flights = [], onCancel, embedded = f
                    bg-[#021020]/90 border border-red-800/50 rounded
                    px-3 py-1.5 text-xs text-red-400 font-bold
                    hover:bg-red-900/30 transition mb-1">
-        <span>✈ Cancelar vuelo</span>
+        <span className="flex items-center gap-1"><Plane size={12} className="shrink-0"/> Cancelar vuelo</span>
         <span className="flex items-center gap-2">
           <span className="text-gray-500 font-normal">{flights.length} vuelos</span>
           <span>{open ? "▲" : "▼"}</span>

@@ -1,4 +1,5 @@
 import { useState, useMemo } from "react";
+import { AlertTriangle } from "lucide-react";
 import { getWarehouseColor } from "../../hooks/useStatusColor";
 import { STATIC_AIRPORTS, AIRPORT_META, airportMatches, airportName } from "../../data/staticAirports";
 
@@ -149,7 +150,7 @@ const dir = sortDir === "desc" ? 1 : -1;
                           {country && <span className="text-gray-500 ml-1">· {country}</span>}
                         </span>
                         <span className={`font-bold flex-shrink-0 ${txt}`}>
-                          {pct}%{pct > 100 ? " ⚠" : ""}
+                          {pct}%{pct > 100 && <AlertTriangle size={9} className="inline ml-0.5 -mt-0.5"/>}
                         </span>
                       </div>
                       <div className="w-full bg-white/10 rounded-full h-1.5">
@@ -184,8 +185,9 @@ const dir = sortDir === "desc" ? 1 : -1;
                               <span className="text-teal font-mono">{e.flightId || "—"}</span>
                               <span className="text-gray-400 truncate">{e.from} → {e.to}</span>
                               <span className="text-gray-300 font-bold tabular-nums">{(e.bags||0).toLocaleString()}</span>
-                              <span className={e.finalDestination ? "text-green-400" : "text-amber-400"}>
-                                {e.finalDestination ? "✓" : "⇄"}
+                              <span className={e.finalDestination ? "text-green-400" : "text-amber-400"}
+                                    title={e.finalDestination ? "Destino final" : "Transbordo"}>
+                                {e.finalDestination ? "●" : "⇄"}
                               </span>
                             </div>
                           ))}

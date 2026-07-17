@@ -1,4 +1,5 @@
 import { Fragment, useMemo, useState } from "react";
+import { Pin } from "lucide-react";
 import { airportName, AIRPORT_META } from "../../data/staticAirports";
 
 // ── Constantes SLA ────────────────────────────────────────────────────────────
@@ -441,7 +442,8 @@ const filteredSortedPackageRows = useMemo(() => {
         {focusLotId && (
           <p className="text-teal/90 text-[10px] mb-2 leading-tight
                         bg-teal/10 border border-teal/30 rounded px-2 py-1">
-            📌 Mostrando solo <b className="font-mono">{focusLotId}</b>
+            <Pin size={10} className="inline -mt-0.5 mr-1"/>
+            Mostrando solo <b className="font-mono">{focusLotId}</b>
             {" "}(selección de Envíos) — clic en el paquete para des-seleccionar.
           </p>
         )}
@@ -598,9 +600,9 @@ const filteredSortedPackageRows = useMemo(() => {
         EN VIVO — también con el avión en el aire, sin esperar al aterrizaje. */}
     {flightLotRows?.length ? (
       flightLotRows.map((l, i) => {
-        const tag = l.status === "current"  ? ["✈ A bordo",   "text-yellow-400"]
-                  : l.status === "upcoming" ? ["⌛ Por salir", "text-blue-400"]
-                  :                           ["✓ Voló",      "text-green-400"];
+        const tag = l.status === "current"  ? ["A bordo",   "text-yellow-400"]
+                  : l.status === "upcoming" ? ["Por salir", "text-blue-400"]
+                  :                           ["Voló",      "text-green-400"];
         return (
           <tr key={`fl-${l.lotId}-${l.departureMinute}-${i}`}
               className="border-b border-white/5">
@@ -630,9 +632,9 @@ const filteredSortedPackageRows = useMemo(() => {
           && packageBase(selectedShipment.bagId) === pkg.base;
         const isExp   = expandedPkg === pkg.base || subSelIn;
         const hasSubs = pkg.subs.length > 0;
-        const globalStatus = pkg.delivered ? ["✓ Entregado", "text-green-400"]
-                           : pkg.inAir     ? ["✈ En vuelo",  "text-yellow-400"]
-                           :                 ["⇄ En escala", "text-blue-400"];
+        const globalStatus = pkg.delivered ? ["Entregado", "text-green-400"]
+                           : pkg.inAir     ? ["En vuelo",  "text-yellow-400"]
+                           :                 ["En escala", "text-blue-400"];
         // Clic en el paquete: TODAS las rutas del lote (el backend agrupa por base).
         const clickPkg = () => onShipmentClick?.({
           ...pkg.latest, pkgId: pkg.base, lotId: pkg.base,
@@ -658,7 +660,7 @@ const filteredSortedPackageRows = useMemo(() => {
                   onClick={clickPkg}
                   title={isSel ? "Seleccionado (fijado arriba) — clic para des-seleccionar"
                                : "Clic: todas las rutas del paquete en el mapa"}>
-                {(isSel || subSelIn) && <span className="mr-0.5">📌</span>}
+                {(isSel || subSelIn) && <Pin size={9} className="inline -mt-0.5 mr-0.5 text-teal"/>}
                 <span className="text-teal font-mono font-bold">{pkg.base}</span>
                 {hasSubs && (
                   <span className="text-gray-500 ml-1">×{pkg.subs.length}</span>
@@ -691,10 +693,10 @@ const filteredSortedPackageRows = useMemo(() => {
   const suffix     = sub.pkgId.startsWith(pkg.base)
     ? sub.pkgId.slice(pkg.base.length) : sub.pkgId;
   const subStatus  = sub.type === "landed" && sub.finalDestination
-    ? ["✓ Entregado", "text-green-400"]
+    ? ["Entregado", "text-green-400"]
     : sub.type === "departed"
-      ? ["✈ En vuelo",  "text-yellow-400"]
-      : ["⇄ En escala", "text-blue-400"];
+      ? ["En vuelo",  "text-yellow-400"]
+      : ["En escala", "text-blue-400"];
   const sep        = lotEndpoints.get(sub.pkgId);
   const isSubExp   = expandedSubLot === sub.pkgId;
   const isSubLoad  = loadingSubLot  === sub.pkgId;
@@ -755,8 +757,8 @@ const filteredSortedPackageRows = useMemo(() => {
           </tr>
         ) : (
           legs.map((leg, li) => {
-            const legIcon = leg.status === "done"    ? ["✓", "text-green-400"]
-                          : leg.status === "current" ? ["✈", "text-yellow-400"]
+            const legIcon = leg.status === "done"    ? ["●", "text-green-400"]
+                          : leg.status === "current" ? ["»", "text-yellow-400"]
                           :                            ["○", "text-gray-500"];
             return (
               <tr key={`leg-${sub.pkgId}-${li}`}
@@ -766,7 +768,7 @@ const filteredSortedPackageRows = useMemo(() => {
                   <span className={`mr-1 ${legIcon[1]}`}>{legIcon[0]}</span>
                   <span className="text-gray-500 font-mono">{leg.flightId || "—"}</span>
                   {leg.finalDestination && (
-                    <span className="text-green-500 ml-1 text-[8px]">★destino</span>
+                    <span className="text-green-500 ml-1 text-[8px]">● destino</span>
                   )}
                 </td>
                 <td className="py-0.5 text-[9px] text-gray-600"

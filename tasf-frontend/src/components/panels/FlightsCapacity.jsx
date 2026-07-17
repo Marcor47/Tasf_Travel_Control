@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Hourglass } from "lucide-react";
 import { getWarehouseColor } from "../../hooks/useStatusColor";
 import { airportName, AIRPORT_META } from "../../data/staticAirports";
 
@@ -384,7 +385,7 @@ const handleSortFL = (key) => {
                   px-1 py-0.5 -mx-1 transition
                   ${isSel ? "bg-teal/15 ring-1 ring-teal/40" : "hover:bg-white/5"}`}>
                 <span className="flex items-center gap-1 min-w-0">
-                  <span className="text-blue-400">⌛</span>
+                  <Hourglass size={9} className="text-blue-400 shrink-0"/>
                   <span className="text-teal truncate">{airportName(f.from)}</span>
                   <span className="text-gray-600">→</span>
                   <span className="text-gray-200 truncate">{airportName(f.to)}</span>
@@ -453,9 +454,9 @@ const handleSortFL = (key) => {
             </p>
           ) : (() => {
             const TAG = {
-              current:  ["✈ A bordo",   "text-yellow-400"],
-              upcoming: ["⌛ Por salir", "text-blue-400"],
-              done:     ["✓ Voló",      "text-green-400"],
+              current:  ["A bordo",   "text-yellow-400"],
+              upcoming: ["Por salir", "text-blue-400"],
+              done:     ["Voló",      "text-green-400"],
             };
             const order = { current: 0, upcoming: 1, done: 2 };
             const rows = [...cargoLots].sort((a, b) =>

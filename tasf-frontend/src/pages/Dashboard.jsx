@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
+import { Check, Pause } from "lucide-react";
 import SLAMonitor        from "../components/panels/SLAMonitor";
 import WarehouseCapacity from "../components/panels/WarehouseCapacity";
 import FlightsCapacity   from "../components/panels/FlightsCapacity";
@@ -658,8 +659,11 @@ case "cancelaciones":
                   </span>
                   {!running && (
                     <>
-                      <span className={`text-[10px] ${prep?.ready ? "text-green-400" : "text-yellow-400"}`}>
-                        {prep?.ready ? "✓ Listo para iniciar" : "Cargue datos en Registro »"}
+                      <span className={`text-[10px] inline-flex items-center gap-1
+                                       ${prep?.ready ? "text-green-400" : "text-yellow-400"}`}>
+                        {prep?.ready
+                          ? <><Check size={11} className="shrink-0"/>Listo para iniciar</>
+                          : "Cargue datos en Registro »"}
                       </span>
                       {(prep?.airports || prep?.flights || prep?.lots) ? (
                         <button onClick={() => simulation?.resetPrep?.()}
@@ -750,7 +754,8 @@ case "cancelaciones":
                 </div>
               ))}
               {simulation?.message === "Pausado"
-                ? <span className="text-amber-400 text-sm font-semibold">❚❚ Pausado</span>
+                ? <span className="text-amber-400 text-sm font-semibold inline-flex items-center gap-1">
+                    <Pause size={14} className="shrink-0"/>Pausado</span>
                 : <span className="text-green-400 text-sm font-semibold animate-pulse">● En curso</span>}
             </div>
           )}

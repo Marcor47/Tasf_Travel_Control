@@ -3,6 +3,7 @@ import {
   ComposableMap, Geographies, Geography,
   Marker, Line
 } from "react-simple-maps";
+import { Cog, Plane, X } from "lucide-react";
 import { STATIC_AIRPORTS, airportName } from "../../data/staticAirports";
 
 const GEO_URL = "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json";
@@ -478,13 +479,14 @@ export default function WorldMap({
 
         <div className="flex items-center gap-2 flex-1 justify-center min-w-0">
           {isCalculating && (
-            <span className="text-[10px] text-yellow-400 animate-pulse">
-              ⚙ {message}
+            <span className="text-[10px] text-yellow-400 animate-pulse inline-flex items-center gap-1">
+              <Cog size={11} className="shrink-0"/> {message}
             </span>
           )}
           {running && !isCalculating && (
             <span className="text-[10px] text-gray-400">
-              ✈ <span className="text-white font-bold">{activeFlightsCount}</span> vuelos activos
+              <Plane size={11} className="inline -mt-0.5 mr-0.5"/>
+              {" "}<span className="text-white font-bold">{activeFlightsCount}</span> vuelos activos
               {flightSem !== "all" && (
                 <span className="ml-1 text-teal">
                   · filtro {{ green: "verde", amber: "ámbar", red: "rojo", empty: "vacío" }[flightSem]}
@@ -505,8 +507,8 @@ export default function WorldMap({
               <button
                 onClick={() => onClearSelection?.()}
                 className="ml-1 px-1.5 py-0.5 rounded bg-gray-900/70 border border-white/10
-                           text-gray-400 hover:text-white transition">
-                ✕ Limpiar
+                           text-gray-400 hover:text-white transition inline-flex items-center gap-0.5">
+                <X size={10} className="shrink-0"/> Limpiar
               </button>
             </span>
           )}
@@ -680,18 +682,20 @@ export default function WorldMap({
                 {(a.current || 0).toLocaleString()}/{(a.capacity || 0).toLocaleString()}
                 {a.capacity ? ` (${Math.round(pct * 100)}%)` : ""}
               </title>
-              <g opacity={hl ? 1 : 0.25} style={{ cursor: "pointer" }}>
-                {/* techo */}
-                <polygon points={`${-s},${-s * 0.2} 0,${-s} ${s},${-s * 0.2}`}
-                         fill={col} stroke={isSel ? "#2dd4bf" : "#0b1f33"}
-                         strokeWidth={isSel ? 0.9 : 0.5}/>
-                {/* cuerpo de la bodega */}
-                <rect x={-s} y={-s * 0.2} width={2 * s} height={s * 1.2} rx={0.6}
-                      fill={col} stroke={isSel ? "#2dd4bf" : "#0b1f33"}
-                      strokeWidth={isSel ? 0.9 : 0.5}/>
-                {/* puerta */}
-                <rect x={-s * 0.4} y={s * 0.3} width={s * 0.8} height={s * 0.7}
-                      fill="#0b1f33" opacity={0.55}/>
+              {/* Icono de bodega (warehouse-box.svg, viewBox 32×32) escalado al
+                  tamaño del marcador y pintado con el semáforo de ocupación. */}
+              <g opacity={hl ? 1 : 0.25} style={{ cursor: "pointer" }}
+                 transform={`scale(${(2 * s) / 32}) translate(-16,-16)`}>
+                {/* Área de clic (el icono tiene huecos) + aro de selección */}
+                <rect width={32} height={32} fill="transparent" stroke="none"/>
+                {isSel && (
+                  <rect x={-2.5} y={-2.5} width={37} height={37} rx={4}
+                        fill="none" stroke="#2dd4bf" strokeWidth={2}/>
+                )}
+                <path d="m30.02 9.523-13.332-8a1.33 1.33 0 0 0-1.372 0l-13.336 8a1.33 1.33 0 0 0-.597 1.5c.16.579.683.977 1.285.977v18.668h2.664V12h21.336v18.668h2.664V12a1.33 1.33 0 0 0 1.285-.977 1.33 1.33 0 0 0-.597-1.5Zm0 0"
+                      fill={col} stroke="#0b1f33" strokeWidth={0.8}/>
+                <path d="M12 13.332v8h8v-8h-2.668V16h-2.664v-2.668ZM12 25.332H9.332v-2.664H6.668v8h8v-8H12ZM22.668 25.332H20v-2.664h-2.668v8h8v-8h-2.664Zm0 0"
+                      fill={col} stroke="#0b1f33" strokeWidth={0.8}/>
               </g>
             </Marker>
           );
@@ -729,8 +733,8 @@ export default function WorldMap({
             pequeño desplazamiento vertical y su etiqueta (-1, -2, …) para que
             las divisiones no se mezclen y se vea que comparten destino final.
             Por tramo: color = carga de su vuelo; estilo por estado:
-              · completado (done)  → punteado tenue + ✓
-              · actual    (current)→ sólido animado + ✈
+              · completado (done)  → punteado tenue + ·
+              · actual    (current)→ sólido animado + »
               · próximo   (upcoming)→ a trazos + ›
             Destino de cada tramo: verde = destino final; ámbar ⇄ = transbordo. */}
         {shipmentMode && shipmentPath.map((p, pi) => {
@@ -747,8 +751,8 @@ export default function WorldMap({
               const width = leg.status === "current" ? 2.6
                           : leg.status === "done"    ? 1.4 : 2;
               const op    = leg.status === "done" ? 0.5 : 1;
-              const icon  = leg.status === "current" ? "✈"
-                          : leg.status === "upcoming" ? "›" : "✓";
+              const icon  = leg.status === "current" ? "»"
+                          : leg.status === "upcoming" ? "›" : "·";
               // Color por tramo: los tramos AÚN NO recorridos ("resto del
               // trayecto") van en celeste claro bien visible — antes tomaban el
               // gris de carga y apenas se distinguían del mapa.
@@ -810,8 +814,8 @@ export default function WorldMap({
                style={{ left: Math.min(tip.x + 14, tip.maxX), top: tip.y + 12 }}>
             <div className="bg-[#021020]/95 border-2 rounded-lg px-3 py-2 shadow-xl shadow-black/60"
                  style={{ borderColor: semC, minWidth: 170 }}>
-              <p className="font-mono font-bold text-sm" style={{ color: semC }}>
-                ✈ {tip.flightId}
+              <p className="font-mono font-bold text-sm flex items-center gap-1" style={{ color: semC }}>
+                <Plane size={13} className="shrink-0"/> {tip.flightId}
               </p>
               <p className="text-gray-200 text-xs">
                 {airportName(tip.from)} → {airportName(tip.to)}
