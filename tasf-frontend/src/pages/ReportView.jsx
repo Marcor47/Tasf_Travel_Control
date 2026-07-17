@@ -3,6 +3,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ResponsiveContainer
 } from "recharts";
+import { AlertTriangle, Check, X } from "lucide-react";
 
 export default function ReportView({ simulation }) {
   const kpis    = simulation?.kpis    ?? {};
@@ -205,9 +206,11 @@ export default function ReportView({ simulation }) {
               <div key={c.label}>
                 <div className="flex justify-between mb-1">
                   <span className="text-gray-300 text-xs">{c.label}</span>
-                  <span className={`text-xs font-bold ${
+                  <span className={`text-xs font-bold inline-flex items-center gap-1 ${
                     c.status === "ok" ? "text-green-400" : "text-yellow-400"}`}>
-                    {c.pct}% {c.status === "ok" ? "✓" : "⚠"}
+                    {c.pct}% {c.status === "ok"
+                      ? <Check size={11} className="shrink-0"/>
+                      : <AlertTriangle size={11} className="shrink-0"/>}
                   </span>
                 </div>
                 <div className="w-full bg-white/10 rounded-full h-1.5">
@@ -287,10 +290,13 @@ export default function ReportView({ simulation }) {
                     </td>
                     <td className="py-1">
                       {l.path.length === 0
-                        ? <span className="text-red-400">✕ no planificado</span>
+                        ? <span className="text-red-400 inline-flex items-center gap-1">
+                            <X size={10} className="shrink-0"/> no planificado</span>
                         : l.late
-                          ? <span className="text-yellow-400">⚠ con retraso</span>
-                          : <span className="text-green-400">✓ a tiempo</span>}
+                          ? <span className="text-yellow-400 inline-flex items-center gap-1">
+                              <AlertTriangle size={10} className="shrink-0"/> con retraso</span>
+                          : <span className="text-green-400 inline-flex items-center gap-1">
+                              <Check size={10} className="shrink-0"/> a tiempo</span>}
                     </td>
                   </tr>
                 ))}
@@ -303,8 +309,9 @@ export default function ReportView({ simulation }) {
       {/* Panel de incidente si hay colapso */}
       {simulation?.collapsed && (
         <div className="mt-4 bg-[#1a0505] border border-red-700 rounded p-3">
-          <p className="text-red-500 text-xs font-bold uppercase mb-2">
-            ⚠ Colapso Logístico Detectado
+          <p className="text-red-500 text-xs font-bold uppercase mb-2
+                        flex items-center gap-1">
+            <AlertTriangle size={12} className="shrink-0"/> Colapso Logístico Detectado
           </p>
           <p className="text-gray-300 text-xs mb-2">
             {simulation.message}

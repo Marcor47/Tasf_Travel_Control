@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Hourglass } from "lucide-react";
 import { AIRPORT_META, airportName } from "../../data/staticAirports";
 
 // Cuántos almacenes mostrar cuando no hay filtro (para no saturar la vista)
@@ -156,7 +157,7 @@ function MovementRow({ e, byPkg }) {
     <div className={`flex items-center justify-between text-[10px] ${planned ? "opacity-70" : ""}`}>
       <span className="flex items-center gap-1 min-w-0">
         <span className={isIn ? "text-green-400" : "text-yellow-400"}>
-          {planned ? "⌛" : isIn ? "↓" : "↑"}
+          {planned ? <Hourglass size={9} className="inline -mt-0.5"/> : isIn ? "↓" : "↑"}
         </span>
         <span className={`font-mono truncate ${byPkg ? "text-teal" : "text-gray-300"}`}
               title={byPkg ? `Vuelo ${e.flightId || "—"}` : undefined}>

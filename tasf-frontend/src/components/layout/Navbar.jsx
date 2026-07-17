@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { User, Clock, BarChart2, Bell, Settings, Play, Pause, Square } from "lucide-react";
+import { User, Clock, BarChart2, Bell, Play, Pause, Square, Luggage } from "lucide-react";
 
 const modeMap = {
   "diadia":  { label:"Dia-a-Dia", path:"/"        },
@@ -9,10 +9,12 @@ const modeMap = {
 };
 
 const menu = [
-  { label:"Registro",  path:"/registro",  icon:<User size={14}/>     },
-  { label:"Historial", path:"/historial", icon:<Clock size={14}/>    },
-  { label:"Reportes",  path:"/reportes",  icon:<BarChart2 size={14}/> },
-  { label:"Monitoreo", path:"/monitoreo", icon:<Bell size={14}/>     },
+  { label:"Registro",    path:"/registro",    icon:<User size={14}/>     },
+  // Recepción de maletas por sede (pantalla del operador; pide la sede al entrar)
+  { label:"Operaciones", path:"/operaciones", icon:<Luggage size={14}/>  },
+  { label:"Historial",   path:"/historial",   icon:<Clock size={14}/>    },
+  { label:"Reportes",    path:"/reportes",    icon:<BarChart2 size={14}/> },
+  { label:"Monitoreo",   path:"/monitoreo",   icon:<Bell size={14}/>     },
 ];
 
 export default function Navbar({ running, onToggle, onStop, paused, onModeClick, clock, mode, simulationMode, message, canStart = true, prepStatus }) {
@@ -140,8 +142,6 @@ export default function Navbar({ running, onToggle, onStop, paused, onModeClick,
             )}
           </>
         )}
-        <Settings size={16}
-          className="text-gray-500 cursor-pointer hover:text-white transition"/>
       </div>
     </nav>
   );

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Rnd } from "react-rnd";
+import { Maximize2, Minimize2, Plane, X } from "lucide-react";
 
 const TITLE_H = 26;   // alto de la barra de título (también el alto al minimizar)
 
@@ -85,7 +86,7 @@ export default function FloatingPanel({
           <span onClick={onTitleClick}
                 className={`text-[10px] font-bold uppercase truncate cursor-pointer flex-1
                            ${red ? "text-red-400" : "text-teal"}`}>
-            {red ? "✈ " : ""}{title}
+            {red && <Plane size={10} className="inline -mt-0.5 mr-1"/>}{title}
           </span>
           <span className="flex items-center gap-0.5 flex-shrink-0">
             <button onClick={onMin}
@@ -95,11 +96,11 @@ export default function FloatingPanel({
             <button onClick={onMax}
               className="fp-btn w-4 h-4 flex items-center justify-center rounded
                          text-gray-400 hover:text-white hover:bg-white/10 text-[10px] leading-none"
-              title={maximized ? "Restaurar" : "Maximizar"}>{maximized ? "❐" : "□"}</button>
+              title={maximized ? "Restaurar" : "Maximizar"}>{maximized ? <Minimize2 size={9}/> : <Maximize2 size={9}/>}</button>
             <button onClick={onClose}
               className="fp-btn w-4 h-4 flex items-center justify-center rounded
                          text-gray-400 hover:text-white hover:bg-red-700/70 text-[11px] leading-none"
-              title="Cerrar (minimizar a la izquierda)">✕</button>
+              title="Cerrar (minimizar a la izquierda)"><X size={11}/></button>
           </span>
         </div>
 

@@ -1,7 +1,14 @@
 import { useState, useEffect, useMemo } from "react";
+import { Check, X } from "lucide-react";
 import { STATIC_AIRPORTS, AIRPORT_META, airportName } from "../data/staticAirports";
 
-const API_BASE = import.meta.env.VITE_API_BASE || "";
+// Mensaje flash de resultado (éxito/error) con icono, para las acciones de red.
+const FlashMsg = ({ msg }) => msg ? (
+  <span className={`ml-2 inline-flex items-center gap-1 ${msg.ok ? "text-green-400" : "text-red-400"}`}>
+    {msg.ok ? <Check size={12} className="shrink-0"/> : <X size={12} className="shrink-0"/>}
+    {msg.text}
+  </span>
+) : null;
 
 const CONTINENT_RANGES = {
   "Europa":            { lat: [35, 71],    lng: [-25, 60],   gmt: [-1, 4]   },
@@ -29,13 +36,9 @@ const mode    = simulation?.mode ?? "diadia";
   // en curso (esos usan el dataset).
   const canIngest  = true;
 const liveHasAirports = (simulation?.airports?.length ?? 0) > 0;
-const liveHasFlights  = ((simulation?.upcomingFlights?.length ?? 0)
-                       + (simulation?.routes?.length ?? 0)) > 0;
 const hasAirports = (running && mode !== "diadia") ? liveHasAirports : prep.airports > 0;
-const hasFlights  = (running && mode !== "diadia") ? liveHasFlights  : prep.flights  > 0;
 const canAirport = true;
 const canFlight  = hasAirports;
-const canAdd     = hasAirports && hasFlights;
 
   // Aeropuertos para los selectores: datos en vivo si hay, si no los del dataset
   const airports = useMemo(() => {
@@ -50,15 +53,6 @@ const canAdd     = hasAirports && hasFlights;
   }
   return STATIC_AIRPORTS.slice().sort((a, b) => a.code.localeCompare(b.code));
 }, [simulation?.airports, prep.airportList]);
-
-  const [form, setForm] = useState({
-    origin: "", destination: "", client: "", quantity: 150,
-  });
-  const [report,     setReport]     = useState(null);
-  const [evaluating, setEvaluating] = useState(false);
-  const [adding,     setAdding]     = useState(false);
-  const [status,     setStatus]     = useState(null); // "added" | "error" | null
-
 
 const [editAirportCode, setEditAirportCode] = useState("");
 const [editAirportCap,  setEditAirportCap]  = useState("");
@@ -76,7 +70,7 @@ const [flightSortBy, setFlightSortBy]   = useState("salida"); // "salida" | "alf
 const [flightListSnapshot, setFlightListSnapshot] = useState([]);
 
 const [editMsg, setEditMsg] = useState(null);
-const flashEdit = (text) => { setEditMsg(text); setTimeout(() => setEditMsg(null), 4000); };
+const flashEdit = (ok, text) => { setEditMsg({ ok, text }); setTimeout(() => setEditMsg(null), 4000); };
 
 // Lista de vuelos editables: combina planificados (upcomingFlights) y en
 // el aire (routes), que SÍ incluyen altas en caliente (IDs U1, U2…).
@@ -171,29 +165,23 @@ const editableFlights = (() => {
   const [dropType,  setDropType]  = useState("planes");
   const [netMsg,    setNetMsg]    = useState(null);
 
-  const handle = e => {
-    setForm(f => ({ ...f, [e.target.name]: e.target.value }));
-    setReport(null);
-    setStatus(null);
-  };
-
   const hf = e => setFlightForm(f => ({ ...f, [e.target.name]: e.target.value }));
   const ha = e => setAirportForm(f => ({ ...f, [e.target.name]: e.target.value }));
 
-  const flash = (text) => { setNetMsg(text); setTimeout(() => setNetMsg(null), 4000); };
+  const flash = (ok, text) => { setNetMsg({ ok, text }); setTimeout(() => setNetMsg(null), 4000); };
 
   const submitFlight = async () => {
     const ok = await simulation?.addFlight(
       flightForm.origin, flightForm.destination,
       flightForm.departureLocal, flightForm.arrivalLocal, Number(flightForm.capacity) || 0);
-    flash(ok ? "✓ Vuelo agregado" : "✕ No se pudo agregar el vuelo (¿simulación en curso?)");
+    flash(ok, ok ? "Vuelo agregado" : "No se pudo agregar el vuelo (¿simulación en curso?)");
   };
   const submitAirport = async () => {
     const ok = await simulation?.addAirport(
       airportForm.code, airportForm.region,
       Number(airportForm.lat) || 0, Number(airportForm.lng) || 0,
       Number(airportForm.gmtHours) || 0, Number(airportForm.capacity) || 0);
-    flash(ok ? "✓ Aeropuerto agregado" : "✕ No se pudo agregar el aeropuerto");
+    flash(ok, ok ? "Aeropuerto agregado" : "No se pudo agregar el aeropuerto");
   };
 
 
@@ -224,50 +212,8 @@ const editableFlights = (() => {
     const m = /_envios_([A-Za-z0-9]+)_/.exec(file.name);
     const origin = m ? m[1].toUpperCase() : "";
     const ok = await simulation?.uploadData(dropType, body, origin);
-    flash(ok ? `✓ Archivo de ${dropType} cargado` : "✕ No se pudo cargar el archivo");
+    flash(ok, ok ? `Archivo de ${dropType} cargado` : "No se pudo cargar el archivo");
   };
-
-  const payload = () => ({
-    origin: form.origin,
-    destination: form.destination,
-    quantity: Number(form.quantity) || 0,
-  });
-
-  const evaluate = async () => {
-    if (!form.origin || !form.destination) return;
-    setEvaluating(true); setStatus(null);
-    try {
-      const r = await fetch(`${API_BASE}/api/simulation/evaluateLot`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload()),
-      });
-      setReport(r.ok ? await r.json() : null);
-    } catch {
-      setReport(null);
-    } finally {
-      setEvaluating(false);
-    }
-  };
-
-  const addLot = async () => {
-    setAdding(true);
-    try {
-      // Pasa por el hook para que quede registrada la alerta en Monitoreo.
-      const ok = simulation?.addLot
-        ? await simulation.addLot(form.origin, form.destination,
-                                  Number(form.quantity) || 0, form.client)
-        : false;
-      setStatus(ok ? "added" : "error");
-    } catch {
-      setStatus("error");
-    } finally {
-      setAdding(false);
-    }
-  };
-
-const formValid = form.origin && form.destination
-  && form.origin !== form.destination && Number(form.quantity) > 0;
 
 const rangeHint = findRangeForRegion(airportForm.region);
 
@@ -283,12 +229,14 @@ const airportFormValid = airportForm.code.trim() !== ""
 
   return (
     <div className="p-4 max-w-5xl mx-auto">
-      <h2 className="text-teal font-bold text-lg mb-1">REGISTRO DE ENVÍOS</h2>
+      <h2 className="text-teal font-bold text-lg mb-1">PREPARACIÓN DE LA SIMULACIÓN</h2>
       <p className="text-gray-500 text-xs mb-3">
         Día a Día parte de una <b className="text-gray-300">pizarra en blanco</b>: carga primero
         <b className="text-gray-300"> aeropuertos</b>, luego <b className="text-gray-300">vuelos</b> y
         al menos un <b className="text-gray-300">paquete</b>. El botón <b>INICIAR</b> se habilita
         cuando hay los tres. Puedes seguir cargando con la simulación en curso.
+        La <b className="text-gray-300">recepción de maletas</b> se hace en la pantalla de
+        operaciones de cada sede: <span className="text-teal font-mono">/operaciones?sede=SPIM</span>.
       </p>
 
       {/* Estado de preparación (compartido por todas las instancias) */}
@@ -305,8 +253,8 @@ const airportFormValid = airportForm.code.trim() !== ""
             {label}: <b>{n}</b>
           </span>
         ))}
-        <span className={prep.ready ? "text-green-400" : "text-yellow-400"}>
-          {prep.ready ? "✓ Listo para iniciar" : "Faltan datos para iniciar"}
+        <span className={`inline-flex items-center gap-1 ${prep.ready ? "text-green-400" : "text-yellow-400"}`}>
+          {prep.ready ? <><Check size={12} className="shrink-0"/>Listo para iniciar</> : "Faltan datos para iniciar"}
         </span>
         {(prep.airports || prep.flights || prep.lots) ? (
           <button onClick={() => simulation?.resetPrep?.()}
@@ -319,188 +267,17 @@ const airportFormValid = airportForm.code.trim() !== ""
         ) : null}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* ── Formulario ──────────────────────────────────────────────────── */}
-        <div className="bg-[#031525] border border-teal/20 rounded p-4">
-          <p className="text-teal text-xs font-bold uppercase mb-3">Agregar Envío</p>
-
-          <div className="grid grid-cols-2 gap-3 mb-3">
-            {[
-              ["origin",      "Aeropuerto Origen"],
-              ["destination", "Aeropuerto Destino"],
-            ].map(([name, label]) => (
-              <div key={name}>
-                <label className="text-gray-500 text-[10px] uppercase block mb-1">{label}</label>
-                <select name={name} value={form[name]} onChange={handle}
-                  className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1.5
-                             text-xs text-gray-300 focus:outline-none focus:border-teal">
-                  <option value="">Seleccionar</option>
-                  {airports.map(a => (
-                    <option key={a.code} value={a.code}>
-                      {a.code} — {airportName(a.code)}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            ))}
-          </div>
-
-          <div className="mb-3">
-            <label className="text-gray-500 text-[10px] uppercase block mb-1">
-              Nombre / Identificador de Cliente
-            </label>
-            <input name="client" value={form.client} onChange={handle}
-              placeholder="Logística Global S.A."
-              className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1.5
-                         text-xs text-gray-300 focus:outline-none focus:border-teal"/>
-          </div>
-
-          <div className="mb-4 w-1/2">
-            <label className="text-gray-500 text-[10px] uppercase block mb-1">
-              Cantidad de Maletas
-            </label>
-            <input name="quantity" type="number" min="1" value={form.quantity} onChange={handle}
-              className="w-full bg-[#021020] border border-white/10 rounded px-2 py-1.5
-                         text-xs text-gray-300 focus:outline-none focus:border-teal"/>
-          </div>
-
-          <div className="flex gap-2">
-            <button
-              onClick={evaluate}
-              disabled={!formValid || evaluating}
-              className="flex-1 bg-[#021020] border border-teal/40 hover:border-teal text-teal
-                         text-sm py-2 rounded font-medium tracking-wide transition
-                         disabled:opacity-40 disabled:cursor-not-allowed">
-              {evaluating ? "Evaluando…" : "Evaluar Viabilidad"}
-            </button>
-            <button
-              onClick={addLot}
-              disabled={!canAdd || !report?.feasible || adding}
-              title={!canAdd ? "Carga primero aeropuertos y vuelos"
-                             : !report?.feasible ? "Evalúa una ruta viable primero" : ""}
-              className="flex-1 bg-teal hover:bg-teal/80 text-white text-sm py-2 rounded
-                         font-medium tracking-wide transition
-                         disabled:opacity-40 disabled:cursor-not-allowed">
-              {adding ? "Agregando…" : "Agregar Lote »"}
-            </button>
-          </div>
-
-          {status === "added" && (
-            <p className="text-green-400 text-xs mt-3">
-              ● Paquete registrado{running ? " (entra en la simulación en curso)" : " (en preparación)"}.
-              Se registró con la hora del sistema convertida a la hora local del origen.
-            </p>
-          )}
-          {status === "error" && (
-            <p className="text-red-400 text-xs mt-3">
-              No se pudo registrar. Verifica que haya aeropuertos y vuelos cargados.
-            </p>
-          )}
-        </div>
-
-        {/* ── Panel de validación ─────────────────────────────────────────── */}
-        <div className="bg-[#031525] border border-teal/20 rounded p-4">
-          <p className="text-teal text-xs font-bold uppercase mb-3">Panel de Validación</p>
-
-          {!report ? (
-            <p className="text-gray-600 text-xs py-6 text-center">
-              Completa origen, destino y cantidad y pulsa «Evaluar Viabilidad».
-            </p>
-          ) : (
-            <>
-              {/* Veredicto */}
-              <div className={`flex gap-2 mb-3 rounded p-2 ${
-                report.feasible ? "bg-green-900/20" : "bg-red-900/20"}`}>
-                <span className={`font-bold text-sm ${
-                  report.feasible ? "text-green-400" : "text-red-400"}`}>
-                  {report.feasible ? "✓" : "✕"}
-                </span>
-                <div>
-                  <p className="text-gray-200 text-xs font-medium">
-                    {report.feasible ? "Lote viable" : "Lote no viable"}
-                  </p>
-                  <p className="text-gray-500 text-[10px] mt-0.5">{report.reason}</p>
-                </div>
-              </div>
-
-              {/* Detalles */}
-              {[
-                ["Plazo de entrega (SLA)",
-                  `${report.sameContinent ? "Mismo continente" : "Distinto continente"} · ${report.slaHours} h`],
-                report.feasible && ["Tiempo estimado de ruta",
-                  `${report.etaHours.toFixed(1)} h (~${(report.etaHours / 24).toFixed(2)} días)`],
-                report.feasible && ["Transbordos",
-                  report.transfers === 0 ? "Directo" : `${report.transfers}`],
-              ].filter(Boolean).map(([k, v]) => (
-                <div key={k} className="flex justify-between text-xs mb-1.5">
-                  <span className="text-gray-500">{k}</span>
-                  <span className="text-gray-300 font-medium">{v}</span>
-                </div>
-              ))}
-
-              {/* Almacenes */}
-              <div className="grid grid-cols-2 gap-2 mt-3">
-                {[
-                  ["Almacén Origen", report.originStoragePct],
-                  ["Almacén Destino", report.destStoragePct],
-                ].map(([label, pct]) => {
-                  const color = pct > 85 ? "text-red-400" : pct > 60 ? "text-yellow-400" : "text-green-400";
-                  const bar   = pct > 85 ? "bg-red-500"  : pct > 60 ? "bg-yellow-500"  : "bg-green-500";
-                  return (
-                    <div key={label}>
-                      <p className="text-gray-500 text-[10px]">{label}</p>
-                      <div className="flex items-center gap-2 mt-1">
-                        <span className={`font-bold text-xs ${color}`}>{pct}%</span>
-                        <div className="flex-1 bg-white/10 rounded-full h-1">
-                          <div className={`${bar} h-1 rounded-full`}
-                               style={{ width: `${Math.min(100, pct)}%` }}/>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Ruta planeada */}
-              {report.feasible && report.path?.length > 0 && (
-                <>
-                  <p className="text-teal text-[10px] font-bold uppercase mt-4 mb-2">
-                    Ruta Planeada
-                  </p>
-                  <div className="flex flex-wrap items-center gap-1 text-xs">
-                    {report.path.map((code, i) => (
-                      <span key={`${code}-${i}`} className="flex items-center gap-1">
-                        <span className="px-2 py-0.5 rounded bg-teal/15 text-teal font-mono">
-                          {code}
-                        </span>
-                        {i < report.path.length - 1 && (
-                          <span className="text-gray-600">→</span>
-                        )}
-                      </span>
-                    ))}
-                  </div>
-                </>
-              )}
-            </>
-          )}
-        </div>
-      </div>
-
       {/* ── Edición de la red (vuelos / aeropuertos / carga de archivos) ───── */}
-      <h2 className="text-teal font-bold text-lg mt-6 mb-1">REGISTRO DE ALMACENES Y VUELOS</h2>
-      <p className="text-gray-500 text-xs mb-3">
+      <h3 className="text-teal font-bold text-sm mt-6 mb-1 border-l-2 border-teal pl-2 uppercase">
+        Registro de Almacenes y Vuelos
+      </h3>
+      <p className="text-gray-500 text-xs mb-3 pl-2">
         Agrega vuelos y aeropuertos, cierra aeropuertos o carga archivos txt
         (mismo formato del dataset) sobre la simulación en curso.
-        {netMsg && <span className="text-teal ml-2">{netMsg}</span>}
+        <FlashMsg msg={netMsg}/>
       </p>
 
-      
-
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-
-
-
-
 
 {/* Almacenes: agregar / cerrar */}
 <div className="bg-[#031525] border border-teal/20 rounded p-3">
@@ -636,11 +413,13 @@ const airportFormValid = airportForm.code.trim() !== ""
 
 
 
-<h2 className="text-teal font-bold text-lg mt-6 mb-1">EDITAR ALMACENES Y VUELOS</h2>
-<p className="text-gray-500 text-xs mb-3">
+<h3 className="text-teal font-bold text-sm mt-6 mb-1 border-l-2 border-teal pl-2 uppercase">
+  Editar Almacenes y Vuelos
+</h3>
+<p className="text-gray-500 text-xs mb-3 pl-2">
   Modifica atributos de almacenes y vuelos ya existentes en la simulación actual
   (no afecta los archivos del dataset).
-  {editMsg && <span className="text-teal ml-2">{editMsg}</span>}
+  <FlashMsg msg={editMsg}/>
 </p>
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
@@ -688,7 +467,7 @@ const airportFormValid = airportForm.code.trim() !== ""
           lat: hasLoc ? Number(editAirportLat) : undefined,
           lng: hasLoc ? Number(editAirportLng) : undefined,
         });
-        flashEdit(ok ? "✓ Almacén actualizado" : "✕ No se pudo actualizar");
+        flashEdit(ok, ok ? "Almacén actualizado" : "No se pudo actualizar");
       }}
       disabled={!editAirportCode
         || (!editAirportCap && !(editAirportLat !== "" && editAirportLng !== ""))}
@@ -700,7 +479,7 @@ const airportFormValid = airportForm.code.trim() !== ""
         if (!editAirportCode) return;
         if (!window.confirm(`¿Eliminar el almacén ${editAirportCode}? Esta acción no se puede deshacer.`)) return;
         const ok = await simulation?.deleteAirport?.(editAirportCode);
-        flashEdit(ok ? "✓ Almacén eliminado" : "✕ No se pudo eliminar");
+        flashEdit(ok, ok ? "Almacén eliminado" : "No se pudo eliminar");
         if (ok) setEditAirportCode("");
       }}
       disabled={!editAirportCode}
@@ -821,7 +600,7 @@ const airportFormValid = airportForm.code.trim() !== ""
           origin: (!running && editFlightOrig) || undefined,
           destination: (!running && editFlightDest) || undefined,
         });
-        flashEdit(ok ? "✓ Vuelo actualizado" : "✕ No se pudo actualizar");
+        flashEdit(ok, ok ? "Vuelo actualizado" : "No se pudo actualizar");
         if (ok) { setEditFlightOrig(""); setEditFlightDest(""); refreshFlightList(); }
       }}
       disabled={!editFlightId}
@@ -833,7 +612,7 @@ const airportFormValid = airportForm.code.trim() !== ""
         if (!editFlightId) return;
         if (!window.confirm(`¿Eliminar el vuelo ${editFlightId}? Esta acción no se puede deshacer.`)) return;
         const ok = await simulation?.deleteFlight?.(editFlightId);
-        flashEdit(ok ? "✓ Vuelo eliminado" : "✕ No se pudo eliminar");
+        flashEdit(ok, ok ? "Vuelo eliminado" : "No se pudo eliminar");
         if (ok) { setEditFlightId(""); refreshFlightList(); }
       }}
       disabled={!editFlightId}

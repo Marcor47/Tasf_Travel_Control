@@ -1,3 +1,4 @@
+import { AlertTriangle, Plane, Plus, X } from "lucide-react";
 import { getWarehouseColor } from "../hooks/useStatusColor";
 import { STATIC_AIRPORTS }   from "../data/staticAirports";
 
@@ -116,7 +117,7 @@ export default function LiveMonitor({ simulation }) {
                     <td className="py-1.5 text-gray-400">
                       {current.toLocaleString()} / {capacity.toLocaleString()}
                       <span className="text-gray-600 ml-1">({pct}%)</span>
-                      {pct > 100 && <span className="text-red-400 ml-1">⚠</span>}
+                      {pct > 100 && <AlertTriangle size={10} className="inline text-red-400 ml-1 -mt-0.5"/>}
                     </td>
                     <td className="py-1.5">
                       <span className={`w-2.5 h-2.5 rounded-full inline-block ${dot}`}/>
@@ -163,8 +164,9 @@ export default function LiveMonitor({ simulation }) {
                       {(r.bags || 0).toLocaleString()}
                     </td>
                     <td className="py-1.5">
-                      <span className="text-yellow-400 font-medium text-[10px]">
-                        ✈ En vuelo
+                      <span className="text-yellow-400 font-medium text-[10px]
+                                       inline-flex items-center gap-1">
+                        <Plane size={10} className="shrink-0"/> En vuelo
                       </span>
                     </td>
                   </tr>
@@ -214,9 +216,9 @@ export default function LiveMonitor({ simulation }) {
             {alerts.map(a => (
               <div key={a.id}
                    className="flex items-start gap-2 text-xs bg-[#021020] rounded px-2 py-1.5">
-                <span className={`flex-shrink-0 font-bold ${
+                <span className={`flex-shrink-0 font-bold mt-0.5 ${
                   a.type === "cancel" ? "text-red-400" : "text-green-400"}`}>
-                  {a.type === "cancel" ? "✕" : "＋"}
+                  {a.type === "cancel" ? <X size={12}/> : <Plus size={12}/>}
                 </span>
                 <span className="text-gray-300 flex-1">{a.text}</span>
                 <span className="text-gray-600 font-mono text-[10px] flex-shrink-0">
