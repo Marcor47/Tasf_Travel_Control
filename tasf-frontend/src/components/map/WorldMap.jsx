@@ -782,13 +782,18 @@ export default function WorldMap({
                     <circle r={leg.finalDestination ? 3 : 2.4}
                       fill={leg.finalDestination ? "#22c55e" : "#f59e0b"}
                       stroke="#fff" strokeWidth={0.5}/>
-                    {/* la etiqueta del destino solo en la primera ruta (comparten punto) */}
-                    {pi === 0 && (
-                      <text textAnchor="middle" y={-5}
+                    {/* TRANSBORDO: se rotula en CADA sub-lote (son aeropuertos
+                        intermedios distintos, p. ej. cada división transborda en
+                        otra ciudad). DESTINO FINAL: una sola vez (los sub-lotes
+                        comparten el punto de llegada, así no se solapa la etiqueta). */}
+                    {(leg.finalDestination ? pi === 0 : true) && (
+                      <text textAnchor="middle" y={leg.finalDestination ? -5 : (5 + pi * 5)}
                         style={{ fontSize: Math.max(4, 6 / Math.sqrt(zoom)),
                                  fill: leg.finalDestination ? "#22c55e" : "#f59e0b",
                                  fontFamily: "sans-serif" }}>
-                        {leg.finalDestination ? "destino final" : "⇄ transbordo"}
+                        {leg.finalDestination
+                          ? "destino final"
+                          : `⇄ transbordo${shipmentPath.length > 1 ? " " + p.label : ""}`}
                       </text>
                     )}
                   </Marker>

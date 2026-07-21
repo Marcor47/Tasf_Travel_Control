@@ -87,6 +87,12 @@ public SimulationService.SimulationState deleteFlight(@RequestBody SimulationSer
         return simulationService.getFlights();
     }
 
+    /** TODOS los vuelos vivos de la red en curso (para buscar/cancelar en el panel). */
+    @GetMapping("/scheduledFlights")
+    public List<SimulationService.ScheduledFlight> scheduledFlights() {
+        return simulationService.liveFlights();
+    }
+
     @PostMapping("/cancelFlight")
     public SimulationService.SimulationState cancelFlight(
             @RequestBody SimulationService.CancelRequest request) {

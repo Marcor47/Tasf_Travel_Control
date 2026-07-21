@@ -749,6 +749,52 @@ public synchronized SimulationState deleteFlight(String flightId) {
         return cachedFlights;
     }
 
+    /** Un vuelo VIVO de la red en curso, con su horario (minuto del día), carga
+     *  planificada y qué instancia cancelaría la regla de 1 h (hoy/mañana). */
+    public record ScheduledFlight(String flightId, String origin, String destination,
+                                  int departureMinute, int arrivalMinute,
+                                  int capacity, int load, String cancelTarget,
+                                  boolean alreadyCancelled) {}
+
+    /**
+     * TODOS los vuelos de la red en curso (para buscar y cancelar en el panel),
+     * no solo los próximos 120 min. `departureMinute`/`arrivalMinute` son minuto
+     * DEL DÍA (0–1439). `cancelTarget` = "hoy"/"mañana" según la regla (cancelar
+     * hoy si faltan ≥60 min a la salida de hoy; si no, mañana). `alreadyCancelled`
+     * = esa instancia ya está cancelada. Solo disponible con la simulación en curso.
+     */
+    public List<ScheduledFlight> liveFlights() {
+        PlanningContext ctx = activeContext;
+        if (!running.get() || ctx == null) return List.of();
+        int now      = state.simulatedMinute();
+        int dayStart = (now / 1440) * 1440;
+
+        // Carga planificada por vuelo: tramos aún NO despegados (pathByLot).
+        Map<String, Integer> loadByFlight = new HashMap<>();
+        for (Map.Entry<String, List<ShipmentLeg>> e : pathByLot.entrySet()) {
+            int qty = lotQtyById.getOrDefault(e.getKey(), 0);
+            for (ShipmentLeg l : e.getValue()) {
+                if (l.departureMinute() > now) loadByFlight.merge(l.flightId(), qty, Integer::sum);
+            }
+        }
+
+        List<ScheduledFlight> out = new ArrayList<>();
+        for (FlightInstance f : ctx.getFlights()) {
+            if (f.isCancelled()) continue;                     // eliminado permanentemente
+            int depToday   = dayStart + f.getDepartureHour();
+            int targetDep  = (now <= depToday - 60) ? depToday : depToday + 1440;
+            String target  = (targetDep >= depToday + 1440) ? "mañana" : "hoy";
+            boolean already = ctx.isInstanceCancelled(f.getId(), targetDep);
+            out.add(new ScheduledFlight(
+                    f.getId(), f.getOrigin(), f.getDestination(),
+                    f.getDepartureHour(), f.getArrivalHour(), f.getCapacity(),
+                    loadByFlight.getOrDefault(f.getId(), 0), target, already));
+        }
+        out.sort(Comparator.comparing(ScheduledFlight::origin)
+                           .thenComparingInt(ScheduledFlight::departureMinute));
+        return out;
+    }
+
     public List<String> getAvailableDates() {
         try {
             return repoShipments.getAvailableDatesLightweight("data/envios/")

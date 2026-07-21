@@ -34,7 +34,7 @@ let collapseDismissed = false;
 // Identidad de una ruta (igual que en WorldMap): por flightId, o por
 // origen-destino-salida si no lo trae.
 const routeKey = r => r.flightId || `${r.from}-${r.to}-${r.departureMinute ?? 0}`;
-import { STATIC_AIRPORTS, AIRPORT_META, airportMatches } from "../data/staticAirports";
+import { STATIC_AIRPORTS, AIRPORT_META, airportMatches, airportName } from "../data/staticAirports";
 
 // Color de semáforo de un vuelo por su carga (idéntico al del mapa): gris si va
 // vacío, si no verde/ámbar/rojo. Sirve para pintar cada tramo de un envío con el
@@ -369,10 +369,14 @@ export default function Dashboard({
         : (await simulation?.fetchShipmentPaths?.(bag.lotId)) ?? [];
     }
     if (!paths.length || paths.every(p => !(p.legs?.length))) {
-      // Respaldo (sin lotId o lote fuera de caché): solo el tramo clicado.
+      // Respaldo (sin lotId o lote fuera de caché): un único tramo que resume el
+      // viaje origen→destino FINAL. finalDestination=true SIEMPRE: bag.to es el
+      // destino final del paquete, no un transbordo (heredar bag.finalDestination
+      // del último evento hacía que un paquete en transbordo se rotulara como
+      // "transbordo" en su destino final).
       paths = [{ lotId: bag.lotId || bag.pkgId, legs: [{
         flightId: bag.flightId, from: bag.from, to: bag.to,
-        finalDestination: !!bag.finalDestination, status: "current",
+        finalDestination: true, status: "current",
       }] }];
     }
     const multi = paths
@@ -453,6 +457,33 @@ export default function Dashboard({
     return () => { alive = false; clearInterval(id); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [running]);
+
+  // TODOS los vuelos vivos para el panel de cancelaciones (buscar por ciudad/
+  // código sin el límite de 120 min). Sondeo cada 5 s mientras corre.
+  const [allFlights, setAllFlights] = useState([]);
+  useEffect(() => {
+    if (!running || !simulation?.fetchScheduledFlights) { setAllFlights([]); return; }
+    let alive = true;
+    const load = () => simulation.fetchScheduledFlights()
+      .then(l => { if (alive) setAllFlights(l ?? []); });
+    load();
+    const id = setInterval(load, 5000);
+    return () => { alive = false; clearInterval(id); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [running]);
+
+  // Popup de confirmación de cancelación (qué vuelo, hoy/mañana, horas).
+  const [cancelPopup, setCancelPopup] = useState(null);
+  const cancelPopupTimer = useRef(null);
+  const handleCancelFlight = (flightId, detail) => {
+    cancelFlight?.(flightId);
+    if (detail) {
+      clearTimeout(cancelPopupTimer.current);
+      setCancelPopup(detail);
+      cancelPopupTimer.current = setTimeout(() => setCancelPopup(null), 6000);
+    }
+  };
+  useEffect(() => () => clearTimeout(cancelPopupTimer.current), []);
 
   const clearFocus = () => {
     setStorageFilter(""); setWhSemFilter("all"); setSelectedAirport(null);
@@ -604,11 +635,9 @@ export default function Dashboard({
 case "cancelaciones":
   return (simulation?.running && (mode === "diadia" || mode === "periodo")) ? (
     <FlightCancelPanel
-      flights={(simulation?.upcomingFlights ?? []).filter(f => {
-        const min = f.departureMinute - simulatedNow;  // ← usar simulatedNow, no simulation?.simulatedMinute
-        return min >= 0 && min <= 120;
-      })}
-      onCancel={cancelFlight}
+      flights={allFlights}
+      simulatedNow={simulatedNow}
+      onCancel={handleCancelFlight}
       embedded={true}
     />
   ) : (
@@ -750,6 +779,37 @@ case "cancelaciones":
               kpis={kpis}
               clock={simulation?.clock}
               mode={simulation?.mode}/>
+          )}
+
+          {/* Popup de cancelación: qué vuelo, para hoy/mañana, horas de salida
+              y de cancelación. Auto-desaparece; se puede cerrar. */}
+          {cancelPopup && (
+            <div className="absolute top-3 left-1/2 -translate-x-1/2 z-50
+                            bg-[#021020] border-2 border-red-600 rounded-lg
+                            px-4 py-2.5 shadow-xl shadow-black/50 flex items-start gap-3
+                            animate-[fadeIn_.2s_ease]">
+              <span className="text-red-500 text-lg leading-none mt-0.5">✈</span>
+              <div className="text-xs">
+                <p className="text-red-400 font-bold">
+                  Vuelo {cancelPopup.flightId} cancelado
+                  <span className={`ml-2 px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                    cancelPopup.dia === "mañana"
+                      ? "bg-orange-900/50 text-orange-300 border border-orange-700/50"
+                      : "bg-red-900/50 text-red-300 border border-red-700/50"}`}>
+                    para {cancelPopup.dia}
+                  </span>
+                </p>
+                <p className="text-gray-300 mt-0.5">
+                  {airportName(cancelPopup.from)} → {airportName(cancelPopup.to)}
+                </p>
+                <p className="text-gray-500 text-[10px] mt-0.5">
+                  Salía {cancelPopup.dia} a las <b className="text-gray-300">{cancelPopup.salida}</b>
+                  {" · "}cancelado a las <b className="text-gray-300">{cancelPopup.canceladoA}</b>
+                </p>
+              </div>
+              <button onClick={() => setCancelPopup(null)}
+                className="text-gray-500 hover:text-white text-sm leading-none">✕</button>
+            </div>
           )}
 
 

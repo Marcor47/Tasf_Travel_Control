@@ -2,6 +2,12 @@ import { useState, useMemo } from "react";
 import { Plane } from "lucide-react";
 import { airportName, AIRPORT_META } from "../../data/staticAirports";
 
+// Minuto del día (0–1439) → "HH:MM".
+const hhmm = (m) => {
+  const x = (((m ?? 0) % 1440) + 1440) % 1440;
+  return `${String(Math.floor(x / 60)).padStart(2, "0")}:${String(x % 60).padStart(2, "0")}`;
+};
+
 const SORT_FIELDS = {
   flightId:        (f) => f.flightId,
   origin:          (f) => f.origin,
@@ -20,7 +26,16 @@ function SortHeader({ label, field, sortField, sortDir, onSort }) {
   );
 }
 
-export default function FlightCancelPanel({ flights = [], onCancel, embedded = false }) {
+/**
+ * Panel de cancelación de vuelos. `flights` son TODOS los vuelos vivos de la red
+ * (endpoint /scheduledFlights): al buscar por ciudad o código se listan todos los
+ * que coinciden (no solo los próximos 120 min). Cada vuelo trae `cancelTarget`
+ * ("hoy"/"mañana") = qué instancia cancelaría la regla de 1 h, y `alreadyCancelled`.
+ * Al cancelar se pasa al padre el detalle para el popup de confirmación.
+ */
+export default function FlightCancelPanel({
+  flights = [], onCancel, embedded = false, simulatedNow = 0,
+}) {
   const [open,       setOpen]       = useState(false);
   const [confirming, setConfirming] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
@@ -33,7 +48,7 @@ export default function FlightCancelPanel({ flights = [], onCancel, embedded = f
   };
 
   const norm = s => (s || "").toLowerCase()
-    .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    .normalize("NFD").replace(/[̀-ͯ]/g, "");
 
   const filtered = useMemo(() => {
     const q = norm(searchTerm.trim());
@@ -57,13 +72,24 @@ export default function FlightCancelPanel({ flights = [], onCancel, embedded = f
     });
   }, [filtered, sortField, sortDir]);
 
+  // Detalle del popup (qué vuelo, hoy/mañana, horas) al confirmar la cancelación.
+  const doCancel = (f) => {
+    onCancel(f.flightId, {
+      flightId: f.flightId, from: f.origin, to: f.destination,
+      dia: f.cancelTarget || "hoy",
+      salida: hhmm(f.departureMinute),
+      canceladoA: hhmm(simulatedNow),
+    });
+    setConfirming(null);
+  };
+
   const content = (
     <div className="flex flex-col h-full min-h-0">
       <input
         type="text"
         value={searchTerm}
         onChange={e => setSearchTerm(e.target.value)}
-        placeholder="Buscar por vuelo, ciudad o país de origen/destino…"
+        placeholder="Buscar por vuelo, ciudad o país (ej. Lima)…"
         className="w-full bg-[#031525] border border-white/10 rounded px-2 py-1
                    text-[11px] text-gray-300 placeholder-gray-600
                    focus:outline-none focus:border-teal mb-2 shrink-0"
@@ -71,6 +97,9 @@ export default function FlightCancelPanel({ flights = [], onCancel, embedded = f
       {!searchTerm.trim() ? (
         <p className="text-gray-600 text-[10px] text-center py-3">
           Escribe para buscar un vuelo a cancelar
+          <span className="block text-gray-700 mt-0.5">
+            {flights.length} vuelos en la red
+          </span>
         </p>
       ) : sorted.length === 0 ? (
         <p className="text-gray-600 text-[10px] text-center py-3">
@@ -79,7 +108,7 @@ export default function FlightCancelPanel({ flights = [], onCancel, embedded = f
       ) : (
         <>
           <p className="text-teal text-[10px] font-bold uppercase mb-1 shrink-0">
-            Próximos vuelos sin despegar
+            Vuelos de la red
             <span className="text-gray-500 normal-case font-normal ml-1">
               ({sorted.length} resultado{sorted.length !== 1 ? "s" : ""})
             </span>
@@ -94,6 +123,7 @@ export default function FlightCancelPanel({ flights = [], onCancel, embedded = f
                   <SortHeader label="Salida"  field="departureMinute" sortField={sortField} sortDir={sortDir} onSort={handleSort}/>
                   <SortHeader label="Llegada" field="arrivalMinute"   sortField={sortField} sortDir={sortDir} onSort={handleSort}/>
                   <th className="text-left py-1">Carga</th>
+                  <th className="text-left py-1">Cancela</th>
                   <th className="py-1"/>
                 </tr>
               </thead>
@@ -111,18 +141,29 @@ export default function FlightCancelPanel({ flights = [], onCancel, embedded = f
                       {airportName(f.destination)}
                     </td>
                     <td className="py-1.5 text-gray-400 text-[10px] font-mono">
-                      {f.departureClock?.split("  ")[1] ?? "--:--"}
+                      {hhmm(f.departureMinute)}
                     </td>
                     <td className="py-1.5 text-gray-400 text-[10px] font-mono">
-                      {f.arrivalClock?.split("  ")[1] ?? "--:--"}
+                      {hhmm(f.arrivalMinute)}
                     </td>
                     <td className="py-1.5 text-gray-400 text-[10px]">
-                      {f.assigned}/{f.capacity}
+                      {f.load ?? 0}/{f.capacity}
+                    </td>
+                    {/* Tag hoy/mañana: qué instancia cancelaría la regla de 1 h. */}
+                    <td className="py-1.5">
+                      <span className={`text-[9px] px-1 py-0.5 rounded font-bold ${
+                        f.cancelTarget === "mañana"
+                          ? "bg-orange-900/40 text-orange-300"
+                          : "bg-red-900/30 text-red-300"}`}>
+                        {f.cancelTarget || "hoy"}
+                      </span>
                     </td>
                     <td className="py-1.5">
-                      {confirming === f.flightId ? (
+                      {f.alreadyCancelled ? (
+                        <span className="text-gray-600 text-[9px]">ya cancelado</span>
+                      ) : confirming === f.flightId ? (
                         <div className="flex gap-1">
-                          <button onClick={() => { onCancel(f.flightId); setConfirming(null); }}
+                          <button onClick={() => doCancel(f)}
                             className="bg-red-700 hover:bg-red-600 text-white
                                        text-[10px] px-1.5 py-0.5 rounded transition">
                             Sí

@@ -327,6 +327,19 @@ const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
 
   // Envíos PLANIFICADOS (con ruta, aún sin despegar) — no están en el historial
   // de eventos, así que la tarjeta de Envíos los pide aparte para listarlos.
+  // TODOS los vuelos vivos (para el panel de cancelaciones: buscar por ciudad/
+  // código sin el límite de 120 min). Cada uno trae su horario y el tag hoy/mañana.
+  const fetchScheduledFlights = useCallback(async () => {
+    try {
+      const r = await fetch(`${API_BASE}/api/simulation/scheduledFlights`);
+      if (!r.ok) return [];
+      const data = await r.json();
+      return Array.isArray(data) ? data : [];
+    } catch {
+      return [];
+    }
+  }, []);
+
   const fetchPlannedLots = useCallback(async () => {
     try {
       const r = await fetch(`${API_BASE}/api/simulation/plannedLots`);
@@ -514,6 +527,7 @@ return {
   fetchShipmentPaths,
   fetchFlightLots,
   fetchPlannedLots,
+  fetchScheduledFlights,
   fetchLastBlockPlan,
   alerts,
   realSeconds,
