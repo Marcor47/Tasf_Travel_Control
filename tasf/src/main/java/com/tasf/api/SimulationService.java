@@ -261,50 +261,74 @@ public class SimulationService {
             if (quantity <= 0)
                 return FeasibilityReport.infeasible("La cantidad debe ser mayor que 0");
 
-            int     regMin        = Math.max(0, state.simulatedMinute());
+            int     regMin        = running.get()
+                    ? Math.max(0, state.simulatedMinute())
+                    : registrationMinuteFor(null);
             boolean sameContinent = o.getRegion().equals(d.getRegion());
             int     slaMin        = sameContinent ? 24 * 60 : 48 * 60;
-
-            // El lote grande se parte (adaptativo) en sub-lotes de ≤ unidad de
-            // corte; la viabilidad se evalúa sobre UN sub-lote (lo que de verdad
-            // sube a cada avión), no sobre el total.
-            int unit     = currentBreakUnit();
-            int subSize  = Math.min(quantity, unit);
-            int subCount = (quantity + unit - 1) / unit;
-
-            BaggageLot lot = new BaggageLot("USER-EVAL", origin, destination,
-                    subSize, regMin, regMin + slaMin, false);
-            List<RoutePlan> candidates = new RouteEvaluator(context).enumerateCandidates(lot);
+            int     dueMin        = regMin + slaMin;
 
             int origPct = warehousePctFromState(origin);
             int destPct = warehousePctFromState(destination);
 
-            if (candidates.isEmpty()) {
-                return new FeasibilityReport(false,
-                        "Sin ruta viable dentro del plazo (" + (sameContinent ? "1 día" : "2 días") + ")",
-                        sameContinent, slaMin / 60, 0, 0.0, List.of(), origPct, destPct);
+            // Validación HONESTA: se parte el lote EXACTAMENTE como lo hará el
+            // registro y se intenta asignar cada sub-lote sobre una solución de
+            // trabajo FRESCA con las MISMAS reglas del planificador —
+            // canAssign() verifica capacidad RESIDUAL de vuelo Y capacidad de
+            // almacén (origen mientras espera, conexión y destino). Así el
+            // validador refleja lo que de verdad ocurrirá: cuántas maletas
+            // caben. (Antes solo miraba 1 sub-lote contra la capacidad NOMINAL
+            // de un vuelo, así que decía "viable" aunque el resto no cupiera.)
+            List<BaggageLot> subs = splitLot("USER-EVAL", origin, destination,
+                    quantity, regMin, dueMin);
+            int subCount = subs.size();
+
+            WorkingSolution sol = new WorkingSolution(context);
+            RouteEvaluator  ev  = new RouteEvaluator(context);
+            int       assignedQty = 0;
+            RoutePlan firstPlan   = null;
+            for (BaggageLot sub : subs) {
+                for (RoutePlan p : ev.enumerateCandidates(sub)) {
+                    if (sol.canAssign(sub, p)) {
+                        sol.assign(sub, p);
+                        assignedQty += sub.getQuantity();
+                        if (firstPlan == null) firstPlan = p;
+                        break;
+                    }
+                }
             }
 
-            RoutePlan best = candidates.get(0);
             List<String> path = new ArrayList<>();
-            path.add(best.getSegments().get(0).getOrigin());
-            for (RouteSegment s : best.getSegments()) path.add(s.getDestination());
+            int    transfers = 0;
+            double etaHours  = 0.0;
+            if (firstPlan != null && !firstPlan.getSegments().isEmpty()) {
+                path.add(firstPlan.getSegments().get(0).getOrigin());
+                for (RouteSegment s : firstPlan.getSegments()) path.add(s.getDestination());
+                transfers = firstPlan.transfers();
+                etaHours  = Math.round(firstPlan.getTotalTravelHours() / 60.0 * 10) / 10.0;
+            }
 
-            final List<FlightInstance> fFlights = flights;
-            boolean capacityOk = best.getSegments().stream()
-                    .allMatch(s -> flightCapacity(fFlights, s.getFlightId()) >= subSize);
-            double etaHours = best.getTotalTravelHours() / 60.0;
+            boolean feasible = assignedQty >= quantity;
+            String plazo = sameContinent ? "1 día" : "2 días";
+            String reason;
+            if (assignedQty == 0) {
+                reason = "NO viable: ninguna maleta tiene ruta con capacidad dentro del "
+                       + "plazo (" + plazo + "). Revise capacidad de vuelos, del almacén "
+                       + "de origen (" + origPct + "%) y de destino (" + destPct + "%).";
+            } else if (assignedQty < quantity) {
+                reason = "PARCIAL: solo " + assignedQty + " de " + quantity
+                       + " maletas tienen ruta con capacidad (" + subCount + " sub-lotes); "
+                       + "el resto NO cabe por capacidad de vuelo o almacén en el plazo de "
+                       + plazo + ".";
+            } else if (subCount > 1) {
+                reason = "Viable: " + quantity + " maletas en " + subCount
+                       + " sub-lotes, todos con ruta y capacidad suficiente.";
+            } else {
+                reason = "Viable: ruta con capacidad suficiente.";
+            }
 
-            String reason = !capacityOk
-                    ? "Ningún vuelo de la ruta admite un sub-lote de " + subSize + " maletas"
-                    : subCount > 1
-                        ? "Ruta viable — se dividirá en " + subCount + " sub-lotes (≤ "
-                          + unit + " maletas c/u)"
-                        : "Ruta viable encontrada";
-
-            return new FeasibilityReport(capacityOk, reason,
-                    sameContinent, slaMin / 60, best.transfers(),
-                    Math.round(etaHours * 10) / 10.0, path, origPct, destPct);
+            return new FeasibilityReport(feasible, reason, sameContinent, slaMin / 60,
+                    transfers, etaHours, path, origPct, destPct);
         } catch (Exception e) {
             return FeasibilityReport.infeasible("Error evaluando: " + e.getMessage());
         }
@@ -1014,6 +1038,9 @@ public synchronized SimulationState deleteFlight(String flightId) {
                     while ((newFlight = pendingFlightAdds.poll()) != null) {
                         context.addFlight(newFlight);
                         flightCapacityById.put(newFlight.getId(), newFlight.getCapacity());
+                        // Vuelo nuevo: bodega VACÍA en la solución vigente (si no,
+                        // aparecería como planificado y lleno). Ver ensureFlight.
+                        solution.ensureFlight(newFlight.getId(), newFlight.getCapacity());
                         networkChanged = true;
                     }
                     Airport newAirport;
@@ -1262,6 +1289,8 @@ public synchronized SimulationState deleteFlight(String flightId) {
                 while ((nf = pendingFlightAdds.poll()) != null) {
                     context.addFlight(nf);
                     flightCapacityById.put(nf.getId(), nf.getCapacity());
+                    // Vuelo nuevo con bodega vacía (evita mostrarlo lleno). Ver ensureFlight.
+                    solution.ensureFlight(nf.getId(), nf.getCapacity());
                     changed = true;
                 }
                 Airport na;
@@ -2142,6 +2171,41 @@ public List<FlightLot> flightLots(String flightId) {
     out.sort(Comparator.comparingInt(FlightLot::departureMinute)
                        .thenComparing(FlightLot::lotId));
     return out.size() > MAX_ROWS ? new ArrayList<>(out.subList(0, MAX_ROWS)) : out;
+}
+
+/** Envío PLANIFICADO (con ruta asignada) cuyo primer tramo AÚN NO despega:
+ *  no aparece en el historial de eventos (que solo lleva salidas/llegadas), así
+ *  que la tarjeta de Envíos lo pide aparte para poder listarlo/filtrarlo. */
+public record PlannedShipment(String lotId, int bags, String from, String to,
+                              int departureMinute) {}
+
+/**
+ * Lotes planificados que todavía NO han despegado (primer tramo con salida en
+ * el futuro respecto al minuto simulado). Se derivan de pathByLot (plan
+ * vigente). `from` = origen del primer tramo, `to` = destino del último
+ * (destino final). Ordenados por salida más próxima.
+ */
+public List<PlannedShipment> plannedLots() {
+    final int MAX_ROWS = 300;
+    int now = state.simulatedMinute();
+    List<PlannedShipment> out = new ArrayList<>();
+    for (Map.Entry<String, List<ShipmentLeg>> e : pathByLot.entrySet()) {
+        List<ShipmentLeg> legs = e.getValue();
+        if (legs.isEmpty()) continue;
+        ShipmentLeg first = null, last = null;
+        for (ShipmentLeg l : legs) {
+            if (first == null || l.departureMinute() < first.departureMinute()) first = l;
+            if (last  == null || l.arrivalMinute()   > last.arrivalMinute())    last  = l;
+        }
+        if (first.departureMinute() <= now) continue;   // ya despegó → lo lleva el historial
+        out.add(new PlannedShipment(e.getKey(),
+                lotQtyById.getOrDefault(e.getKey(), 0),
+                first.from(), last.to(), first.departureMinute()));
+        if (out.size() >= MAX_ROWS) break;
+    }
+    out.sort(Comparator.comparingInt(PlannedShipment::departureMinute)
+                       .thenComparing(PlannedShipment::lotId));
+    return out;
 }
 
 // ── Plan de ruteo del último bloque (Reportes) ─────────────────────────────

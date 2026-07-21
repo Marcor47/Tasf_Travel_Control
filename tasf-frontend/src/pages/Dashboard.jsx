@@ -26,6 +26,11 @@ const ALL_PANELS = [
 // Posición inicial de cada panel minimizado (columna izquierda, bajo Configuración).
 const minSlotPos = (slot) => ({ x: 8, y: 84 + slot * 30 });
 
+// ¿El aviso de colapso ya fue cerrado por el usuario? A nivel de MÓDULO para
+// sobrevivir al desmontaje del Dashboard al navegar entre pestañas (una corrida
+// nueva lo resetea). Sin esto, volver al mapa reabría el aviso ya cerrado.
+let collapseDismissed = false;
+
 // Identidad de una ruta (igual que en WorldMap): por flightId, o por
 // origen-destino-salida si no lo trae.
 const routeKey = r => r.flightId || `${r.from}-${r.to}-${r.departureMinute ?? 0}`;
@@ -434,6 +439,21 @@ export default function Dashboard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusFlightId]);
 
+  // Envíos PLANIFICADOS (con ruta, aún sin despegar) para la tarjeta de Envíos:
+  // no están en el historial de eventos, así que se piden al backend mientras
+  // corre la simulación (sondeo cada 5 s). Fuera de corrida → lista vacía.
+  const [plannedLots, setPlannedLots] = useState([]);
+  useEffect(() => {
+    if (!running || !simulation?.fetchPlannedLots) { setPlannedLots([]); return; }
+    let alive = true;
+    const load = () => simulation.fetchPlannedLots()
+      .then(l => { if (alive) setPlannedLots(l ?? []); });
+    load();
+    const id = setInterval(load, 5000);
+    return () => { alive = false; clearInterval(id); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [running]);
+
   const clearFocus = () => {
     setStorageFilter(""); setWhSemFilter("all"); setSelectedAirport(null);
     clearRouteFoci();
@@ -451,12 +471,17 @@ export default function Dashboard({
     ? Math.max(0, simulatedNow - simStartMinute)
     : 0;
 
+  // El aviso de colapso, una vez CERRADO por el usuario, NO debe reaparecer al
+  // cambiar de pestaña y volver (el Dashboard se remonta y `collapsed` sigue
+  // siendo true). `collapseDismissed` (módulo, sobrevive al remontaje) recuerda
+  // el descarte; una corrida nueva (running o collapsed=false) lo limpia.
   useEffect(() => {
-    if (simulation?.collapsed) setShowCollapse(true);
+    if (simulation?.collapsed && !collapseDismissed) setShowCollapse(true);
+    if (!simulation?.collapsed) collapseDismissed = false;
   }, [simulation?.collapsed]);
 
   useEffect(() => {
-    if (running && !simulation?.collapsed) setShowCollapse(false);
+    if (running && !simulation?.collapsed) { setShowCollapse(false); collapseDismissed = false; }
   }, [running, simulation?.collapsed]);
 
   // ── Fin de simulación de período ──────────────────────────────────────────
@@ -556,6 +581,7 @@ export default function Dashboard({
             focusCodes={focusCodes} focusFlightId={focusFlightId} view="envios"
             focusRoute={selectedRouteObj}
             focusFlightLots={focusFlightLots}
+            plannedLots={plannedLots}
             selectedShipment={selectedShipment}
             onShipmentClick={handleShipmentClick}
             searchText={bagSearch} onSearchChange={handleBagSearch}
@@ -711,7 +737,7 @@ case "cancelaciones":
 
           {showCollapse && (
             <CollapseAlert
-              onClose={() => setShowCollapse(false)}
+              onClose={() => { setShowCollapse(false); collapseDismissed = true; }}
               onStop={onStop}
               message={simulation?.message}
               kpis={kpis}/>

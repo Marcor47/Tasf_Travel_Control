@@ -52,6 +52,10 @@ export function useSimulation() {
   const [state, setState]               = useState(emptyState);
   const [alerts, setAlerts]             = useState([]);
   const [history, setHistory]           = useState([]);
+  // Identidad de corrida: incrementa en cada start(). Señal limpia de "nueva
+  // simulación" para que la UI (p. ej. la tabla de sesión de /operaciones)
+  // descarte lo de la corrida anterior.
+  const [runId, setRunId]               = useState(0);
   // Preparación de Día a Día (aeropuertos/vuelos/paquetes cargados sin iniciar).
   const [prepStatus, setPrepStatus]     = useState({ airports: 0, flights: 0, lots: 0, ready: false });
   const [availableDates, setAvailableDates] = useState([]);
@@ -183,6 +187,7 @@ const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
     if (response.ok) {
       const data = await response.json();
       setState(data);
+      setRunId(n => n + 1);   // nueva corrida → señal de reset para la UI
     }
   } catch (e) {
     console.error("Error al iniciar simulación:", e);
@@ -315,6 +320,19 @@ const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
         `${API_BASE}/api/simulation/flightLots?flightId=${encodeURIComponent(flightId)}`);
       if (!r.ok) return [];
       return await r.json();
+    } catch {
+      return [];
+    }
+  }, []);
+
+  // Envíos PLANIFICADOS (con ruta, aún sin despegar) — no están en el historial
+  // de eventos, así que la tarjeta de Envíos los pide aparte para listarlos.
+  const fetchPlannedLots = useCallback(async () => {
+    try {
+      const r = await fetch(`${API_BASE}/api/simulation/plannedLots`);
+      if (!r.ok) return [];
+      const data = await r.json();
+      return Array.isArray(data) ? data : [];   // blindaje: siempre array
     } catch {
       return [];
     }
@@ -469,6 +487,7 @@ const deleteFlight = useCallback(async (flightId) =>
 return {
   ...state,
   history,
+  runId,
   prepStatus,
   resetPrep,
   simStartMinute,
@@ -494,6 +513,7 @@ return {
   fetchShipmentPath,
   fetchShipmentPaths,
   fetchFlightLots,
+  fetchPlannedLots,
   fetchLastBlockPlan,
   alerts,
   realSeconds,

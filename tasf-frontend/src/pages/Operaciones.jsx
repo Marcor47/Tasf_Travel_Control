@@ -111,6 +111,11 @@ export default function Operaciones({ simulation }) {
   const idSeq = useRef(ID_BASE);
   const nextId = () => String(idSeq.current++);
 
+  // Al INICIAR una nueva simulación (runId cambia), vaciar la tabla: si no,
+  // seguían viéndose los envíos de la corrida anterior.
+  const runId = simulation?.runId ?? 0;
+  useEffect(() => { setEnvios([]); setReport(null); }, [runId]);
+
   // Feedback visual grande (acompaña el "decir en voz alta" de la prueba).
   const [flash, setFlash] = useState(null); // { ok, text }
   const flashTimer = useRef(null);

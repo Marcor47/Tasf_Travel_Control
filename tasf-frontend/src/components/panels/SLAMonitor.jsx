@@ -150,6 +150,7 @@ export default function SLAMonitor({
   focusLotId = null,   // paquete (UF-1) o maleta (UF-1-2) seleccionados en Envíos
   focusRoute = null,   // ruta (vuelo) enfocada en el mapa: {flightId,from,to,bags,capacity}
   focusFlightLots = null, // paquetes del vuelo enfocado (backend /flightLots, al clic)
+  plannedLots = [],       // envíos PLANIFICADOS sin despegar (backend /plannedLots)
   view = "all",
   selectedShipment = null, onShipmentClick,
   searchText, onSearchChange,
@@ -282,9 +283,7 @@ const lotEndpoints = useMemo(() => {
   //  · Clic en el paquete → TODAS sus rutas (una por sub-lote) en el mapa.
   //  · Desplegar (▾) → sub-lotes/maletas debajo; clic en uno → SOLO su ruta.
 const packageRows = useMemo(() => {
-  if (!focusedEvents.length) return [];
-
-  // Estado más reciente de cada sub-lote/lote.
+  // Estado del sub-lote según su evento más reciente (departed/landed).
   const byLot = new Map();
   for (const e of focusedEvents) {
     const lotId = e.lotId || getPackageId(e);
@@ -295,17 +294,32 @@ const packageRows = useMemo(() => {
 
   // Agrupar sub-lotes por su paquete base: fila nivel 1 = PAQUETE (UF-1),
   // filas nivel 2 (desplegables) = sub-lotes/maletas (UF-1-1, UF-1-2\u2026).
+  // Cada grupo: sub-lotes con EVENTOS (ev) y PLANIFICADOS sin despegar (pl,
+  // del backend /plannedLots — no tienen evento porque aún no vuelan).
   const groups = new Map();
-  for (const row of byLot.values()) {
-    const base = packageBase(row.pkgId);
-    if (!groups.has(base)) groups.set(base, []);
-    groups.get(base).push(row);
-  }
+  const g = (base) => {
+    if (!groups.has(base)) groups.set(base, { ev: [], pl: [] });
+    return groups.get(base);
+  };
+  for (const row of byLot.values()) g(packageBase(row.pkgId)).ev.push(row);
+  for (const p of (Array.isArray(plannedLots) ? plannedLots : [])) g(packageBase(p.lotId)).pl.push(p);
 
-  let result = [...groups.entries()].map(([base, subs]) => {
-    subs.sort((a, b) =>
-      a.pkgId.localeCompare(b.pkgId, undefined, { numeric: true }));
-    const latest = subs.reduce((x, y) => (y.minute > x.minute ? y : x));
+  let result = [...groups.entries()].map(([base, grp]) => {
+    const evSubs = grp.ev;
+    const evIds  = new Set(evSubs.map(s => s.pkgId));
+    const plSubs = grp.pl
+      .filter(p => !evIds.has(p.lotId))
+      .map(p => ({ pkgId: p.lotId, bags: p.bags, from: p.from, to: p.to,
+                   type: "planned", minute: p.departureMinute }));
+    const subs = [...evSubs, ...plSubs]
+      .sort((a, b) => a.pkgId.localeCompare(b.pkgId, undefined, { numeric: true }));
+    const delivered = evSubs.length > 0
+      && evSubs.every(s => s.type === "landed" && s.finalDestination);
+    const inAir     = evSubs.some(s => s.type === "departed");
+    // "Planificado": el paquete AÚN no tiene ningún evento (nada despegó).
+    const planned   = evSubs.length === 0 && plSubs.length > 0;
+    const latest = evSubs.length
+      ? evSubs.reduce((x, y) => (y.minute > x.minute ? y : x)) : subs[0];
     // Extremos del paquete (origen y destino FINAL, com\u00fan a los sub-lotes).
     const ep     = lotEndpoints.get(latest.pkgId);
     const origin = ep?.from || latest.from;
@@ -313,10 +327,13 @@ const packageRows = useMemo(() => {
     return {
       base, subs, latest, origin, dest,
       bags: subs.reduce((s, x) => s + (x.bags || 0), 0),
-      delivered: subs.every(s => s.type === "landed" && s.finalDestination),
-      inAir:     subs.some(s => s.type === "departed"),
+      delivered, inAir, planned,
     };
-  }).sort((a, b) => b.latest.minute - a.latest.minute);
+  }).sort((a, b) => {
+    // Planificados al FINAL (aún no en curso); el resto por evento más reciente.
+    if (a.planned !== b.planned) return a.planned ? 1 : -1;
+    return b.latest.minute - a.latest.minute;
+  });
 
   if (filterText.trim()) {
     const norm = s => (s||"").toLowerCase()
@@ -341,8 +358,11 @@ const packageRows = useMemo(() => {
     if (idx > 0) result.unshift(result.splice(idx, 1)[0]);
   }
 
-  return result.slice(0, 30);
-}, [focusedEvents, filterText, lotEndpoints, selectedShipment]);
+  // NO se corta aquí: el tope se aplica DESPUÉS de filtrar/ordenar (si no, un
+  // filtro como "Planificado" podría quedar vacío porque sus filas cayeron
+  // fuera del tope antes de filtrar).
+  return result;
+}, [focusedEvents, plannedLots, filterText, lotEndpoints, selectedShipment]);
 
 
 
@@ -355,11 +375,11 @@ const ENVIO_SORT_OPTIONS = [
 ];
 
 const ENVIO_STATUS_CHIPS = [
-  { key: "all",       label: "Todos",      dot: "bg-gray-400"  },
-  { key: "delivered", label: "Entregado",  dot: "bg-green-500" },
-  { key: "inAir",     label: "En vuelo",   dot: "bg-yellow-500"},
-  { key: "escala",    label: "En escala",  dot: "bg-blue-400"  },
-  { key: "overdue",   label: "Vencido",    dot: "bg-red-500"   },
+  { key: "all",       label: "Todos",       dot: "bg-gray-400"  },
+  { key: "planned",   label: "Planificado", dot: "bg-gray-500"  },
+  { key: "delivered", label: "Entregado",   dot: "bg-green-500" },
+  { key: "inAir",     label: "En vuelo",    dot: "bg-yellow-500"},
+  { key: "escala",    label: "En escala",   dot: "bg-blue-400"  },
 ];
 
 const filteredSortedPackageRows = useMemo(() => {
@@ -368,14 +388,10 @@ const filteredSortedPackageRows = useMemo(() => {
   // Filtro por estado
   if (envioStatusFilter !== "all") {
     rows = rows.filter(p => {
+      if (envioStatusFilter === "planned")   return p.planned;
       if (envioStatusFilter === "delivered") return p.delivered;
       if (envioStatusFilter === "inAir")     return p.inAir && !p.delivered;
-      if (envioStatusFilter === "escala")    return !p.delivered && !p.inAir;
-      if (envioStatusFilter === "overdue") {
-        const { status } = computeSLA(
-          { ...p.latest, from: p.origin, to: p.dest }, simulatedMinute);
-        return status === "red";
-      }
+      if (envioStatusFilter === "escala")    return !p.delivered && !p.inAir && !p.planned;
       return true;
     });
   }
@@ -402,7 +418,8 @@ const filteredSortedPackageRows = useMemo(() => {
     if (idx > 0) rows.unshift(rows.splice(idx, 1)[0]);
   }
 
-  return rows;
+  // Tope de display DESPUÉS de filtrar/ordenar.
+  return rows.slice(0, 40);
 }, [packageRows, envioSort, envioSortDir, envioStatusFilter, simulatedMinute, selectedShipment]);
 
 
@@ -632,9 +649,10 @@ const filteredSortedPackageRows = useMemo(() => {
           && packageBase(selectedShipment.bagId) === pkg.base;
         const isExp   = expandedPkg === pkg.base || subSelIn;
         const hasSubs = pkg.subs.length > 0;
-        const globalStatus = pkg.delivered ? ["Entregado", "text-green-400"]
-                           : pkg.inAir     ? ["En vuelo",  "text-yellow-400"]
-                           :                 ["En escala", "text-blue-400"];
+        const globalStatus = pkg.planned   ? ["Planificado", "text-gray-400"]
+                           : pkg.delivered ? ["Entregado",   "text-green-400"]
+                           : pkg.inAir     ? ["En vuelo",    "text-yellow-400"]
+                           :                 ["En escala",   "text-blue-400"];
         // Clic en el paquete: TODAS las rutas del lote (el backend agrupa por base).
         const clickPkg = () => onShipmentClick?.({
           ...pkg.latest, pkgId: pkg.base, lotId: pkg.base,
@@ -680,9 +698,13 @@ const filteredSortedPackageRows = useMemo(() => {
                 {pkg.bags}
               </td>
               <td className="py-1.5">
-                <SLAStatusBadge
-                  event={{ ...pkg.latest, from: pkg.origin, to: pkg.dest }}
-                  simulatedMinute={simulatedMinute} />
+                {pkg.planned ? (
+                  <span className="text-gray-400 text-[9px]">Sin despegar</span>
+                ) : (
+                  <SLAStatusBadge
+                    event={{ ...pkg.latest, from: pkg.origin, to: pkg.dest }}
+                    simulatedMinute={simulatedMinute} />
+                )}
               </td>
             </tr>
 
@@ -692,11 +714,13 @@ const filteredSortedPackageRows = useMemo(() => {
   const subSel     = selectedShipment?.bagId === sub.pkgId;
   const suffix     = sub.pkgId.startsWith(pkg.base)
     ? sub.pkgId.slice(pkg.base.length) : sub.pkgId;
-  const subStatus  = sub.type === "landed" && sub.finalDestination
-    ? ["Entregado", "text-green-400"]
-    : sub.type === "departed"
-      ? ["En vuelo",  "text-yellow-400"]
-      : ["En escala", "text-blue-400"];
+  const subStatus  = sub.type === "planned"
+    ? ["Planificado", "text-gray-400"]
+    : sub.type === "landed" && sub.finalDestination
+      ? ["Entregado", "text-green-400"]
+      : sub.type === "departed"
+        ? ["En vuelo",  "text-yellow-400"]
+        : ["En escala", "text-blue-400"];
   const sep        = lotEndpoints.get(sub.pkgId);
   const isSubExp   = expandedSubLot === sub.pkgId;
   const isSubLoad  = loadingSubLot  === sub.pkgId;

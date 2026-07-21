@@ -84,6 +84,17 @@ public class WorkingSolution {
     }
 
     /**
+     * Registra un vuelo AÑADIDO en caliente (mid-run) en el mapa de residuales
+     * si aún no está: su bodega arranca vacía (residual = capacidad total).
+     * Sin esto, residualFor() devolvía 0 para un vuelo nuevo y buildUpcomingFlights
+     * lo mostraba como "planificado y LLENO" (assigned = cap − 0 = cap) aunque
+     * no llevara ninguna maleta. Idempotente: no pisa un residual ya existente.
+     */
+    public void ensureFlight(String flightId, int capacity) {
+        residualCapacity.putIfAbsent(flightId, capacity);
+    }
+
+    /**
      * Vuelos con capacidad residual NEGATIVA (más maletas asignadas que
      * espacio en bodega) → flightId → exceso de maletas. En operación normal
      * canAssign() lo impide; si aparece uno (p. ej. tras editar a la baja la

@@ -156,6 +156,12 @@ public SimulationService.SimulationState deleteFlight(@RequestBody SimulationSer
         return simulationService.flightLots(flightId);
     }
 
+    /** Envíos PLANIFICADOS (con ruta) que aún no despegan — para la tarjeta de Envíos. */
+    @GetMapping("/plannedLots")
+    public List<SimulationService.PlannedShipment> plannedLots() {
+        return simulationService.plannedLots();
+    }
+
     /** Plan de ruteo del último bloque planificado (para Reportes). */
     @GetMapping("/lastBlockPlan")
     public SimulationService.BlockPlan lastBlockPlan() {
