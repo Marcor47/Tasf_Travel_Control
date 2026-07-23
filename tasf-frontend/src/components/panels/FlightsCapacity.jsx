@@ -66,6 +66,7 @@ export default function FlightsCapacity({
   history = [],           // historial de eventos (sub-pestaña Historial)
   cargoLots = null,       // paquetes del vuelo ENFOCADO — los carga el Dashboard
                           // AL CLIC (backend /flightLots); null = cargando
+  fetchFlightLots = null, // (flightId) => paquetes — para el desplegable inline
 }) {
   const [search, setSearch] = useState("");
 
@@ -79,6 +80,20 @@ const handleSortFL = (key) => {
 
 
   const [bottomTab, setBottomTab] = useState("planificados"); // planificados | historial | carga
+
+  // ── Desplegable de PAQUETES por vuelo planificado (▾) ─────────────────────
+  // Al expandir una fila se piden sus paquetes al backend (/flightLots) y se
+  // cachean; se muestran igual que en Envíos. `expandedPlanned` = flightId abierto.
+  const [expandedPlanned, setExpandedPlanned] = useState(null);
+  const [plannedLotsCache, setPlannedLotsCache] = useState({}); // flightId -> lots|null
+  const togglePlanned = (flightId) => {
+    if (expandedPlanned === flightId) { setExpandedPlanned(null); return; }
+    setExpandedPlanned(flightId);
+    if (!fetchFlightLots || plannedLotsCache[flightId] !== undefined) return;
+    setPlannedLotsCache(c => ({ ...c, [flightId]: null }));   // cargando
+    fetchFlightLots(flightId).then(l =>
+      setPlannedLotsCache(c => ({ ...c, [flightId]: l ?? [] })));
+  };
 
   // Al clicar un vuelo, la sub-pestaña "Carga" se abre sola (los datos ya los
   // trae el Dashboard, que los pide al backend en el mismo clic).
@@ -396,32 +411,72 @@ const handleSortFL = (key) => {
             {plannedFlights.slice(0, 60).map(f => {
               const isSel = pinnedCodes
                 && pinnedCodes[0] === f.from && pinnedCodes[1] === f.to;
+              const isExp = expandedPlanned === f.flightId;
+              const lots  = plannedLotsCache[f.flightId];   // undefined=cerrado, null=cargando
               return (
-              <button key={f.key} type="button"
-                onClick={() => onFlightClick?.(f)}
-                title={`ID: ${f.key} · ${f.from} → ${f.to} · clic para enfocar en el mapa`}
-                className={`w-full text-[10px] rounded px-1 py-0.5 -mx-1 transition
+              <div key={f.key}>
+                <div className={`flex items-stretch gap-0.5 rounded transition
                   ${isSel ? "bg-teal/15 ring-1 ring-teal/40" : "hover:bg-white/5"}`}>
-                <span className="flex items-center justify-between">
-                  <span className="flex items-center gap-1 min-w-0">
-                    <Hourglass size={9} className="text-blue-400 shrink-0"/>
-                    <span className="text-teal truncate">{airportName(f.from)}</span>
-                    <span className="text-gray-600">→</span>
-                    <span className="text-gray-200 truncate">{airportName(f.to)}</span>
-                  </span>
-                  <span className="text-gray-400 tabular-nums flex-shrink-0">
-                    {f.bags.toLocaleString()}
+                  <button type="button"
+                    onClick={() => onFlightClick?.(f)}
+                    title={`ID: ${f.key} · ${f.from} → ${f.to} · clic para enfocar en el mapa`}
+                    className="flex-1 text-[10px] px-1 py-0.5 text-left min-w-0">
+                    <span className="flex items-center justify-between">
+                      <span className="flex items-center gap-1 min-w-0">
+                        <Hourglass size={9} className="text-blue-400 shrink-0"/>
+                        <span className="text-gray-500 font-mono mr-0.5">{f.flightId}</span>
+                        <span className="text-teal truncate">{airportName(f.from)}</span>
+                        <span className="text-gray-600">→</span>
+                        <span className="text-gray-200 truncate">{airportName(f.to)}</span>
+                      </span>
+                      <span className="text-gray-400 tabular-nums flex-shrink-0">
+                        {f.bags.toLocaleString()}
 {f.capacity != null && `/${f.capacity.toLocaleString()}`}
-                    {f.pct != null && <span className="text-gray-600 ml-1">({f.pct}%)</span>}
-                  </span>
-                </span>
-                {/* Salida/llegada con huso explícito, igual que los activos */}
-                <span className="block text-left text-gray-500 text-[9px] font-mono">
-                  Salida: {tzTime(f.departureMinute, f.from)}
-                  <span className="text-gray-600 mx-1">·</span>
-                  Llegada: {tzTime(f.arrivalMinute, f.to)}
-                </span>
-              </button>
+                        {f.pct != null && <span className="text-gray-600 ml-1">({f.pct}%)</span>}
+                      </span>
+                    </span>
+                    <span className="block text-left text-gray-500 text-[9px] font-mono">
+                      Salida: {tzTime(f.departureMinute, f.from)}
+                      <span className="text-gray-600 mx-1">·</span>
+                      Llegada: {tzTime(f.arrivalMinute, f.to)}
+                    </span>
+                  </button>
+                  {/* Desplegar los paquetes que lleva este vuelo (▾) */}
+                  {f.flightId && (
+                    <button onClick={() => togglePlanned(f.flightId)}
+                      title={isExp ? "Ocultar paquetes" : "Ver paquetes del vuelo"}
+                      className="px-1 text-gray-500 hover:text-teal transition text-[10px] shrink-0">
+                      {lots === null ? "…" : isExp ? "▴" : "▾"}
+                    </button>
+                  )}
+                </div>
+
+                {/* Paquetes del vuelo (inline, igual que Envíos) */}
+                {isExp && Array.isArray(lots) && (
+                  lots.length === 0 ? (
+                    <p className="text-gray-600 text-[9px] pl-4 py-0.5">Sin paquetes asignados</p>
+                  ) : (
+                    <div className="flex flex-col gap-0.5 pl-4 py-0.5">
+                      {lots.map((l, i) => {
+                        const st = l.status === "current"  ? ["✈", "text-yellow-400"]
+                                 : l.status === "done"     ? ["✓", "text-green-400"]
+                                 :                           ["⌛", "text-blue-400"];
+                        return (
+                          <div key={`${l.lotId}-${i}`}
+                               className="grid grid-cols-[1fr_auto_auto] gap-1.5 items-center
+                                          bg-[#021020] rounded px-1 py-0.5 text-[9px]">
+                            <span className="text-teal font-mono truncate" title={`${l.from} → ${l.to}`}>
+                              {l.lotId}
+                            </span>
+                            <span className="text-gray-300 tabular-nums">{l.bags || 0} mal.</span>
+                            <span className={st[1]}>{st[0]}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )
+                )}
+              </div>
               );
             })}
           </div>

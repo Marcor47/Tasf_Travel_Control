@@ -1868,29 +1868,30 @@ public record StagedFl(String id, String origin, String destination,
         int minuteOfDay = simulatedNow % 1440;
         int dayStart    = (simulatedNow / 1440) * 1440;
 
+        // "Planificados" = TODOS los vuelos que el plan cargó (assigned>0) y que
+        // AÚN NO despegan hoy, SIN ventana de tiempo: así se ve un vuelo que sale
+        // en varias horas para poder seleccionarlo y cancelarlo. (Antes se
+        // limitaba a los próximos 120 min, ocultando el resto del bloque/día.)
         return context.getFlights().stream()
             .filter(f -> !f.isCancelled() && f.getDepartureHour() > minuteOfDay)
             .filter(f -> !context.isInstanceCancelled(
                     f.getId(), dayStart + f.getDepartureHour()))
-            .filter(f -> {
-                int minsUntilDep = (dayStart + f.getDepartureHour()) - simulatedNow;
-                return minsUntilDep >= 0 && minsUntilDep <= 120;
+            .map(f -> {
+                int depAbs   = dayStart + f.getDepartureHour();
+                int dur      = f.getArrivalHour() - f.getDepartureHour();
+                if (dur < 0) dur += 1440;
+                int arrAbs   = depAbs + dur;
+                int assigned = f.getCapacity() - solution.residualFor(f.getId());
+                return new UpcomingFlight(
+                        f.getId(), f.getOrigin(), f.getDestination(),
+                        depAbs, fmtClock(depAbs),
+                        arrAbs, fmtClock(arrAbs),
+                        f.getCapacity(), Math.max(0, assigned));
             })
-            .sorted(Comparator.comparingInt(FlightInstance::getDepartureHour))
-            .limit(30)
-                .map(f -> {
-                    int depAbs   = dayStart + f.getDepartureHour();
-                    int dur      = f.getArrivalHour() - f.getDepartureHour();
-                    if (dur < 0) dur += 1440;
-                    int arrAbs   = depAbs + dur;
-                    int assigned = f.getCapacity() - solution.residualFor(f.getId());
-                    return new UpcomingFlight(
-                            f.getId(), f.getOrigin(), f.getDestination(),
-                            depAbs, fmtClock(depAbs),
-                            arrAbs, fmtClock(arrAbs),
-                            f.getCapacity(), Math.max(0, assigned));
-                })
-                .collect(Collectors.toList());
+            .filter(u -> u.assigned() > 0)   // solo los que el planificador cargó
+            .sorted(Comparator.comparingInt(UpcomingFlight::departureMinute))
+            .limit(300)
+            .collect(Collectors.toList());
     }
 
     // ── Eventos ──────────────────────────────────────────────────────────────

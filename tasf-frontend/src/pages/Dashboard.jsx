@@ -602,6 +602,7 @@ export default function Dashboard({
             onSearchEnter={handleFlightsSearchEnter}
             history={simulation?.history ?? []}
             cargoLots={focusFlightLots}
+            fetchFlightLots={simulation?.fetchFlightLots}
             running={running}/>
         );
       case "envios":

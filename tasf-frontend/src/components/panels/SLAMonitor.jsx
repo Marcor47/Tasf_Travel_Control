@@ -1,6 +1,15 @@
 import { Fragment, useMemo, useState } from "react";
 import { Pin } from "lucide-react";
-import { airportName, AIRPORT_META } from "../../data/staticAirports";
+import { airportName, AIRPORT_META, airportGmtHours } from "../../data/staticAirports";
+
+// Minuto UTC → "HH:MM" en la hora LOCAL del aeropuerto (huso del dataset). Sin
+// huso conocido, devuelve UTC. Para mostrar cuándo despega el avión de un tramo.
+const hhmmLocal = (utcMinute, code) => {
+  const g = airportGmtHours(code);
+  const m = utcMinute + (g == null ? 0 : Math.round(g * 60));
+  const x = (((m ?? 0) % 1440) + 1440) % 1440;
+  return `${String(Math.floor(x / 60)).padStart(2, "0")}:${String(x % 60).padStart(2, "0")}`;
+};
 
 // ── Constantes SLA ────────────────────────────────────────────────────────────
 // El backend envía registrationMinute y slaLimitMinutes por evento.
@@ -338,15 +347,29 @@ const packageRows = useMemo(() => {
   if (filterText.trim()) {
     const norm = s => (s||"").toLowerCase()
       .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-    const q = norm(filterText.trim());
-    // Coincide por paquete (UF-1), maleta/sub-lote (UF-1-2), vuelo o ruta.
-    result = result.filter(p => {
-      const om = AIRPORT_META[p.origin] || {};
-      const dm = AIRPORT_META[p.dest]   || {};
-      return [p.base, p.origin, p.dest, om.name, om.country, dm.name, dm.country,
-              ...p.subs.flatMap(s => [s.pkgId, s.flightId])]
-        .some(s => norm(s).includes(q));
-    });
+    const raw = filterText.trim();
+    const apFields = (code) => {
+      const m = AIRPORT_META[code] || {};
+      return [code, m.name, m.country];
+    };
+    const matchAP = (code, tok) => apFields(code).some(s => norm(s).includes(tok));
+    // B\u00fasqueda por RUTA con separador expl\u00edcito ("LIMA-BOGOTA", "LIMA \u2192 BOGOTA"):
+    // exige origen=1\u00aa parte Y destino=2\u00aa parte. Sin separador: coincide por
+    // paquete/maleta/vuelo/ciudad en cualquier campo (una sola ciudad, "LIMA").
+    const routeParts = raw.split(/\s*[-\u2013\u2014\u2192>]+\s*/).filter(Boolean);
+    if (routeParts.length === 2) {
+      const [o, d] = routeParts.map(norm);
+      result = result.filter(p => matchAP(p.origin, o) && matchAP(p.dest, d));
+    } else {
+      const q = norm(raw);
+      result = result.filter(p => {
+        const om = AIRPORT_META[p.origin] || {};
+        const dm = AIRPORT_META[p.dest]   || {};
+        return [p.base, p.origin, p.dest, om.name, om.country, dm.name, dm.country,
+                ...p.subs.flatMap(s => [s.pkgId, s.flightId])]
+          .some(s => norm(s).includes(q));
+      });
+    }
   }
 
   // El paquete SELECCIONADO se FIJA al inicio de la lista: los eventos nuevos
@@ -418,9 +441,13 @@ const filteredSortedPackageRows = useMemo(() => {
     if (idx > 0) rows.unshift(rows.splice(idx, 1)[0]);
   }
 
-  // Tope de display DESPUÉS de filtrar/ordenar.
-  return rows.slice(0, 40);
+  return rows;   // el tope de display se aplica en el render (con aviso "N de M")
 }, [packageRows, envioSort, envioSortDir, envioStatusFilter, simulatedMinute, selectedShipment]);
+
+// Tope de filas visibles (el buscador/ruta permite acotar más). Fuentes:
+// hasta 300 planificados (backend) + 300 eventos de historial.
+const ENVIO_ROW_CAP = 80;
+const shownPackageRows = filteredSortedPackageRows.slice(0, ENVIO_ROW_CAP);
 
 
   // ── Contadores globales ───────────────────────────────────────────────────
@@ -570,11 +597,16 @@ const filteredSortedPackageRows = useMemo(() => {
         <input
           value={filterText}
           onChange={e => setFilterText(e.target.value)}
-          placeholder="Busca ID de paquete, vuelo o ruta"
+          placeholder="Busca paquete, ciudad, o RUTA (ej. LIMA-BOGOTA)"
           className="w-full bg-[#021020] border border-white/10 rounded
-                     px-2 py-1 text-xs text-gray-300 mb-2
+                     px-2 py-1 text-xs text-gray-300 mb-1
                      focus:outline-none focus:border-teal"
         />
+        {filteredSortedPackageRows.length > ENVIO_ROW_CAP && (
+          <p className="text-gray-600 text-[9px] mb-1">
+            Mostrando {ENVIO_ROW_CAP} de {filteredSortedPackageRows.length} — acota con el buscador o la ruta
+          </p>
+        )}
 
 {/* Filtro por estado */}
 <div className="flex gap-0.5 flex-wrap mb-1.5">
@@ -640,8 +672,8 @@ const filteredSortedPackageRows = useMemo(() => {
           </tr>
         );
       })
-    ) : filteredSortedPackageRows.length > 0 ? (
-      filteredSortedPackageRows.map((pkg) => {
+    ) : shownPackageRows.length > 0 ? (
+      shownPackageRows.map((pkg) => {
         const isSel   = selectedShipment?.bagId === pkg.base;
         // Sub-lote de este paquete seleccionado → mantener desplegado para que
         // la fila resaltada (y sus datos) queden siempre visibles.
@@ -805,7 +837,11 @@ const filteredSortedPackageRows = useMemo(() => {
                     {airportName(leg.to)}
                   </span>
                 </td>
-                <td className="py-0.5 text-center text-gray-700 text-[9px]">—</td>
+                {/* Hora en que despega el avión de este tramo (huso del origen). */}
+                <td className="py-0.5 text-center text-gray-400 text-[9px] font-mono"
+                    title="Hora de salida del avión (hora local del origen del tramo)">
+                  {hhmmLocal(leg.departureMinute, leg.from)}
+                </td>
                 <td className={`py-0.5 text-[9px] font-medium ${legIcon[1]}`}>
                   {leg.status === "done"    ? "Completado"
                  : leg.status === "current" ? "En curso"
