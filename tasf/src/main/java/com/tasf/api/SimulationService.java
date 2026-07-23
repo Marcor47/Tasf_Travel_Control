@@ -2224,7 +2224,7 @@ public List<FlightLot> flightLots(String flightId) {
  *  no aparece en el historial de eventos (que solo lleva salidas/llegadas), así
  *  que la tarjeta de Envíos lo pide aparte para poder listarlo/filtrarlo. */
 public record PlannedShipment(String lotId, int bags, String from, String to,
-                              int departureMinute) {}
+                              int departureMinute, String flightId) {}
 
 /**
  * Lotes planificados que todavía NO han despegado (primer tramo con salida en
@@ -2247,11 +2247,58 @@ public List<PlannedShipment> plannedLots() {
         if (first.departureMinute() <= now) continue;   // ya despegó → lo lleva el historial
         out.add(new PlannedShipment(e.getKey(),
                 lotQtyById.getOrDefault(e.getKey(), 0),
-                first.from(), last.to(), first.departureMinute()));
-        if (out.size() >= MAX_ROWS) break;
+                first.from(), last.to(), first.departureMinute(),
+                first.flightId()));   // avión del PRIMER tramo (el que aborda)
     }
+    // Ordenar por salida más próxima y RECIÉN cortar: antes el tope de 300 caía
+    // sobre el orden arbitrario del HashMap y dejaba fuera paquetes al azar.
     out.sort(Comparator.comparingInt(PlannedShipment::departureMinute)
                        .thenComparing(PlannedShipment::lotId));
+    return out.size() > MAX_ROWS ? new ArrayList<>(out.subList(0, MAX_ROWS)) : out;
+}
+
+/** Resultado de búsqueda de un envío: lote con su estado global y el avión que
+ *  aborda. `state` = "planned" (sin despegar) | "transit" (en ruta) | "delivered". */
+public record SearchLot(String lotId, int bags, String from, String to,
+                        int departureMinute, String flightId, String state) {}
+
+/**
+ * Busca envíos en el PLAN COMPLETO (pathByLot), no solo en el subconjunto que
+ * ya tiene el cliente: por ID de lote, código de vuelo, o código de aeropuerto
+ * origen/destino. Para que un código exacto SIEMPRE se encuentre en Período
+ * (miles de envíos) aunque no esté entre los planificados enviados por defecto.
+ */
+public List<SearchLot> searchLots(String q) {
+    if (q == null || q.isBlank()) return List.of();
+    final String needle = q.trim().toLowerCase();
+    final int MAX_ROWS = 60;
+    int now = state.simulatedMinute();
+    List<SearchLot> out = new ArrayList<>();
+    for (Map.Entry<String, List<ShipmentLeg>> e : pathByLot.entrySet()) {
+        String lotId = e.getKey();
+        List<ShipmentLeg> legs = e.getValue();
+        if (legs.isEmpty()) continue;
+        ShipmentLeg first = null, last = null;
+        boolean flightHit = false;
+        for (ShipmentLeg l : legs) {
+            if (first == null || l.departureMinute() < first.departureMinute()) first = l;
+            if (last  == null || l.arrivalMinute()   > last.arrivalMinute())    last  = l;
+            if (l.flightId() != null && l.flightId().toLowerCase().contains(needle)) flightHit = true;
+        }
+        boolean match = lotId.toLowerCase().contains(needle)
+                || flightHit
+                || first.from().toLowerCase().contains(needle)
+                || last.to().toLowerCase().contains(needle);
+        if (!match) continue;
+        String st = last.arrivalMinute()   <= now ? "delivered"
+                  : first.departureMinute() <= now ? "transit"
+                  : "planned";
+        out.add(new SearchLot(lotId, lotQtyById.getOrDefault(lotId, 0),
+                first.from(), last.to(), first.departureMinute(),
+                first.flightId(), st));
+        if (out.size() >= MAX_ROWS) break;
+    }
+    out.sort(Comparator.comparing(SearchLot::lotId));
     return out;
 }
 

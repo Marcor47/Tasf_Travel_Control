@@ -472,6 +472,21 @@ export default function Dashboard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [running]);
 
+  // Búsqueda de envíos en el PLAN COMPLETO del backend: al escribir en Envíos
+  // (bagSearch), consulta /searchLots (debounce 400 ms) para encontrar un código
+  // exacto aunque no esté entre los planificados enviados por defecto (Período).
+  const [searchLots, setSearchLots] = useState([]);
+  useEffect(() => {
+    const q = bagSearch.trim();
+    if (!running || !q || !simulation?.fetchSearchLots) { setSearchLots([]); return; }
+    let alive = true;
+    const t = setTimeout(() => {
+      simulation.fetchSearchLots(q).then(l => { if (alive) setSearchLots(l ?? []); });
+    }, 400);
+    return () => { alive = false; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bagSearch, running]);
+
   // Popup de confirmación de cancelación (qué vuelo, hoy/mañana, horas).
   const [cancelPopup, setCancelPopup] = useState(null);
   const cancelPopupTimer = useRef(null);
@@ -614,6 +629,7 @@ export default function Dashboard({
             focusRoute={selectedRouteObj}
             focusFlightLots={focusFlightLots}
             plannedLots={plannedLots}
+            searchLots={searchLots}
             selectedShipment={selectedShipment}
             onShipmentClick={handleShipmentClick}
             searchText={bagSearch} onSearchChange={handleBagSearch}

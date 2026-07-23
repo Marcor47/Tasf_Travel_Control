@@ -168,6 +168,12 @@ public SimulationService.SimulationState deleteFlight(@RequestBody SimulationSer
         return simulationService.plannedLots();
     }
 
+    /** Busca envíos en el plan completo (por ID de lote, vuelo o aeropuerto). */
+    @GetMapping("/searchLots")
+    public List<SimulationService.SearchLot> searchLots(@RequestParam String q) {
+        return simulationService.searchLots(q);
+    }
+
     /** Plan de ruteo del último bloque planificado (para Reportes). */
     @GetMapping("/lastBlockPlan")
     public SimulationService.BlockPlan lastBlockPlan() {

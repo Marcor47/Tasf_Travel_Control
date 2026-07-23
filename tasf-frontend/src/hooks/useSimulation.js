@@ -340,6 +340,21 @@ const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
     }
   }, []);
 
+  // Busca envíos en el PLAN COMPLETO del backend (no solo el subconjunto que ya
+  // tiene el cliente): para encontrar un código exacto en Período aunque no esté
+  // entre los planificados enviados por defecto.
+  const fetchSearchLots = useCallback(async (q) => {
+    if (!q || !q.trim()) return [];
+    try {
+      const r = await fetch(`${API_BASE}/api/simulation/searchLots?q=${encodeURIComponent(q.trim())}`);
+      if (!r.ok) return [];
+      const data = await r.json();
+      return Array.isArray(data) ? data : [];
+    } catch {
+      return [];
+    }
+  }, []);
+
   const fetchPlannedLots = useCallback(async () => {
     try {
       const r = await fetch(`${API_BASE}/api/simulation/plannedLots`);
@@ -528,6 +543,7 @@ return {
   fetchFlightLots,
   fetchPlannedLots,
   fetchScheduledFlights,
+  fetchSearchLots,
   fetchLastBlockPlan,
   alerts,
   realSeconds,

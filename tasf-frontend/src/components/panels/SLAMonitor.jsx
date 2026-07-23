@@ -160,6 +160,7 @@ export default function SLAMonitor({
   focusRoute = null,   // ruta (vuelo) enfocada en el mapa: {flightId,from,to,bags,capacity}
   focusFlightLots = null, // paquetes del vuelo enfocado (backend /flightLots, al clic)
   plannedLots = [],       // envíos PLANIFICADOS sin despegar (backend /plannedLots)
+  searchLots = [],        // resultados de búsqueda en el plan COMPLETO (backend /searchLots)
   view = "all",
   selectedShipment = null, onShipmentClick,
   searchText, onSearchChange,
@@ -305,13 +306,19 @@ const packageRows = useMemo(() => {
   // filas nivel 2 (desplegables) = sub-lotes/maletas (UF-1-1, UF-1-2\u2026).
   // Cada grupo: sub-lotes con EVENTOS (ev) y PLANIFICADOS sin despegar (pl,
   // del backend /plannedLots — no tienen evento porque aún no vuelan).
+  // 3 fuentes por grupo: EVENTOS (ev), PLANIFICADOS sin despegar (pl,
+  // /plannedLots) y RESULTADOS DE BÚSQUEDA del plan completo (sr, /searchLots)
+  // — estos últimos rescatan paquetes que no vienen en el subconjunto por
+  // defecto (Período: miles de envíos). El estado del sr viene del backend.
+  const SR_TYPE = { delivered: "landed", transit: "departed", planned: "planned" };
   const groups = new Map();
   const g = (base) => {
-    if (!groups.has(base)) groups.set(base, { ev: [], pl: [] });
+    if (!groups.has(base)) groups.set(base, { ev: [], pl: [], sr: [] });
     return groups.get(base);
   };
   for (const row of byLot.values()) g(packageBase(row.pkgId)).ev.push(row);
   for (const p of (Array.isArray(plannedLots) ? plannedLots : [])) g(packageBase(p.lotId)).pl.push(p);
+  for (const s of (Array.isArray(searchLots) ? searchLots : [])) g(packageBase(s.lotId)).sr.push(s);
 
   let result = [...groups.entries()].map(([base, grp]) => {
     const evSubs = grp.ev;
@@ -319,14 +326,19 @@ const packageRows = useMemo(() => {
     const plSubs = grp.pl
       .filter(p => !evIds.has(p.lotId))
       .map(p => ({ pkgId: p.lotId, bags: p.bags, from: p.from, to: p.to,
-                   type: "planned", minute: p.departureMinute }));
-    const subs = [...evSubs, ...plSubs]
+                   type: "planned", minute: p.departureMinute, flightId: p.flightId }));
+    const known = new Set([...evIds, ...plSubs.map(s => s.pkgId)]);
+    const srSubs = grp.sr
+      .filter(s => !known.has(s.lotId))
+      .map(s => ({ pkgId: s.lotId, bags: s.bags, from: s.from, to: s.to,
+                   type: SR_TYPE[s.state] || "planned", minute: s.departureMinute,
+                   flightId: s.flightId, finalDestination: s.state === "delivered" }));
+    const subs = [...evSubs, ...plSubs, ...srSubs]
       .sort((a, b) => a.pkgId.localeCompare(b.pkgId, undefined, { numeric: true }));
-    const delivered = evSubs.length > 0
-      && evSubs.every(s => s.type === "landed" && s.finalDestination);
-    const inAir     = evSubs.some(s => s.type === "departed");
-    // "Planificado": el paquete AÚN no tiene ningún evento (nada despegó).
-    const planned   = evSubs.length === 0 && plSubs.length > 0;
+    // Estado del paquete calculado sobre TODOS los sub-lotes (cualquier fuente).
+    const delivered = subs.length > 0 && subs.every(s => s.type === "landed" && s.finalDestination);
+    const inAir     = subs.some(s => s.type === "departed");
+    const planned   = !delivered && !inAir && subs.some(s => s.type === "planned");
     const latest = evSubs.length
       ? evSubs.reduce((x, y) => (y.minute > x.minute ? y : x)) : subs[0];
     // Extremos del paquete (origen y destino FINAL, com\u00fan a los sub-lotes).
@@ -353,11 +365,24 @@ const packageRows = useMemo(() => {
       return [code, m.name, m.country];
     };
     const matchAP = (code, tok) => apFields(code).some(s => norm(s).includes(tok));
-    // B\u00fasqueda por RUTA con separador expl\u00edcito ("LIMA-BOGOTA", "LIMA \u2192 BOGOTA"):
-    // exige origen=1\u00aa parte Y destino=2\u00aa parte. Sin separador: coincide por
-    // paquete/maleta/vuelo/ciudad en cualquier campo (una sola ciudad, "LIMA").
-    const routeParts = raw.split(/\s*[-\u2013\u2014\u2192>]+\s*/).filter(Boolean);
-    if (routeParts.length === 2) {
+    // \u00bfUn token corresponde a ALG\u00daN aeropuerto (c\u00f3digo/ciudad/pa\u00eds)? Sirve para
+    // NO confundir un c\u00f3digo de lote (UF-3) con una ruta (LIMA-BOGOTA): solo es
+    // ruta si AMBAS partes son aeropuertos. Un lote "UF-3" \u2192 "UF"/"3" no lo son
+    // \u2192 b\u00fasqueda normal (que s\u00ed matchea el c\u00f3digo del lote).
+    const tokIsAP = (tok) => {
+      const t = norm(tok);
+      return !!t && Object.entries(AIRPORT_META).some(([code, m]) =>
+        norm(code).includes(t) || norm(m.name || "").includes(t) || norm(m.country || "").includes(t));
+    };
+    // Ruta expl\u00edcita por flecha, o por guion SOLO si ambas partes son aeropuertos.
+    let routeParts = null;
+    const arrow = raw.split(/\s*[\u2192>]\s*/).filter(Boolean);
+    if (arrow.length === 2) routeParts = arrow;
+    else {
+      const dash = raw.split(/\s*-\s*/).filter(Boolean);
+      if (dash.length === 2 && tokIsAP(dash[0]) && tokIsAP(dash[1])) routeParts = dash;
+    }
+    if (routeParts) {
       const [o, d] = routeParts.map(norm);
       result = result.filter(p => matchAP(p.origin, o) && matchAP(p.dest, d));
     } else {
@@ -385,7 +410,7 @@ const packageRows = useMemo(() => {
   // filtro como "Planificado" podría quedar vacío porque sus filas cayeron
   // fuera del tope antes de filtrar).
   return result;
-}, [focusedEvents, plannedLots, filterText, lotEndpoints, selectedShipment]);
+}, [focusedEvents, plannedLots, searchLots, filterText, lotEndpoints, selectedShipment]);
 
 
 
