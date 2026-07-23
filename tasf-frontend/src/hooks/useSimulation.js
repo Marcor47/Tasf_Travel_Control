@@ -302,7 +302,8 @@ const start = useCallback(async (mode, startDate, numDays, startMinute = 0) => {
       const r = await fetch(
         `${API_BASE}/api/simulation/shipmentPaths?lotId=${encodeURIComponent(lotId)}`);
       if (!r.ok) return [];
-      return await r.json();
+      const data = await r.json();
+      return Array.isArray(data) ? data : [];   // blindaje: siempre array
     } catch {
       return [];
     }

@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { Pin } from "lucide-react";
 import { airportName, AIRPORT_META, airportGmtHours } from "../../data/staticAirports";
 
@@ -176,19 +176,32 @@ const [expandedSubLot,  setExpandedSubLot]  = useState(null);
 const [subLotPaths,     setSubLotPaths]     = useState({});
 const [loadingSubLot,   setLoadingSubLot]   = useState(null);
 
-const expandSubLot = async (subLotId) => {
+const expandSubLot = (subLotId) => {
   if (expandedSubLot === subLotId) { setExpandedSubLot(null); return; }
   setExpandedSubLot(subLotId);
-  if (subLotPaths[subLotId] || !fetchShipmentPaths) return;
-  setLoadingSubLot(subLotId);
-  try {
-    const paths = await fetchShipmentPaths(subLotId);
-    // fetchShipmentPaths devuelve array de paths; tomamos el que coincide con subLotId
-    const match = (paths ?? []).find(p => p.lotId === subLotId) ?? paths?.[0];
-    setSubLotPaths(p => ({ ...p, [subLotId]: match?.legs ?? [] }));
-  } catch { setSubLotPaths(p => ({ ...p, [subLotId]: [] })); }
-  finally { setLoadingSubLot(null); }
+  if (subLotPaths[subLotId] === undefined) setLoadingSubLot(subLotId);
 };
+
+// Recorrido del sub-lote ABIERTO: se re-consulta al backend mientras está
+// abierto — cada 4 s y de inmediato al replanificar (kpis.replanifications) —
+// para reflejar el vuelo NUEVO tras una cancelación/replaneo. Antes se cacheaba
+// una sola vez y el desplegable de tramos quedaba obsoleto hasta recargar.
+// Se mantiene la data anterior en pantalla hasta que llega la nueva (sin parpadeo).
+useEffect(() => {
+  if (!expandedSubLot || !fetchShipmentPaths) return;
+  let alive = true;
+  const load = () => fetchShipmentPaths(expandedSubLot).then(paths => {
+    if (!alive) return;
+    const match = (paths ?? []).find(p => p.lotId === expandedSubLot) ?? paths?.[0];
+    setSubLotPaths(p => ({ ...p, [expandedSubLot]: match?.legs ?? [] }));
+    setLoadingSubLot(l => (l === expandedSubLot ? null : l));
+  }).catch(() => {
+    if (alive) { setSubLotPaths(p => ({ ...p, [expandedSubLot]: [] })); setLoadingSubLot(null); }
+  });
+  load();
+  const id = setInterval(load, 4000);
+  return () => { alive = false; clearInterval(id); };
+}, [expandedSubLot, kpis?.replanifications, fetchShipmentPaths]);
 
 
 const [envioSort,      setEnvioSort]      = useState("reciente");
