@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { fullClock } from "../utils/simClock";
 
 const MAX_HISTORY = 300;
 
@@ -74,7 +75,9 @@ export default function HistoryView({ history = [], upcoming = [], running = fal
       flightId: u.flightId,
       from: u.origin, to: u.destination,
       bags: u.assigned,
-      clock: u.departureClock,
+      // Cadena COMPLETA ("Dia aaaa-mm-dd  hh:mm"): esta columna mezcla filas
+      // planificadas con eventos reales, que traen ese formato del backend.
+      clock: fullClock(u.departureMinute),
       minute: u.departureMinute,
       finalDestination: false,
     }));

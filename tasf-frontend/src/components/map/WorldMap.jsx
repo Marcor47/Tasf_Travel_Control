@@ -375,9 +375,14 @@ export default function WorldMap({
   const allAirports = airports.length > 0 ? airports : STATIC_AIRPORTS;
   // airportMap usa TODOS los aeropuertos (las rutas necesitan sus coordenadas
   // aunque el almacén esté filtrado del mapa).
-  const airportMap  = Object.fromEntries(
-    allAirports.map(a => [a.code, [a.lng, a.lat]])
-  );
+  //
+  // MEMOIZADO: este componente se re-renderiza ~15 veces por segundo por la
+  // animación, y sin memo se reconstruían el objeto y un array [lng,lat] por
+  // aeropuerto en CADA frame. Las coordenadas solo cambian si se edita/añade un
+  // aeropuerto, así que basta con recalcular cuando cambia la lista.
+  const airportMap = useMemo(
+    () => Object.fromEntries(allAirports.map(a => [a.code, [a.lng, a.lat]])),
+    [allAirports]);
   // Almacenes a DIBUJAR: filtrados por el semáforo del panel de Almacenes
   // (igual que los aviones con su semáforo): si pides verde, solo verdes; etc.
   const shownAirports = whSem === "all"

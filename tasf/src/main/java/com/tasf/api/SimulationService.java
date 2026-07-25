@@ -1,5 +1,6 @@
 package com.tasf.api;
 
+import com.fasterxml.jackson.annotation.JsonValue;
 import com.tasf.planner.alns.ALNSPlanner;
 import com.tasf.planner.core.PlanningContext;
 import com.tasf.planner.core.RouteEvaluator;
@@ -1884,8 +1885,7 @@ public record StagedFl(String id, String origin, String destination,
                 int assigned = f.getCapacity() - solution.residualFor(f.getId());
                 return new UpcomingFlight(
                         f.getId(), f.getOrigin(), f.getDestination(),
-                        depAbs, fmtClock(depAbs),
-                        arrAbs, fmtClock(arrAbs),
+                        depAbs, arrAbs,
                         f.getCapacity(), Math.max(0, assigned));
             })
             .filter(u -> u.assigned() > 0)   // solo los que el planificador cargó
@@ -2463,7 +2463,22 @@ private void snapshotBlockPlan(int blockNo, int blockStart, int blockEnd,
                                 int capacity, int current) {}
     public record RouteState(String flightId, String from, String to,
                           int bags, int capacity, String status,
-                          int departureMinute, int arrivalMinute) {}
+                          int departureMinute, int arrivalMinute) {
+
+        /**
+         * Serialización POSICIONAL. Cada broadcast (~800 ms) lleva ~890 rutas en
+         * el aire; como objetos JSON los NOMBRES de clave —repetidos en cada
+         * fila— pesaban ~100 de los ~155 bytes de cada una. Como array la fila
+         * baja a ~48 bytes.
+         *
+         * ⚠️ El orden debe coincidir con `decodeRoute` en useSimulation.js.
+         */
+        @JsonValue
+        public Object[] wire() {
+            return new Object[]{ flightId, from, to, bags, capacity, status,
+                                 departureMinute, arrivalMinute };
+        }
+    }
     public record SimEvent(int minute, String type, String from, String to,
                            String flightId, int bags, boolean finalDestination,
                            String clock,
@@ -2529,10 +2544,24 @@ public record DeleteFlightRequest(String flightId) {}
     /** Entrada del registro de alertas compartido entre clientes. */
     public record AlertEntry(String type, String text, long time) {}
 
+    /**
+     * Vuelo planificado que aún no despega.
+     *
+     * Ya NO lleva `departureClock`/`arrivalClock`: eran ~600 cadenas formateadas
+     * por tick que el frontend partía para quedarse solo con la hora. Ahora se
+     * derivan en el cliente del minuto absoluto (utils/simClock.js).
+     */
     public record UpcomingFlight(String flightId, String origin, String destination,
-                                int departureMinute, String departureClock,
-                                int arrivalMinute, String arrivalClock,
-                                int capacity, int assigned) {}
+                                int departureMinute, int arrivalMinute,
+                                int capacity, int assigned) {
+
+        /** Posicional, igual que RouteState. ⚠️ Debe coincidir con `decodeUpcoming`. */
+        @JsonValue
+        public Object[] wire() {
+            return new Object[]{ flightId, origin, destination,
+                                 departureMinute, arrivalMinute, capacity, assigned };
+        }
+    }
 
     private record BlockResult(WorkingSolution solution, List<BaggageLot> lots) {}
 }

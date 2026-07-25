@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Hourglass } from "lucide-react";
 import { getWarehouseColor } from "../../hooks/useStatusColor";
 import { airportName, AIRPORT_META, airportGmtHours } from "../../data/staticAirports";
+import { hhmm } from "../../utils/simClock";
 
 // Categoría de semáforo de un vuelo (incluye "vacío").
 function flightSem(bags, capacity) {
@@ -26,11 +27,6 @@ const SORT_OPTIONS = [
 ];
 
 // Minuto absoluto → "HH:MM" del día (igual que el backend para casar capacidades)
-function hhmm(minute) {
-  const m = (((minute ?? 0) % 1440) + 1440) % 1440;
-  return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
-}
-
 // "HH:MM UTC±g (HH:MM UTC-0)": hora LOCAL del aeropuerto con su huso explícito
 // y la referencia UTC-0 entre paréntesis (mismo formato que el registro de
 // vuelos). Los minutos del backend son UTC (GMT-0 interno); el offset local
@@ -209,7 +205,7 @@ const handleSortFL = (key) => {
     from: u.origin,
     to: u.destination,
 
-    departure: (u.departureClock || "").split("  ")[1] || u.departureClock,
+    departure: hhmm(u.departureMinute),
     departureMinute: u.departureMinute ?? 0,   // <-- AGREGAR
 
     bags: u.assigned || 0,
@@ -220,7 +216,7 @@ const handleSortFL = (key) => {
 
     flightId: u.flightId,
 
-    arrival: (u.arrivalClock || "").split("  ")[1] || u.arrivalClock || "",
+    arrival: hhmm(u.arrivalMinute),
     arrivalMinute: u.arrivalMinute ?? 0,
 }))
 .sort((a, b) => {

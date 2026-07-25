@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Hourglass } from "lucide-react";
 import { AIRPORT_META, airportName } from "../../data/staticAirports";
+import { hhmm } from "../../utils/simClock";
 
 // Cuántos almacenes mostrar cuando no hay filtro (para no saturar la vista)
 const MAX_STORAGES_NO_FILTER = 6;
@@ -50,11 +51,11 @@ export default function StorageMovements({ history = [], upcoming = [], focusCod
         if (u.origin)
           (acc[u.origin] ??= []).push({
             dir: "out", planned: true, flightId: u.flightId, to: u.destination,
-            bags: u.assigned, minute: u.departureMinute, clock: u.departureClock });
+            bags: u.assigned, minute: u.departureMinute, clock: hhmm(u.departureMinute) });
         if (u.destination)
           (acc[u.destination] ??= []).push({
             dir: "in", planned: true, finalDestination: false, flightId: u.flightId,
-            from: u.origin, bags: u.assigned, minute: u.arrivalMinute, clock: u.arrivalClock });
+            from: u.origin, bags: u.assigned, minute: u.arrivalMinute, clock: hhmm(u.arrivalMinute) });
       }
     }
     // Ordenar por minuto descendente: lo planeado (futuro) queda arriba.

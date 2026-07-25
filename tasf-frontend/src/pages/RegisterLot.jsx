@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { Check, X } from "lucide-react";
 import { STATIC_AIRPORTS, AIRPORT_META, airportName, airportGmtHours } from "../data/staticAirports";
+import { hhmm } from "../utils/simClock";
 
 // Mensaje flash de resultado (éxito/error) con icono, para las acciones de red.
 const FlashMsg = ({ msg }) => msg ? (
@@ -98,7 +99,7 @@ for (const f of (prep.flightList ?? [])) {
     map.set(u.flightId, {
       id: u.flightId, origin: u.origin, destination: u.destination,
       departureMinute: u.departureMinute ?? 0,
-      departureClock: (u.departureClock || "").split("  ")[1] || u.departureClock || "",
+      departureClock: hhmm(u.departureMinute),
     });
   }
   for (const r of (simulation?.routes ?? [])) {

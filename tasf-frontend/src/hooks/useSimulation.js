@@ -5,6 +5,37 @@ const MAX_HISTORY = 300;
 
 const evKey = e => `${e.minute}-${e.flightId}-${e.type}-${e.finalDestination}`;
 
+// ── Formato de cable COMPACTO ────────────────────────────────────────────────
+// Cada broadcast (~800 ms) lleva ~890 rutas en el aire y hasta 300 vuelos por
+// salir. Serializados como objetos JSON, los NOMBRES de clave —repetidos en
+// cada fila— eran ~2/3 del payload (~200 KB por tick, ~900 MB/hora de basura
+// para el GC del navegador). El backend los envía ahora como ARRAYS
+// POSICIONALES y se rehidratan aquí, UNA sola vez en el borde del SSE: los
+// paneles siguen recibiendo objetos con las mismas propiedades de siempre.
+//
+// Se aceptan AMBOS formatos (array = backend nuevo, objeto = backend antiguo)
+// para que el orden de despliegue front/back no pueda romper la pantalla.
+// El orden de los campos debe coincidir con `wire()` en SimulationService.java.
+const decodeRoute = r => (Array.isArray(r)
+  ? { flightId: r[0], from: r[1], to: r[2], bags: r[3], capacity: r[4],
+      status: r[5], departureMinute: r[6], arrivalMinute: r[7] }
+  : r);
+
+// Sin `departureClock`/`arrivalClock`: se derivan del minuto donde se pintan
+// (ver utils/simClock.js).
+const decodeUpcoming = u => (Array.isArray(u)
+  ? { flightId: u[0], origin: u[1], destination: u[2],
+      departureMinute: u[3], arrivalMinute: u[4],
+      capacity: u[5], assigned: u[6] }
+  : u);
+
+function decodeState(data) {
+  if (!data) return data;
+  if (Array.isArray(data.routes))          data.routes          = data.routes.map(decodeRoute);
+  if (Array.isArray(data.upcomingFlights)) data.upcomingFlights = data.upcomingFlights.map(decodeUpcoming);
+  return data;
+}
+
 // Combina eventos en una lista "más nuevo primero", deduplicando y acotada a
 // MAX_HISTORY. `incoming` puede venir más-nuevo-primero (backlog del servidor,
 // evento SSE "history") o más-viejo-primero (los `emitted` de cada tick, en
@@ -82,7 +113,7 @@ export function useSimulation() {
 
     source.addEventListener("state", event => {
       try {
-        const data = JSON.parse(event.data);
+        const data = decodeState(JSON.parse(event.data));
         setState(data);
       } catch {
         // ignorar eventos malformados
@@ -129,7 +160,7 @@ export function useSimulation() {
   useEffect(() => {
     fetch(`${API_BASE}/api/simulation/state`)
       .then(r => (r.ok ? r.json() : emptyState))
-      .then(data => setState(prev => ({ ...prev, ...data })))
+      .then(data => setState(prev => ({ ...prev, ...decodeState(data) })))
       .catch(() => {});
 
     fetch(`${API_BASE}/api/simulation/availableDates`)
