@@ -3,10 +3,70 @@ import {
   ComposableMap, Geographies, Geography,
   Marker, Line
 } from "react-simple-maps";
+import { geoMercator } from "d3-geo";
 import { Cog, Plane, X } from "lucide-react";
 import { STATIC_AIRPORTS, airportName } from "../../data/staticAirports";
 
 const GEO_URL = "https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json";
+
+// ── Lienzo de aviones y rutas ────────────────────────────────────────────────
+// Los aviones y sus líneas se pintan en un <canvas> superpuesto, NO en el SVG.
+// Cada avión eran ~6 nodos SVG (fuselaje + 2 alas + 2 estabilizadores) que React
+// reconciliaba en cada frame: con "todas las rutas" (~890 vuelos) eso son ~10.000
+// nodos recalculados 15 veces por segundo, y es lo que tumbaba la pestaña. En
+// canvas es un único elemento y solo se dibujan primitivas.
+//
+// El SVG de react-simple-maps usa viewBox 800×600 (ComposableMap por defecto) sin
+// preserveAspectRatio, o sea "xMidYMid meet". El lienzo replica ESA MISMA
+// transformación para quedar alineado al píxel con países y aeropuertos.
+const VB_W = 800, VB_H = 600;
+
+/** Proyección idéntica a la que arma react-simple-maps por dentro. */
+function makeProjection(zoom, center) {
+  return geoMercator()
+    .translate([VB_W / 2, VB_H / 2])
+    .center(center)
+    .scale(120 * zoom);
+}
+
+/**
+ * viewBox → píxeles CSS del lienzo, según "meet": la caja 800×600 se escala por
+ * k = min(W/800, H/600) y se centra en el contenedor.
+ */
+function viewBoxFit(w, h) {
+  const k = Math.min(w / VB_W, h / VB_H);
+  return { k, ox: (w - VB_W * k) / 2, oy: (h - VB_H * k) / 2 };
+}
+
+// Mismos trazos que usaba el <Marker> SVG, compilados una sola vez.
+let PLANE_PATHS = null;
+function planePaths() {
+  if (!PLANE_PATHS) {
+    PLANE_PATHS = [
+      "M 10 0 L -6 -1.5 L -8 0 L -6 1.5 Z",   // fuselaje
+      "M 2 -1 L -3 -8 L -6 -7 L -3 -1 Z",     // ala izq.
+      "M 2 1 L -3 8 L -6 7 L -3 1 Z",         // ala der.
+      "M -5 -1 L -7 -4 L -9 -3.5 L -8 0 Z",   // estabilizador izq.
+      "M -5 1 L -7 4 L -9 3.5 L -8 0 Z",      // estabilizador der.
+    ].map(d => new Path2D(d));
+  }
+  return PLANE_PATHS;
+}
+
+/** Distancia de un punto al segmento AB (para acertar el clic en una ruta). */
+function distToSegment(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  const t = len2 === 0 ? 0 : Math.max(0, Math.min(1,
+    ((px - ax) * dx + (py - ay) * dy) / len2));
+  const cx = ax + t * dx, cy = ay + t * dy;
+  return Math.hypot(px - cx, py - cy);
+}
+
+// Radios de acierto (px CSS). El del avión es generoso porque el icono es chico;
+// el de la línea replica el "corredor invisible" de 8 px que tenía el SVG.
+const HIT_PLANE_PX = 11;
+const HIT_LINE_PX  = 5;
 
 function injectAnimation() {
   if (document.getElementById("route-anim-style")) return;
@@ -17,8 +77,9 @@ function injectAnimation() {
       from { stroke-dashoffset: 24; }
       to   { stroke-dashoffset: 0; }
     }
+    /* Solo para los tramos del envío seleccionado: los aviones y sus rutas se
+       animan ahora en el lienzo (lineDashOffset), sin CSS. */
     .route-active { animation: dashMove 1.4s linear infinite; }
-    .route-plane  { filter: drop-shadow(0 0 3px rgba(0,0,0,0.7)); }
   `;
   document.head.appendChild(style);
 }
@@ -36,7 +97,6 @@ function clamp01(v) { return Math.max(0, Math.min(1, v)); }
  * que avanza de forma fluida entre emisiones.
  */
 function useSmoothMinute(targetMinute, running, realtime = false) {
-  const [display, setDisplay] = useState(targetMinute);
   // Inicialización perezosa del ref (sin llamar a performance.now en render)
   const s = useRef(null);
   if (s.current === null) {
@@ -80,38 +140,29 @@ function useSmoothMinute(targetMinute, running, realtime = false) {
     r.curT   = now;
   }, [targetMinute, realtime]);
 
-  // Bucle de animación: lee siempre del ref, así NO se reinicia con cada
-  // muestra (reiniciar rAF cada 800 ms provocaba microcortes).
+  // El minuto YA NO es estado de React. Antes un setState a 15 fps re-renderizaba
+  // el mapa COMPLETO (países + aviones + líneas) para mover los aviones; ahora
+  // los aviones se pintan en un <canvas> que llama a este getter una vez por
+  // frame, así que la animación NO provoca ni un solo render de React.
+  const live = useRef({ running, realtime, targetMinute });
   useEffect(() => {
-    if (!running) return;
+    live.current = { running, realtime, targetMinute };
+  });   // sin deps: apunta a la versión fresca tras CADA render
+
+  return useCallback(() => {
+    const { running: run, realtime: rt, targetMinute: tm } = live.current;
+    if (!run) return tm;
     // Extrapolar hasta ~2 intervalos de broadcast antes de detenerse: evita
     // congelamientos si un broadcast llega con retraso (la cadencia es ~800 ms).
     // En tiempo real el "broadcast útil" es 1/min → permitir extrapolar más.
-    const NOMINAL_MS = realtime ? 90000 : 1500;
-    // Actualizar el estado a ~15 fps, NO a 60: cada setDisplay re-renderiza el
-    // mapa COMPLETO (países + aviones + líneas). A 60 fps eso quema CPU/GC del
-    // cliente y en sesiones largas puede tumbar la pestaña ("la página está
-    // teniendo problemas"). A 15 fps el movimiento sigue siendo fluido.
-    const MIN_FRAME_MS = 66;
-    let raf, lastSet = 0;
-    const tick = () => {
-      const now = performance.now();
-      if (now - lastSet >= MIN_FRAME_MS) {
-        lastSet = now;
-        const r = s.current;
-        const elapsed = Math.min(now - r.curT, NOMINAL_MS);
-        let est = r.curVal + r.rate * elapsed;
-        if (est < r.disp) est = r.disp; // monotónico: nunca retrocede (sin tirones)
-        r.disp = est;
-        setDisplay(est);                // mismo valor ⇒ React no re-renderiza (bail-out)
-      }
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [running, realtime]);
-
-  return running ? display : targetMinute;
+    const NOMINAL_MS = rt ? 90000 : 1500;
+    const r = s.current;
+    const elapsed = Math.min(performance.now() - r.curT, NOMINAL_MS);
+    let est = r.curVal + r.rate * elapsed;
+    if (est < r.disp) est = r.disp;   // monotónico: nunca retrocede (sin tirones)
+    r.disp = est;
+    return est;
+  }, []);
 }
 
 function planePosition(from, to, route, simulatedMinute) {
@@ -282,8 +333,8 @@ export default function WorldMap({
 
   // Minuto continuo y suavizado para mover los aviones sin saltos.
   // En pausa congelamos la interpolación (los aviones quedan quietos).
-  const paused        = message === "Pausado";
-  const displayMinute = useSmoothMinute(simulatedMinute, running && !paused, realtime);
+  const paused     = message === "Pausado";
+  const getMinute  = useSmoothMinute(simulatedMinute, running && !paused, realtime);
 
   // ── Tooltip propio de aviones (el <title> nativo no admite estilos) ────────
   // { x, y (px relativos al contenedor), flightId, from, to, bags, cap }
@@ -346,23 +397,72 @@ export default function WorldMap({
     dragStart.current = { x: e.clientX, y: e.clientY, center: [...center] };
   };
 
-  const handleMouseMove = (e) => {
-    if (!dragging || !dragStart.current) return;
-    const dx = (e.clientX - dragStart.current.x) / (zoom * 2);
-    const dy = (e.clientY - dragStart.current.y) / (zoom * 2);
-    if (Math.abs(e.clientX - dragStart.current.x) > 3 ||
-        Math.abs(e.clientY - dragStart.current.y) > 3) {
-      dragMoved.current = true;
+  // Posiciones dibujadas en el último frame, en px del CONTENEDOR. El lienzo no
+  // tiene eventos por elemento (es un solo nodo), así que los clics y el hover
+  // se resuelven contra esta lista. La rellena el bucle de dibujo.
+  const hits = useRef([]);
+
+  // Qué hay bajo el cursor ("plane" | "line" | null). Es estado porque decide el
+  // cursor; se actualiza SOLO cuando cambia, no en cada mousemove.
+  const [hoverKind, setHoverKind] = useState(null);
+
+  /**
+   * Vuelo bajo el cursor: primero el avión, si no la línea de su ruta (replica
+   * el orden del SVG, donde el avión se pintaba encima del corredor de clic).
+   */
+  const hitTest = (clientX, clientY) => {
+    const rect = mapRef.current?.getBoundingClientRect();
+    if (!rect) return null;
+    const x = clientX - rect.left, y = clientY - rect.top;
+    let best = null, bestD = HIT_PLANE_PX * HIT_PLANE_PX;
+    for (const h of hits.current) {
+      if (!h.plane) continue;
+      const dx = x - h.px, dy = y - h.py, d = dx * dx + dy * dy;
+      if (d < bestD) { bestD = d; best = h; }
     }
-    setCenter([
-      dragStart.current.center[0] - dx,
-      dragStart.current.center[1] + dy,
-    ]);
+    if (best) return { hit: best, kind: "plane" };
+    for (const h of hits.current) {
+      if (!h.line) continue;
+      if (distToSegment(x, y, h.ax, h.ay, h.bx, h.by) < HIT_LINE_PX) {
+        return { hit: h, kind: "line" };
+      }
+    }
+    return null;
+  };
+
+  const handleMouseMove = (e) => {
+    if (dragging && dragStart.current) {
+      const dx = (e.clientX - dragStart.current.x) / (zoom * 2);
+      const dy = (e.clientY - dragStart.current.y) / (zoom * 2);
+      if (Math.abs(e.clientX - dragStart.current.x) > 3 ||
+          Math.abs(e.clientY - dragStart.current.y) > 3) {
+        dragMoved.current = true;
+      }
+      setCenter([
+        dragStart.current.center[0] - dx,
+        dragStart.current.center[1] + dy,
+      ]);
+      return;
+    }
+    // Hover sobre un avión → mismo tooltip que antes daba el <Marker> SVG.
+    const r = hitTest(e.clientX, e.clientY);
+    if (r?.kind === "plane") showPlaneTip(e, r.hit.route);
+    else if (tip) hideTip();
+    if ((r?.kind ?? null) !== hoverKind) setHoverKind(r?.kind ?? null);
   };
 
   const handleMouseUp = () => {
     setDragging(false);
     dragStart.current = null;
+  };
+
+  // Clic sobre el lienzo: si cae en un avión o en su ruta, la selecciona. Los
+  // aeropuertos siguen en SVG con sus propios eventos (el lienzo va con
+  // pointer-events:none), así que este handler nunca les roba el clic.
+  const handleMapClick = (e) => {
+    if (dragMoved.current) return;
+    const r = hitTest(e.clientX, e.clientY);
+    if (r) { e.stopPropagation(); clickRoute(r.hit.key); }
   };
 
   // Click en el fondo del mapa (sin arrastrar) limpia toda la selección
@@ -466,6 +566,126 @@ export default function WorldMap({
   const stableBgClick      = useCallback((e) => cbRef.current.handleBackgroundClick?.(e), []);
   const stableClickAirport = useCallback((c) => cbRef.current.clickAirport?.(c), []);
 
+  // ── Lienzo: dibujo de rutas y aviones ─────────────────────────────────────
+  // El bucle de rAF arranca UNA vez y lee siempre de este ref, así nunca se
+  // reinicia y no necesita dependencias. Todo lo que cambia por broadcast o por
+  // acción del usuario (rutas, zoom, filtros, resaltado) entra por aquí.
+  const frame = useRef({ activeRoutes: [] });
+  useEffect(() => {
+    frame.current = {
+      activeRoutes, airportMap, showLines, showPlanes, hasFocus,
+      routeIsHighlighted, zoom, center, shipmentMode, getMinute,
+    };
+  });   // sin deps: apunta a la versión fresca tras CADA render
+
+  const canvasRef = useRef(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const box    = mapRef.current;
+    if (!canvas || !box) return;
+    const ctx = canvas.getContext("2d");
+    const paths = planePaths();
+
+    // 30 fps: el dibujo ya no re-renderiza React, así que sale mucho más barato
+    // que los ~15 fps de antes (que reconciliaban todo el árbol SVG).
+    const MIN_FRAME_MS = 33;
+    let raf, last = 0, cssW = 0, cssH = 0;
+
+    const draw = (now) => {
+      raf = requestAnimationFrame(draw);
+      if (now - last < MIN_FRAME_MS) return;
+      last = now;
+
+      const f = frame.current;
+      // Tamaño del lienzo = zona del mapa (contenedor menos la cabecera).
+      const w = box.clientWidth, h = box.clientHeight - MAP_HEADER;
+      if (w <= 0 || h <= 0) return;
+      const dpr = window.devicePixelRatio || 1;
+      if (w !== cssW || h !== cssH) {
+        cssW = w; cssH = h;
+        canvas.width  = Math.round(w * dpr);
+        canvas.height = Math.round(h * dpr);
+        canvas.style.width  = `${w}px`;
+        canvas.style.height = `${h}px`;
+      }
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+      hits.current = [];
+      if (f.activeRoutes.length === 0 || f.shipmentMode) return;
+
+      const { k, ox, oy } = viewBoxFit(w, h);
+      const proj    = makeProjection(f.zoom, f.center);
+      const minute  = f.getMinute();
+      // viewBox → px del lienzo. (Para el hit-test se le suma MAP_HEADER en y,
+      // porque los eventos del ratón llegan en px del CONTENEDOR.)
+      const toPx = ll => { const p = proj(ll); return p && [ox + p[0] * k, oy + p[1] * k]; };
+
+      // Guiones en marcha: equivale a la animación CSS `dashMove` (24 → 0 en 1,4 s)
+      // que llevaban las líneas del SVG.
+      const dashOffset = (24 - (now % 1400) / 1400 * 24) * k;
+
+      for (const r of f.activeRoutes) {
+        const from = f.airportMap[r.from];
+        const to   = f.airportMap[r.to];
+        if (!from || !to) continue;
+
+        const pos = planePosition(from, to, r, minute);
+        const a   = toPx(pos.coordinates);   // avión (inicio de la línea restante)
+        const b   = toPx(to);                // destino
+        const org = toPx(from);              // origen (para el corredor de clic)
+        if (!a || !b || !org) continue;
+
+        const hl  = f.routeIsHighlighted(r);
+        const col = flightColor(r.bags, r.capacity || 0);
+        const key = routeKey(r);
+
+        // La línea visible nace en la POSICIÓN ACTUAL del avión: el tramo ya
+        // recorrido se "borra" y solo queda el camino restante.
+        if (f.showLines) {
+          ctx.save();
+          ctx.globalAlpha = hl ? 0.85 : 0.10;
+          ctx.strokeStyle = col;
+          ctx.lineWidth   = (f.hasFocus && hl ? 1.0 : 0.6) * k;
+          ctx.lineCap     = "round";
+          ctx.setLineDash([8 * k, 4 * k]);
+          ctx.lineDashOffset = dashOffset;
+          ctx.beginPath();
+          ctx.moveTo(a[0], a[1]);
+          ctx.lineTo(b[0], b[1]);
+          ctx.stroke();
+          ctx.restore();
+        }
+
+        if (f.showPlanes) {
+          ctx.save();
+          ctx.globalAlpha = hl ? 1 : 0.15;
+          ctx.translate(a[0], a[1]);
+          ctx.rotate(pos.angle * Math.PI / 180);
+          ctx.scale(0.75 * k, 0.75 * k);
+          ctx.fillStyle   = col;
+          ctx.strokeStyle = col;
+          ctx.lineWidth   = 0.4;
+          for (const p of paths) { ctx.fill(p); ctx.stroke(p); }
+          ctx.restore();
+        }
+
+        // Zona sensible: el avión, y el corredor de la ruta COMPLETA (origen →
+        // destino), igual que la <Line> transparente de 8 px que había en SVG.
+        hits.current.push({
+          key, route: r,
+          plane: f.showPlanes, px: a[0], py: a[1] + MAP_HEADER,
+          line:  f.showLines,
+          ax: org[0], ay: org[1] + MAP_HEADER,
+          bx: b[0],   by: b[1]   + MAP_HEADER,
+        });
+      }
+    };
+
+    raf = requestAnimationFrame(draw);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
   return (
     <div
       ref={mapRef}
@@ -473,8 +693,11 @@ export default function WorldMap({
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
-      onMouseLeave={handleMouseUp}
-      style={{ cursor: dragging ? "grabbing" : zoom > 1 ? "grab" : "default" }}>
+      onMouseLeave={() => { handleMouseUp(); hideTip(); }}
+      onClick={handleMapClick}
+      style={{ cursor: dragging ? "grabbing"
+                     : hoverKind ? "pointer"
+                     : zoom > 1 ? "grab" : "default" }}>
 
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between px-2 pt-2 pb-1 gap-2">
@@ -594,76 +817,9 @@ export default function WorldMap({
         </Geographies>
         ), [stableBgClick])}
 
-        {showLines && activeRoutes.map(r => {
-          const from = airportMap[r.from];
-          const to   = airportMap[r.to];
-          if (!from || !to) return null;
-          const hl  = routeIsHighlighted(r);
-          const key = routeKey(r);
-          const cap = r.capacity || 0;
-          const col = flightColor(r.bags, cap);
-          // La línea visible nace en la POSICIÓN ACTUAL del avión: el tramo ya
-          // recorrido se "borra" y solo queda el camino restante. Es gratis:
-          // el SVG ya se repinta cada frame (displayMinute) y la posición es la
-          // misma que usa la capa de aviones.
-          const plane = planePosition(from, to, r, displayMinute);
-          return (
-            <g key={`active-${key}`}>
-              {/* Corredor invisible de RUTA COMPLETA para que siga siendo fácil
-                  de clicar aunque la línea visible se acorte */}
-              <Line
-                from={from} to={to}
-                stroke="transparent" strokeWidth={8}
-                style={{ cursor: "pointer" }}
-                onClick={(e) => { e.stopPropagation(); clickRoute(key); }}/>
-              {/* Más finas y algo transparentes para no saturar la pantalla */}
-              <Line
-                from={plane.coordinates} to={to}
-                stroke={col}
-                strokeWidth={hasFocus && hl ? 1.0 : 0.6}
-                strokeLinecap="round" strokeDasharray="8 4"
-                opacity={hl ? 0.85 : 0.10}
-                style={{ pointerEvents: "none" }}
-                className="route-active"/>
-            </g>
-          );
-        })}
-
-        {showPlanes && activeRoutes.map(r => {
-          const from = airportMap[r.from];
-          const to   = airportMap[r.to];
-          if (!from || !to) return null;
-          const plane = planePosition(from, to, r, displayMinute);
-          const hl    = routeIsHighlighted(r);
-          const cap   = r.capacity || 0;
-          const col   = flightColor(r.bags, cap);   // gris si vacío, si no semáforo
-          return (
-            <Marker
-              key={`plane-${routeKey(r)}`}
-              coordinates={plane.coordinates}
-              onClick={(e) => { e.stopPropagation(); clickRoute(routeKey(r)); }}
-              onMouseMove={(e) => showPlaneTip(e, r)}
-              onMouseLeave={hideTip}>
-              {/* Icono reducido (scale) — tooltip propio estilizado, no <title> */}
-              <g transform={`rotate(${plane.angle}) scale(0.75)`}
-                 className="route-plane"
-                 opacity={hl ? 1 : 0.15}
-                 style={{ cursor: "pointer" }}>
-                {/* Fuselaje */}
-                <path d="M 10 0 L -6 -1.5 L -8 0 L -6 1.5 Z"
-                      fill={col} stroke={col} strokeWidth={0.4}/>
-                <path d="M 2 -1 L -3 -8 L -6 -7 L -3 -1 Z"
-                      fill={col} stroke={col} strokeWidth={0.4}/>
-                <path d="M 2 1 L -3 8 L -6 7 L -3 1 Z"
-                      fill={col} stroke={col} strokeWidth={0.4}/>
-                <path d="M -5 -1 L -7 -4 L -9 -3.5 L -8 0 Z"
-                      fill={col} stroke={col} strokeWidth={0.4}/>
-                <path d="M -5 1 L -7 4 L -9 3.5 L -8 0 Z"
-                      fill={col} stroke={col} strokeWidth={0.4}/>
-              </g>
-            </Marker>
-          );
-        })}
+        {/* Rutas y aviones ya NO van aquí: se pintan en el <canvas> superpuesto
+            (ver el bucle de dibujo arriba). En SVG eran ~6 nodos por avión que
+            React reconciliaba en cada frame. */}
 
         {/* Aeropuertos/almacenes + etiquetas: capas MEMOIZADAS — solo se
             reconstruyen cuando cambian los datos (broadcast ~0,8 s), el foco o
@@ -815,6 +971,15 @@ export default function WorldMap({
           );
         })}
       </ComposableMap>
+
+      {/* Lienzo de rutas y aviones, superpuesto a la zona del mapa (bajo la
+          cabecera). Va con pointer-events:none a propósito: así los aeropuertos
+          del SVG conservan sus propios clics y el hit-test de los aviones lo
+          hacen los handlers del contenedor. */}
+      <canvas
+        ref={canvasRef}
+        className="absolute left-0 pointer-events-none"
+        style={{ top: MAP_HEADER, zIndex: 10 }}/>
 
       {/* Tooltip de avión: recuadro estilizado con el código del vuelo (F###),
           tramo y carga con color de semáforo. Reemplaza al <title> nativo. */}
